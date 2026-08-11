@@ -386,6 +386,9 @@ describe('Asset → Candidate flow', () => {
     expect(changed.json().reviews).toHaveLength(1)
     expect(changed.json().reviews[0].candidateId).toBe(changed.json().candidates[0].id)
 
+    const listed = await app.inject({ method: 'GET', url: '/api/assets' })
+    expect(listed.json().assets[0]).toMatchObject({ candidateCount: 1, reviewCount: 1 })
+
     const snapshot = await repository.read()
     expect(snapshot.candidates.find((candidate) => candidate.id === resolvedCandidate.id)?.status).toBe('APPROVED')
     expect(snapshot.reviews.find((review) => review.id === resolvedReview.id)?.status).toBe('RESOLVED')
@@ -394,6 +397,37 @@ describe('Asset → Candidate flow', () => {
       reviewedAt: expect.any(String),
     })
     expect(snapshot.reviews.find((review) => review.id === staleReview.id)?.status).toBe('CANCELLED')
+  })
+
+  it('creates a fresh pending review when retired evidence returns after another source version', async () => {
+    const { app, repository } = await fixture()
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/assets',
+      payload: validAsset('平台支持能力 A。'),
+    })
+    const id = created.json().asset.id
+    const first = await app.inject({ method: 'POST', url: `/api/assets/${id}/process` })
+    const firstCandidateId = first.json().candidates[0].id
+    const firstReviewId = first.json().reviews[0].id
+
+    await repository.transact((draft) => {
+      draft.assetInputs[id] = { content: '平台支持能力 B。', mimeType: 'text/plain' }
+    })
+    await app.inject({ method: 'POST', url: `/api/assets/${id}/process` })
+
+    await repository.transact((draft) => {
+      draft.assetInputs[id] = { content: '平台支持能力 A。', mimeType: 'text/plain' }
+    })
+    const restored = await app.inject({ method: 'POST', url: `/api/assets/${id}/process` })
+
+    expect(restored.statusCode).toBe(200)
+    expect(restored.json().candidates).toHaveLength(1)
+    expect(restored.json().candidates[0]).toMatchObject({ status: 'PENDING', reviewRequired: true })
+    expect(restored.json().candidates[0].id).not.toBe(firstCandidateId)
+    expect(restored.json().reviews).toHaveLength(1)
+    expect(restored.json().reviews[0]).toMatchObject({ status: 'PENDING' })
+    expect(restored.json().reviews[0].id).not.toBe(firstReviewId)
   })
 
   it('clears current evidence and retires pending derivatives when changed input cannot be parsed', async () => {

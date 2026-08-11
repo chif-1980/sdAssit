@@ -99,6 +99,8 @@ export class AssetService {
   async list() {
     const snapshot = await this.repository.read()
     return snapshot.assets.map((asset) => {
+      const currentCandidates = visibleCandidatesForAsset(snapshot, asset)
+      const currentCandidateIds = new Set(currentCandidates.map((candidate) => candidate.id))
       const {
         contentHash: _contentHash,
         sections: _sections,
@@ -107,11 +109,9 @@ export class AssetService {
       } = asset
       return {
         ...safeAsset,
-        candidateCount: snapshot.candidates.filter((candidate) => candidate.sourceAssetId === asset.id).length,
-        reviewCount: snapshot.reviews.filter((review) => {
-          const candidate = snapshot.candidates.find((item) => item.id === review.candidateId)
-          return candidate?.sourceAssetId === asset.id
-        }).length,
+        candidateCount: currentCandidates.length,
+        reviewCount: snapshot.reviews.filter((review) => review.candidateId !== undefined
+          && currentCandidateIds.has(review.candidateId)).length,
       }
     })
   }
@@ -165,7 +165,8 @@ export class AssetService {
           if (draft.candidates.some((candidate) => candidate.sourceAssetId === asset.id
             && candidate.candidateHash === candidateHash
             && candidate.sourceLocator === extractedCandidate.sourceLocator
-            && candidate.sourceExcerpt === extractedCandidate.sourceExcerpt)) continue
+            && candidate.sourceExcerpt === extractedCandidate.sourceExcerpt
+            && !hasCancelledReview(draft, candidate.id))) continue
 
           const match = this.retrieval.findMatch(extractedCandidate.content, draft.knowledge)
           const candidateId = createBusinessId('candidate')
@@ -258,12 +259,21 @@ function reviewTypeFor(relation: Relation): ReviewType {
 function detailFromSnapshot(snapshot: PlatformSnapshot, id: string): AssetDetail {
   const asset = snapshot.assets.find((item) => item.id === id)
   if (!asset) throw new Error('ASSET_NOT_FOUND')
-  const currentEvidence = evidenceKeys(asset.sections)
-  const candidates = snapshot.candidates.filter((candidate) => candidate.sourceAssetId === id
-    && currentEvidence.has(evidenceKey(candidate.sourceLocator, candidate.sourceExcerpt)))
+  const candidates = visibleCandidatesForAsset(snapshot, asset)
   const candidateIds = new Set(candidates.map((candidate) => candidate.id))
   const reviews = snapshot.reviews.filter((review) => review.candidateId !== undefined && candidateIds.has(review.candidateId))
   return { asset, candidates, reviews }
+}
+
+function visibleCandidatesForAsset(snapshot: PlatformSnapshot, asset: Asset) {
+  const currentEvidence = evidenceKeys(asset.sections)
+  return snapshot.candidates.filter((candidate) => candidate.sourceAssetId === asset.id
+    && currentEvidence.has(evidenceKey(candidate.sourceLocator, candidate.sourceExcerpt))
+    && !hasCancelledReview(snapshot, candidate.id))
+}
+
+function hasCancelledReview(snapshot: PlatformSnapshot, candidateId: string) {
+  return snapshot.reviews.some((review) => review.candidateId === candidateId && review.status === 'CANCELLED')
 }
 
 function evidenceKey(locator: string, excerpt: string) {
