@@ -158,10 +158,15 @@ describe('Asset → Candidate flow', () => {
 
   it('is idempotent by candidate hash when processing an asset repeatedly', async () => {
     const { app } = await fixture()
-    const created = await app.inject({ method: 'POST', url: '/api/assets', payload: validAsset('平台不得绕过安全审核。') })
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/assets',
+      payload: validAsset('平台不得绕过安全审核。', { ownerId: 'USR-OWNER' }),
+    })
     const id = created.json().asset.id
 
     const first = await app.inject({ method: 'POST', url: `/api/assets/${id}/process` })
+    await new Promise((resolve) => setTimeout(resolve, 5))
     const second = await app.inject({ method: 'POST', url: `/api/assets/${id}/process` })
 
     expect(first.statusCode).toBe(200)
@@ -169,6 +174,8 @@ describe('Asset → Candidate flow', () => {
     expect(second.json().candidates).toHaveLength(1)
     expect(second.json().reviews).toHaveLength(1)
     expect(second.json().candidates[0].candidateHash).toBe(first.json().candidates[0].candidateHash)
+    expect(second.json().reviews[0].reviewerId).toBe('USR-OWNER')
+    expect(second.json().asset.processedAt).toBe(first.json().asset.processedAt)
   })
 
   it('validates owner and does not echo raw input in asset lists or create responses', async () => {

@@ -132,13 +132,22 @@ export class AssetService {
         if (!input) throw new Error('ASSET_INPUT_NOT_FOUND')
 
         const timestamp = now()
+        const previousStatus = asset.processStatus
+        const previousUpdatedAt = asset.updatedAt
+        const previousContentHash = asset.contentHash
         asset.processStatus = 'PROCESSING'
         asset.updatedAt = timestamp
 
         const content = parseInput(input.content, input.mimeType, asset.title)
+        const contentHash = sha256(content)
+        if (previousStatus === 'PROCESSED' && previousContentHash === contentHash) {
+          asset.processStatus = previousStatus
+          asset.updatedAt = previousUpdatedAt
+          return
+        }
+
         const sections = parseTextSections(content)
         const extracted = this.extractor.extract(sections)
-        const contentHash = sha256(content)
         asset.sections = sections
         asset.summary = summarizeSections(sections)
         asset.contentHash = contentHash
@@ -197,7 +206,7 @@ export class AssetService {
               risk: reviewType === 'CONFLICT' ? 'HIGH' : reviewType === 'UPDATE' ? 'MEDIUM' : 'LOW',
               proposedContent: candidate.content,
               aiSuggestion: candidate.aiReason,
-              reviewerId: draft.session.userId,
+              reviewerId: asset.ownerId,
               status: 'PENDING',
               createdAt: candidateTimestamp,
             })
