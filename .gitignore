@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+data/knowledge-platform.json
+*.tsbuildinfo
+.DS_Store
+.env
