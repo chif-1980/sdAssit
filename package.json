@@ -1,5 +1,6 @@
 {
-  "name": "knowledgebase",
+  "name": "knowledge-platform-v1",
+  "private": true,
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -34,8 +35,8 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.3",
     "@types/node": "^26.2.0",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^6.0.5",
     "concurrently": "^10.0.4",
     "jsdom": "^29.1.1",

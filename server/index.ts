@@ -7,4 +7,4 @@ app.get('/api/health', async () => ({
   provider: 'local-json',
 }));
 
-await app.listen({ host: '127.0.0.1', port: 8787 });
+await app.listen({ host: '127.0.0.1', port: Number(process.env.PORT ?? 8787) });
