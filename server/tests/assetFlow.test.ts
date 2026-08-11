@@ -74,6 +74,16 @@ describe('Asset → Candidate flow', () => {
       .not.toBe(normalizeKnowledgeText(`平台最低容量 ${right} 10`))
   })
 
+  it.each([
+    ['1.5', '15'],
+    ['-10', '10'],
+    ['1/2', '12'],
+    ['!= 1', '= 1'],
+  ])('preserves distinct numeric expressions %s and %s during normalization', (left, right) => {
+    expect(normalizeKnowledgeText(`平台最低参数 ${left}。`))
+      .not.toBe(normalizeKnowledgeText(`平台最低参数 ${right}。`))
+  })
+
   it('does not auto-reject an opposite constraint as an exact duplicate', async () => {
     const knowledge = activeKnowledge('KNW-CONSTRAINT', '最低容量', '平台最低容量 >= 10。')
     const seed = seedSnapshot()

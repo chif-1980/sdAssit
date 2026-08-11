@@ -15,9 +15,8 @@ export function normalizeKnowledgeText(value: string) {
     .toLocaleLowerCase()
     .replace(/≥/gu, '>=')
     .replace(/≤/gu, '<=')
-    .split(/(>=|<=|>|<)/gu)
-    .map((part) => /^(?:>=|<=|>|<)$/u.test(part) ? part : part.replace(/[\s\p{P}\p{S}]+/gu, ''))
-    .join('')
+    .replace(/\s+/gu, '')
+    .replace(/[。！？!?；;.]+$/gu, '')
 }
 
 function tokenSet(value: string) {
