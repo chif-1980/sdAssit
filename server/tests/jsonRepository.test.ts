@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, relative } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -161,6 +161,45 @@ describe('JsonRepository', () => {
     expect(events).toEqual(['first:start', 'first:end', 'second:saw:ADMIN'])
     expect((await repository.read()).session.role).toBe('OWNER')
   })
+
+  it('serializes updates across instances sharing a normalized file path', async () => {
+    const { file } = await temporaryFile()
+    const first = new JsonRepository(file, testSeed())
+    const second = new JsonRepository(relative(process.cwd(), file), testSeed())
+
+    await Promise.all([first.read(), second.read()])
+    await Promise.all([
+      first.transact((draft) => {
+        draft.assetInputs.first = { content: 'first', mimeType: 'text/plain' }
+      }),
+      second.transact((draft) => {
+        draft.assetInputs.second = { content: 'second', mimeType: 'text/plain' }
+      }),
+    ])
+
+    const reloaded = new JsonRepository(file, testSeed())
+    expect((await reloaded.read()).assetInputs).toEqual({
+      first: { content: 'first', mimeType: 'text/plain' },
+      second: { content: 'second', mimeType: 'text/plain' },
+    })
+  })
+
+  it('does not let an initial concurrent read overwrite a transaction', async () => {
+    const { file } = await temporaryFile()
+    const repository = new JsonRepository(file, testSeed())
+
+    const read = repository.read()
+    const transaction = repository.transact((draft) => {
+      draft.assetInputs.transaction = { content: 'committed', mimeType: 'text/plain' }
+    })
+    await Promise.all([read, transaction])
+
+    const reloaded = new JsonRepository(file, testSeed())
+    expect((await reloaded.read()).assetInputs.transaction).toEqual({
+      content: 'committed',
+      mimeType: 'text/plain',
+    })
+  })
 })
 
 describe('seedSnapshot', () => {
@@ -204,10 +243,26 @@ describe('buildApp', () => {
     app.get('/api/test/invalid', async () => {
       throw new Error('INVALID_DATA_FILE')
     })
+    app.get('/api/test/not-found', async () => {
+      throw new Error('ASSET_NOT_FOUND')
+    })
+    app.get('/api/test/conflict', async () => {
+      throw new Error('WRITE_CONFLICT')
+    })
+    app.get('/api/test/action', async () => {
+      throw new Error('REVIEW_ACTION_NOT_ALLOWED')
+    })
+    app.get('/api/test/unknown', async () => {
+      throw new Error('disk failed')
+    })
 
     const health = await app.inject({ method: 'GET', url: '/api/health' })
     const forbidden = await app.inject({ method: 'GET', url: '/api/test/forbidden' })
     const invalid = await app.inject({ method: 'GET', url: '/api/test/invalid' })
+    const notFound = await app.inject({ method: 'GET', url: '/api/test/not-found' })
+    const conflict = await app.inject({ method: 'GET', url: '/api/test/conflict' })
+    const action = await app.inject({ method: 'GET', url: '/api/test/action' })
+    const unknown = await app.inject({ method: 'GET', url: '/api/test/unknown' })
 
     expect(health.statusCode).toBe(200)
     expect(health.json()).toEqual({ ok: true, provider: 'local-json' })
@@ -218,6 +273,22 @@ describe('buildApp', () => {
     expect(invalid.statusCode).toBe(400)
     expect(invalid.json()).toEqual({
       error: { code: 'INVALID_DATA_FILE', message: 'INVALID_DATA_FILE', details: {} },
+    })
+    expect(notFound.statusCode).toBe(404)
+    expect(notFound.json()).toEqual({
+      error: { code: 'ASSET_NOT_FOUND', message: 'ASSET_NOT_FOUND', details: {} },
+    })
+    expect(conflict.statusCode).toBe(409)
+    expect(conflict.json()).toEqual({
+      error: { code: 'WRITE_CONFLICT', message: 'WRITE_CONFLICT', details: {} },
+    })
+    expect(action.statusCode).toBe(400)
+    expect(action.json()).toEqual({
+      error: { code: 'REVIEW_ACTION_NOT_ALLOWED', message: 'REVIEW_ACTION_NOT_ALLOWED', details: {} },
+    })
+    expect(unknown.statusCode).toBe(500)
+    expect(unknown.json()).toEqual({
+      error: { code: 'INTERNAL_ERROR', message: 'INTERNAL_ERROR', details: {} },
     })
 
     await app.close()

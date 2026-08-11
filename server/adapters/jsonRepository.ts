@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 import type { PlatformSnapshot } from '../../shared/domain/models.js'
 import { parseSnapshot } from '../../shared/domain/schema.js'
@@ -14,17 +14,36 @@ function invalidDataFile() {
   return new Error('INVALID_DATA_FILE')
 }
 
-export class JsonRepository implements PlatformRepository {
-  private cache?: PlatformSnapshot
-  private queue: Promise<void> = Promise.resolve()
+interface RepositoryCoordinator {
+  cache?: PlatformSnapshot
+  queue: Promise<void>
+}
 
-  constructor(
-    private readonly file: string,
-    private readonly seed: PlatformSnapshot,
-  ) {}
+// V1 coordinates repositories inside one process; it does not provide cross-process locking.
+const coordinators = new Map<string, RepositoryCoordinator>()
+
+function coordinatorFor(file: string): RepositoryCoordinator {
+  const existing = coordinators.get(file)
+  if (existing) return existing
+
+  const coordinator: RepositoryCoordinator = { queue: Promise.resolve() }
+  coordinators.set(file, coordinator)
+  return coordinator
+}
+
+export class JsonRepository implements PlatformRepository {
+  private readonly file: string
+  private readonly seed: PlatformSnapshot
+  private readonly coordinator: RepositoryCoordinator
+
+  constructor(file: string, seed: PlatformSnapshot) {
+    this.file = resolve(file)
+    this.seed = seed
+    this.coordinator = coordinatorFor(this.file)
+  }
 
   private async load(): Promise<PlatformSnapshot> {
-    if (this.cache) return this.cache
+    if (this.coordinator.cache) return this.coordinator.cache
 
     let contents: string
     try {
@@ -34,7 +53,7 @@ export class JsonRepository implements PlatformRepository {
 
       const initial = parseSnapshot(structuredClone(this.seed))
       await this.persist(initial)
-      this.cache = initial
+      this.coordinator.cache = initial
       return initial
     }
 
@@ -46,8 +65,14 @@ export class JsonRepository implements PlatformRepository {
     }
 
     const loaded = parseSnapshot(input)
-    this.cache = loaded
+    this.coordinator.cache = loaded
     return loaded
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.coordinator.queue.then(operation)
+    this.coordinator.queue = next.then(() => undefined, () => undefined)
+    return next
   }
 
   private async persist(snapshot: PlatformSnapshot): Promise<void> {
@@ -64,22 +89,19 @@ export class JsonRepository implements PlatformRepository {
   }
 
   async read(): Promise<PlatformSnapshot> {
-    return structuredClone(await this.load())
+    return this.enqueue(async () => structuredClone(await this.load()))
   }
 
   async transact<T>(mutator: (draft: PlatformSnapshot) => T | Promise<T>): Promise<T> {
-    const operation = this.queue.then(async () => {
+    return this.enqueue(async () => {
       const current = await this.load()
       const draft = structuredClone(current)
       const result = await mutator(draft)
       const validated = parseSnapshot(draft)
 
       await this.persist(validated)
-      this.cache = validated
+      this.coordinator.cache = validated
       return result
     })
-
-    this.queue = operation.then(() => undefined, () => undefined)
-    return operation
   }
 }
