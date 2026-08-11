@@ -20,8 +20,27 @@ function mockSession(role: UserRole) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     let body: unknown = sessionResponse(role)
+    if (url.startsWith('/api/reviews/')) body = {
+      review: {
+        id: 'RVW-DEMO', title: '演示审核', reviewType: 'NEW', risk: 'LOW', status: 'PENDING',
+        reviewerId: 'USR-OWNER', createdAt: '2026-08-11T12:00:00.000Z',
+      },
+      allowedActions: [],
+    }
     if (url === '/api/reviews') body = { reviews: [] }
-    if (url.startsWith('/api/knowledge')) body = { knowledge: [] }
+    if (url.startsWith('/api/knowledge/')) body = {
+      knowledge: {
+        id: 'KNW-DEMO', title: '演示知识', content: '演示内容', category: 'OTHER', tags: [],
+        authority: 'L0', ownerId: 'USR-OWNER', primaryAssetId: 'AST-DEMO', supportingAssetIds: [],
+        sourceLocator: 'paragraph:1', status: 'ACTIVE', version: 1,
+        lastVerifiedAt: '2026-08-11T12:00:00.000Z', aiEnabled: true, indexStatus: 'INDEXED',
+        createdAt: '2026-08-11T12:00:00.000Z', updatedAt: '2026-08-11T12:00:00.000Z',
+      },
+      primaryAsset: { id: 'AST-DEMO', title: '演示资料', sections: [] },
+      supportingAssets: [],
+      history: [],
+    }
+    if (url === '/api/knowledge' || url.startsWith('/api/knowledge?')) body = { knowledge: [] }
     if (url === '/api/assets') body = { assets: [] }
     if (url.startsWith('/api/assets/')) body = {
       asset: {

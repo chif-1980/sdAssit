@@ -522,4 +522,28 @@ describe('Review -> Knowledge flow', () => {
     expect(reindexed.statusCode).toBe(200)
     expect(reindexed.json().knowledge.indexStatus).toBe('INDEXED')
   })
+
+  it('creates a STALE review when an owner requests archival', async () => {
+    const snapshot = seedSnapshot()
+    snapshot.session = { userId: 'USR-OWNER', role: 'OWNER' }
+    snapshot.assets.push(reviewSnapshot('UPDATE', 'UPDATE').assets[0])
+    snapshot.knowledge.push(knowledge())
+    const { app, repository } = await fixture(snapshot)
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/knowledge/KNW-TARGET/request-update',
+      payload: { intent: 'ARCHIVE', decisionComment: '该部署方式已经下线' },
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.json().review).toMatchObject({
+      reviewType: 'STALE',
+      targetKnowledgeId: 'KNW-TARGET',
+      status: 'PENDING',
+      aiSuggestion: '该部署方式已经下线',
+    })
+    expect(response.json().review.proposedContent).toBeUndefined()
+    expect((await repository.read()).knowledge[0]).toMatchObject({ status: 'ACTIVE', version: 2 })
+  })
 })

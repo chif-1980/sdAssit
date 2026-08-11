@@ -28,9 +28,14 @@ const knowledgeListQuery = z.object({
 )
 
 const requestUpdateBody = z.object({
-  proposedContent: z.string().trim().min(1).max(4000),
+  intent: z.enum(['UPDATE', 'ARCHIVE']).optional(),
+  proposedContent: z.string().trim().min(1).max(4000).optional(),
   decisionComment: z.string().trim().min(1).max(2000),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.intent !== 'ARCHIVE' && value.proposedContent === undefined) {
+    context.addIssue({ code: 'custom', path: ['proposedContent'], message: 'Required' })
+  }
+})
 
 function invalidRequest() {
   return new Error('INVALID_REQUEST')
@@ -54,6 +59,7 @@ export function registerKnowledgeRoutes(app: FastifyInstance, service: ReviewSer
       request.params.knowledgeId,
       parsed.data.proposedContent,
       parsed.data.decisionComment,
+      parsed.data.intent ?? 'UPDATE',
     )
     return reply.status(201).send({ review })
   })

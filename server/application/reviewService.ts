@@ -305,7 +305,12 @@ export class ReviewService {
     return { knowledge: item, primaryAsset, supportingAssets, history }
   }
 
-  async requestUpdate(id: string, proposedContent: string, decisionComment: string) {
+  async requestUpdate(
+    id: string,
+    proposedContent: string | undefined,
+    decisionComment: string,
+    intent: 'UPDATE' | 'ARCHIVE' = 'UPDATE',
+  ) {
     return this.repository.transact((draft) => {
       const target = draft.knowledge.find((item) => item.id === id)
       if (!target) throw new Error('KNOWLEDGE_NOT_FOUND')
@@ -313,13 +318,13 @@ export class ReviewService {
       const createdAt = now()
       const created: Review = {
         id: createBusinessId('review'),
-        title: `更新：${target.title}`,
+        title: intent === 'ARCHIVE' ? `归档复核：${target.title}` : `更新：${target.title}`,
         triggerType: 'LIFECYCLE',
-        reviewType: 'UPDATE',
+        reviewType: intent === 'ARCHIVE' ? 'STALE' : 'UPDATE',
         targetKnowledgeId: target.id,
         risk: 'MEDIUM',
         currentSnapshot: target.content,
-        proposedContent,
+        ...(proposedContent ? { proposedContent } : {}),
         aiSuggestion: decisionComment,
         reviewerId: target.ownerId,
         status: 'PENDING',
