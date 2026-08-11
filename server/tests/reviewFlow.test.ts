@@ -295,6 +295,57 @@ describe('Review -> Knowledge flow', () => {
     expect(canAnswerWithKnowledge(response.json().knowledge)).toBe(true)
   })
 
+  it('commits an UPDATE review and PENDING knowledge before indexing starts', async () => {
+    let markIndexStarted!: () => void
+    let releaseIndex!: () => void
+    const indexStarted = new Promise<void>((resolve) => {
+      markIndexStarted = resolve
+    })
+    const canFinishIndex = new Promise<void>((resolve) => {
+      releaseIndex = resolve
+    })
+    const indexer: KnowledgeIndexer = {
+      async index() {
+        markIndexStarted()
+        await canFinishIndex
+      },
+    }
+    const existing = knowledge()
+    const { app, repository } = await fixture(
+      reviewSnapshot('UPDATE', 'UPDATE', { target: existing }),
+      indexer,
+    )
+
+    const responsePromise = resolve(
+      app,
+      'UPDATE_KNOWLEDGE',
+      '标准与轻量部署分别需要 4 张和 2 张 A800。',
+    )
+    const startedBeforeResponse = await Promise.race([
+      indexStarted.then(() => true),
+      responsePromise.then(() => false),
+    ])
+    expect(startedBeforeResponse).toBe(true)
+
+    try {
+      const pending = await repository.read()
+      expect(pending.reviews[0]).toMatchObject({ status: 'RESOLVED', resolutionAction: 'UPDATE_KNOWLEDGE' })
+      expect(pending.candidates[0]).toMatchObject({ status: 'APPROVED', reviewRequired: false })
+      expect(pending.knowledge[0]).toMatchObject({
+        version: existing.version + 1,
+        indexStatus: 'PENDING',
+      })
+      expect(canAnswerWithKnowledge(pending.knowledge[0])).toBe(false)
+    } finally {
+      releaseIndex()
+    }
+
+    const response = await responsePromise
+    expect(response.statusCode).toBe(200)
+    expect(response.json().knowledge.indexStatus).toBe('INDEXED')
+    expect(canAnswerWithKnowledge(response.json().knowledge)).toBe(true)
+  })
+
   it('validates resolve requests and maps final-content errors to stable 400 responses', async () => {
     const { app, repository } = await fixture(reviewSnapshot('NEW', 'NEW'))
     const invalidPayloads = [
