@@ -1,9 +1,11 @@
 import Fastify from 'fastify'
 
 import type { PlatformRepository } from './application/ports.js'
+import { registerAssetRoutes } from './routes/assetRoutes.js'
 
 const badRequestCodes = new Set([
   'INVALID_DATA_FILE',
+  'INVALID_REQUEST',
   'KNOWLEDGE_AUTHORITY_EXCEEDS_SOURCE',
   'REVIEW_ACTION_NOT_ALLOWED',
 ])
@@ -33,14 +35,14 @@ function classifyError(error: unknown) {
 }
 
 export function buildApp(repository: PlatformRepository) {
-  void repository
-
   const app = Fastify()
 
   app.get('/api/health', async () => ({
     ok: true,
     provider: 'local-json',
   }))
+
+  registerAssetRoutes(app, repository)
 
   app.setNotFoundHandler((_request, reply) => {
     reply.status(404).send({
