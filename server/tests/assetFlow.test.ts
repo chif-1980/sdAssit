@@ -39,6 +39,29 @@ const validAsset = (content: string, overrides: Record<string, unknown> = {}) =>
   ...overrides,
 })
 
+function activeKnowledge(id: string, title: string, content: string): Knowledge {
+  const timestamp = new Date().toISOString()
+  return {
+    id,
+    title,
+    content,
+    category: 'PRODUCT_CAPABILITY',
+    tags: [],
+    authority: 'L1',
+    ownerId: 'USR-OWNER',
+    primaryAssetId: 'AST-SOURCE',
+    supportingAssetIds: [],
+    sourceLocator: 'source:1',
+    status: 'ACTIVE',
+    version: 1,
+    lastVerifiedAt: timestamp,
+    aiEnabled: true,
+    indexStatus: 'INDEXED',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+}
+
 describe('Asset → Candidate flow', () => {
   it('creates and processes UTF-8 text into traceable candidates and a review', async () => {
     const { app } = await fixture()
@@ -154,6 +177,58 @@ describe('Asset → Candidate flow', () => {
     expect(processed.json().candidates[0]).toMatchObject({ relation: 'DUPLICATE', confidence: 0.85, status: 'PENDING' })
     expect(processed.json().reviews).toHaveLength(1)
     expect(processed.json().reviews[0]).toMatchObject({ reviewType: 'CONFLICT', candidateId: processed.json().candidates[0].id })
+  })
+
+  it('routes an update marker to the matched active knowledge', async () => {
+    const knowledge = activeKnowledge('KNW-UPDATE', '部署能力', '平台支持私有化部署。')
+    const seed = seedSnapshot()
+    seed.knowledge.push(knowledge)
+    const { app } = await fixture(seed)
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/assets',
+      payload: validAsset('平台支持私有化部署更新标记。'),
+    })
+    const processed = await app.inject({
+      method: 'POST',
+      url: `/api/assets/${created.json().asset.id}/process`,
+    })
+
+    expect(processed.statusCode).toBe(200)
+    expect(processed.json().candidates[0]).toMatchObject({
+      relation: 'UPDATE',
+      existingKnowledgeId: knowledge.id,
+    })
+    expect(processed.json().reviews[0]).toMatchObject({
+      reviewType: 'UPDATE',
+      targetKnowledgeId: knowledge.id,
+    })
+  })
+
+  it('routes a conflict marker to the matched active knowledge', async () => {
+    const knowledge = activeKnowledge('KNW-CONFLICT', '安全审核规则', '平台不得绕过安全审核。')
+    const seed = seedSnapshot()
+    seed.knowledge.push(knowledge)
+    const { app } = await fixture(seed)
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/assets',
+      payload: validAsset('平台不得绕过安全审核，冲突标记。'),
+    })
+    const processed = await app.inject({
+      method: 'POST',
+      url: `/api/assets/${created.json().asset.id}/process`,
+    })
+
+    expect(processed.statusCode).toBe(200)
+    expect(processed.json().candidates[0]).toMatchObject({
+      relation: 'CONFLICT',
+      existingKnowledgeId: knowledge.id,
+    })
+    expect(processed.json().reviews[0]).toMatchObject({
+      reviewType: 'CONFLICT',
+      targetKnowledgeId: knowledge.id,
+    })
   })
 
   it('is idempotent by candidate hash when processing an asset repeatedly', async () => {
