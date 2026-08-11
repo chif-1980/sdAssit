@@ -17,10 +17,25 @@ function sessionResponse(role: UserRole) {
 }
 
 function mockSession(role: UserRole) {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(
-    JSON.stringify(sessionResponse(role)),
-    { status: 200, headers: { 'content-type': 'application/json' } },
-  )))
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    let body: unknown = sessionResponse(role)
+    if (url === '/api/reviews') body = { reviews: [] }
+    if (url.startsWith('/api/knowledge')) body = { knowledge: [] }
+    if (url === '/api/assets') body = { assets: [] }
+    if (url.startsWith('/api/assets/')) body = {
+      asset: {
+        id: 'AST-DEMO', title: '演示资料', businessType: 'OTHER', authority: 'L0',
+        ownerId: 'USR-OWNER', processStatus: 'NEW', sections: [],
+      },
+      candidates: [],
+      reviews: [],
+    }
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }))
 }
 
 function renderAt(path: string, role: UserRole) {
