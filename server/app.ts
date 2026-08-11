@@ -9,6 +9,17 @@ const badRequestCodes = new Set([
 ])
 
 function classifyError(error: unknown) {
+  const statusCode = typeof error === 'object' && error !== null
+    && 'statusCode' in error && typeof error.statusCode === 'number'
+    ? error.statusCode
+    : undefined
+
+  if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+    if (statusCode === 403) return { code: 'FORBIDDEN', status: 403 }
+    if (statusCode === 404) return { code: 'NOT_FOUND', status: 404 }
+    return { code: 'INVALID_REQUEST', status: statusCode }
+  }
+
   if (!(error instanceof Error)) {
     return { code: 'INTERNAL_ERROR', status: 500 }
   }
@@ -30,6 +41,16 @@ export function buildApp(repository: PlatformRepository) {
     ok: true,
     provider: 'local-json',
   }))
+
+  app.setNotFoundHandler((_request, reply) => {
+    reply.status(404).send({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'NOT_FOUND',
+        details: {},
+      },
+    })
+  })
 
   app.setErrorHandler((error, _request, reply) => {
     const { code, status } = classifyError(error)

@@ -293,4 +293,36 @@ describe('buildApp', () => {
 
     await app.close()
   })
+
+  it('normalizes Fastify parser errors without leaking parser details', async () => {
+    const { file } = await temporaryFile()
+    const app = buildApp(new JsonRepository(file, seedSnapshot()))
+    app.post('/api/test/parser', async () => ({ ok: true }))
+
+    const parser = await app.inject({
+      method: 'POST',
+      url: '/api/test/parser',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"broken"',
+    })
+
+    expect(parser.statusCode).toBe(400)
+    expect(parser.json()).toEqual({
+      error: { code: 'INVALID_REQUEST', message: 'INVALID_REQUEST', details: {} },
+    })
+    await app.close()
+  })
+
+  it('normalizes unknown routes without leaking Fastify details', async () => {
+    const { file } = await temporaryFile()
+    const app = buildApp(new JsonRepository(file, seedSnapshot()))
+
+    const missing = await app.inject({ method: 'GET', url: '/api/missing' })
+
+    expect(missing.statusCode).toBe(404)
+    expect(missing.json()).toEqual({
+      error: { code: 'NOT_FOUND', message: 'NOT_FOUND', details: {} },
+    })
+    await app.close()
+  })
 })
