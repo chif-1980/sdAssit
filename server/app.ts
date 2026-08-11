@@ -6,6 +6,7 @@ import { ReviewService } from './application/reviewService.js'
 import { registerAssetRoutes } from './routes/assetRoutes.js'
 import { registerKnowledgeRoutes } from './routes/knowledgeRoutes.js'
 import { registerReviewRoutes } from './routes/reviewRoutes.js'
+import { registerSessionRoutes } from './routes/sessionRoutes.js'
 
 const badRequestCodes = new Set([
   'INVALID_DATA_FILE',
@@ -52,6 +53,7 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
   registerAssetRoutes(app, repository)
   registerReviewRoutes(app, reviewService)
   registerKnowledgeRoutes(app, reviewService)
+  registerSessionRoutes(app, repository)
 
   app.setNotFoundHandler((_request, reply) => {
     reply.status(404).send({
