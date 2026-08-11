@@ -1,11 +1,16 @@
 import Fastify from 'fastify'
 
-import type { PlatformRepository } from './application/ports.js'
+import { LocalIndexer } from './adapters/localIndexer.js'
+import type { KnowledgeIndexer, PlatformRepository } from './application/ports.js'
+import { ReviewService } from './application/reviewService.js'
 import { registerAssetRoutes } from './routes/assetRoutes.js'
+import { registerKnowledgeRoutes } from './routes/knowledgeRoutes.js'
+import { registerReviewRoutes } from './routes/reviewRoutes.js'
 
 const badRequestCodes = new Set([
   'INVALID_DATA_FILE',
   'INVALID_REQUEST',
+  'FINAL_CONTENT_REQUIRED',
   'KNOWLEDGE_AUTHORITY_EXCEEDS_SOURCE',
   'REVIEW_ACTION_NOT_ALLOWED',
 ])
@@ -29,13 +34,15 @@ function classifyError(error: unknown) {
   const code = error.message
   if (code === 'FORBIDDEN') return { code, status: 403 }
   if (code === 'NOT_FOUND' || code.endsWith('_NOT_FOUND')) return { code, status: 404 }
+  if (code === 'REVIEW_ALREADY_RESOLVED') return { code, status: 409 }
   if (code === 'CONFLICT' || code.endsWith('_CONFLICT')) return { code, status: 409 }
   if (badRequestCodes.has(code)) return { code, status: 400 }
   return { code: 'INTERNAL_ERROR', status: 500 }
 }
 
-export function buildApp(repository: PlatformRepository) {
+export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndexer = new LocalIndexer()) {
   const app = Fastify()
+  const reviewService = new ReviewService(repository, indexer)
 
   app.get('/api/health', async () => ({
     ok: true,
@@ -43,6 +50,8 @@ export function buildApp(repository: PlatformRepository) {
   }))
 
   registerAssetRoutes(app, repository)
+  registerReviewRoutes(app, reviewService)
+  registerKnowledgeRoutes(app, reviewService)
 
   app.setNotFoundHandler((_request, reply) => {
     reply.status(404).send({
