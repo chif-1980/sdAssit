@@ -1,10 +1,12 @@
-import Fastify from 'fastify';
+import { JsonRepository } from './adapters/jsonRepository.js'
+import { buildApp } from './app.js'
+import { seedSnapshot } from './seed.js'
 
-const app = Fastify({ logger: true });
+const dataFile = process.env.DATA_FILE ?? './data/knowledge-platform.json'
+const repository = new JsonRepository(dataFile, seedSnapshot())
+const app = buildApp(repository)
 
-app.get('/api/health', async () => ({
-  ok: true,
-  provider: 'local-json',
-}));
-
-await app.listen({ host: '127.0.0.1', port: Number(process.env.PORT ?? 8787) });
+await app.listen({
+  host: '127.0.0.1',
+  port: Number(process.env.PORT ?? 8787),
+})
