@@ -8,11 +8,10 @@ import type {
   Asset,
   AssetSection,
   Candidate,
-  Knowledge,
   PlatformSnapshot,
   Review,
 } from '../../shared/domain/models.js'
-import type { AssetType, Authority, BusinessType, Relation, ReviewType } from '../../shared/domain/enums.js'
+import type { AssetType, BusinessType, Relation, ReviewType } from '../../shared/domain/enums.js'
 
 export interface CreateAssetInput {
   title: string
@@ -49,7 +48,9 @@ function parseInput(content: string, mimeType: string, title: string) {
 
   const mime = mimeType.split(';', 1)[0].trim().toLocaleLowerCase()
   const extensionLooksText = /\.(?:md|markdown|txt)$/iu.test(title)
-  if (!['text/plain', 'text/markdown'].includes(mime) && !extensionLooksText) throw unsupportedBinary()
+  const genericMime = ['application/octet-stream', 'binary/octet-stream', 'application/unknown', 'unknown/unknown']
+  const supportedMime = ['text/plain', 'text/markdown'].includes(mime)
+  if (!supportedMime && !(extensionLooksText && genericMime.includes(mime))) throw unsupportedBinary()
   return content
 }
 
@@ -138,16 +139,17 @@ export class AssetService {
         asset.processStatus = 'PROCESSING'
         asset.updatedAt = timestamp
 
-        const content = parseInput(input.content, input.mimeType, asset.title)
-        const contentHash = sha256(content)
+        const contentHash = sha256(input.content)
         if (previousStatus === 'PROCESSED' && previousContentHash === contentHash) {
           asset.processStatus = previousStatus
           asset.updatedAt = previousUpdatedAt
           return
         }
 
+        const content = parseInput(input.content, input.mimeType, asset.title)
         const sections = parseTextSections(content)
         const extracted = this.extractor.extract(sections)
+        retireStaleDerivatives(draft, asset.id, evidenceKeys(sections), timestamp)
         asset.sections = sections
         asset.summary = summarizeSections(sections)
         asset.contentHash = contentHash
@@ -161,7 +163,9 @@ export class AssetService {
           // Candidate hashes are the idempotency key. This also prevents a
           // reprocess from creating a second Review for the same evidence.
           if (draft.candidates.some((candidate) => candidate.sourceAssetId === asset.id
-            && candidate.candidateHash === candidateHash)) continue
+            && candidate.candidateHash === candidateHash
+            && candidate.sourceLocator === extractedCandidate.sourceLocator
+            && candidate.sourceExcerpt === extractedCandidate.sourceExcerpt)) continue
 
           const match = this.retrieval.findMatch(extractedCandidate.content, draft.knowledge)
           const candidateId = createBusinessId('candidate')
@@ -222,9 +226,19 @@ export class AssetService {
       await this.repository.transact((draft) => {
         const asset = draft.assets.find((item) => item.id === id)
         if (!asset) return
+        const input = draft.assetInputs[id]
+        const failedContentHash = input ? sha256(input.content) : undefined
+        const timestamp = now()
+        if (failedContentHash !== undefined && failedContentHash !== asset.contentHash) {
+          retireStaleDerivatives(draft, asset.id, new Set(), timestamp)
+          asset.contentHash = failedContentHash
+          asset.sections = []
+          asset.summary = undefined
+          asset.processedAt = undefined
+        }
         asset.processStatus = 'FAILED'
         asset.errorMessage = errorMessage
-        asset.updatedAt = now()
+        asset.updatedAt = timestamp
       })
     }
 
@@ -244,8 +258,44 @@ function reviewTypeFor(relation: Relation): ReviewType {
 function detailFromSnapshot(snapshot: PlatformSnapshot, id: string): AssetDetail {
   const asset = snapshot.assets.find((item) => item.id === id)
   if (!asset) throw new Error('ASSET_NOT_FOUND')
-  const candidates = snapshot.candidates.filter((candidate) => candidate.sourceAssetId === id)
+  const currentEvidence = evidenceKeys(asset.sections)
+  const candidates = snapshot.candidates.filter((candidate) => candidate.sourceAssetId === id
+    && currentEvidence.has(evidenceKey(candidate.sourceLocator, candidate.sourceExcerpt)))
   const candidateIds = new Set(candidates.map((candidate) => candidate.id))
   const reviews = snapshot.reviews.filter((review) => review.candidateId !== undefined && candidateIds.has(review.candidateId))
   return { asset, candidates, reviews }
+}
+
+function evidenceKey(locator: string, excerpt: string) {
+  return `${locator}\u0000${excerpt}`
+}
+
+function evidenceKeys(sections: AssetSection[]) {
+  return new Set(sections.map((section) => evidenceKey(section.locator, section.excerpt)))
+}
+
+function retireStaleDerivatives(
+  draft: PlatformSnapshot,
+  assetId: string,
+  currentEvidence: Set<string>,
+  timestamp: string,
+) {
+  const staleCandidateIds = new Set<string>()
+  for (const candidate of draft.candidates) {
+    if (candidate.sourceAssetId !== assetId) continue
+    if (currentEvidence.has(evidenceKey(candidate.sourceLocator, candidate.sourceExcerpt))) continue
+
+    staleCandidateIds.add(candidate.id)
+    if (candidate.status === 'PENDING') {
+      candidate.status = 'REJECTED'
+      candidate.reviewRequired = false
+      candidate.reviewedAt = timestamp
+    }
+  }
+
+  for (const review of draft.reviews) {
+    if (review.candidateId && staleCandidateIds.has(review.candidateId) && review.status === 'PENDING') {
+      review.status = 'CANCELLED'
+    }
+  }
 }

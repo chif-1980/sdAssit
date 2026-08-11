@@ -13,7 +13,11 @@ export function normalizeKnowledgeText(value: string) {
   return value
     .normalize('NFKC')
     .toLocaleLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .replace(/≥/gu, '>=')
+    .replace(/≤/gu, '<=')
+    .split(/(>=|<=|>|<)/gu)
+    .map((part) => /^(?:>=|<=|>|<)$/u.test(part) ? part : part.replace(/[\s\p{P}\p{S}]+/gu, ''))
+    .join('')
 }
 
 function tokenSet(value: string) {
