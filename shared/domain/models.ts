@@ -146,6 +146,7 @@ export interface Citation {
   knowledgeId: string
   title: string
   assetId: string
+  assetOwnerId?: string
   locator: string
   excerpt: string
 }

@@ -515,6 +515,7 @@ Transition-specific behavior:
 1. Employee creates a Conversation.
 2. Employee asks a question.
 3. Retrieval considers only permitted, ACTIVE, AI-enabled, indexed Knowledge.
+   In V1, all authenticated Chat roles may consume this formal enterprise Knowledge. Authority ranks evidence reliability; it is not an access-classification level.
 4. The answer includes citations and source excerpts.
 5. Employee opens the source drawer and continues the conversation.
 

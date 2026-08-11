@@ -17,6 +17,14 @@ const createAssetBody = z.object({
   isSessionAsset: z.boolean().default(false),
 }).strict()
 
+const promoteAssetBody = z.object({
+  businessType: z.enum([
+    'PRODUCT_DOCUMENT', 'SOLUTION', 'POLICY', 'PROCESS', 'TRAINING',
+    'CUSTOMER_MEETING', 'INTERNAL_MEETING', 'PROJECT_DOCUMENT', 'OTHER',
+  ]),
+  ownerId: z.string().min(1),
+}).strict()
+
 function invalidRequest() {
   return new Error('INVALID_REQUEST')
 }
@@ -39,5 +47,12 @@ export function registerAssetRoutes(app: FastifyInstance, repository: PlatformRe
 
   app.post<{ Params: { assetId: string } }>('/api/assets/:assetId/process', async (request) => {
     return service.process(request.params.assetId)
+  })
+
+  app.post<{ Params: { assetId: string } }>('/api/assets/:assetId/promote', async (request) => {
+    const parsed = promoteAssetBody.safeParse(request.body)
+    if (!parsed.success) throw invalidRequest()
+    const result = await service.promote(request.params.assetId, parsed.data)
+    return { asset: result.asset }
   })
 }

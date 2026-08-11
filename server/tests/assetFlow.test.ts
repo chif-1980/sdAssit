@@ -17,7 +17,9 @@ const openApps: Awaited<ReturnType<typeof buildApp>>[] = []
 async function fixture(seed = seedSnapshot()) {
   const directory = await mkdtemp(join(tmpdir(), 'knowledge-asset-flow-'))
   temporaryDirectories.push(directory)
-  const repository = new JsonRepository(join(directory, 'snapshot.json'), seed)
+  const factorySeed = structuredClone(seed)
+  factorySeed.session = { userId: 'USR-OWNER', role: 'OWNER' }
+  const repository = new JsonRepository(join(directory, 'snapshot.json'), factorySeed)
   const app = buildApp(repository)
   await app.ready()
   openApps.push(app)
@@ -35,7 +37,7 @@ const validAsset = (content: string, overrides: Record<string, unknown> = {}) =>
   title: '私有化部署说明',
   assetType: 'DOCUMENT',
   businessType: 'PRODUCT_DOCUMENT',
-  ownerId: 'USR-EMPLOYEE',
+  ownerId: 'USR-OWNER',
   content,
   mimeType: 'text/plain',
   ...overrides,

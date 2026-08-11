@@ -29,6 +29,11 @@ export interface AssetDetail {
   reviews: Review[]
 }
 
+export interface PromoteAssetInput {
+  businessType: Exclude<BusinessType, 'SESSION_UPLOAD'>
+  ownerId: string
+}
+
 function now() {
   return new Date().toISOString()
 }
@@ -39,6 +44,12 @@ function sha256(value: string) {
 
 function unsupportedBinary() {
   return new Error('UNSUPPORTED_BINARY_FORMAT')
+}
+
+function assertAssetActor(snapshot: PlatformSnapshot, asset: Asset) {
+  if (snapshot.session.role === 'ADMIN') return
+  if (asset.ownerId !== snapshot.session.userId) throw new Error('FORBIDDEN')
+  if (snapshot.session.role === 'EMPLOYEE' && !asset.isSessionAsset) throw new Error('FORBIDDEN')
 }
 
 function parseInput(content: string, mimeType: string, title: string) {
@@ -69,7 +80,15 @@ export class AssetService {
 
   async create(input: CreateAssetInput) {
     return this.repository.transact((draft) => {
-      if (!draft.users.some((user) => user.id === input.ownerId)) throw new Error('OWNER_NOT_FOUND')
+      const owner = draft.users.find((user) => user.id === input.ownerId)
+      if (!owner) throw new Error('OWNER_NOT_FOUND')
+      if (input.isSessionAsset) {
+        if (input.ownerId !== draft.session.userId) throw new Error('FORBIDDEN')
+      } else {
+        if (draft.session.role === 'EMPLOYEE') throw new Error('FORBIDDEN')
+        if (draft.session.role === 'OWNER' && input.ownerId !== draft.session.userId) throw new Error('FORBIDDEN')
+        if (owner.role === 'EMPLOYEE') throw new Error('INVALID_REQUEST')
+      }
 
       const timestamp = now()
       const id = createBusinessId('asset')
@@ -98,7 +117,11 @@ export class AssetService {
 
   async list() {
     const snapshot = await this.repository.read()
-    return snapshot.assets.map((asset) => {
+    const visibleAssets = snapshot.session.role === 'ADMIN'
+      ? snapshot.assets
+      : snapshot.assets.filter((asset) => asset.ownerId === snapshot.session.userId
+        && (snapshot.session.role !== 'EMPLOYEE' || asset.isSessionAsset))
+    return visibleAssets.map((asset) => {
       const currentCandidates = visibleCandidatesForAsset(snapshot, asset)
       const currentCandidateIds = new Set(currentCandidates.map((candidate) => candidate.id))
       const {
@@ -118,12 +141,21 @@ export class AssetService {
 
   async detail(id: string): Promise<AssetDetail> {
     const snapshot = await this.repository.read()
+    const asset = snapshot.assets.find((item) => item.id === id)
+    if (!asset) throw new Error('ASSET_NOT_FOUND')
+    assertAssetActor(snapshot, asset)
     return detailFromSnapshot(snapshot, id)
   }
 
   async process(id: string): Promise<AssetDetail> {
+    return this.processAsset(id, false)
+  }
+
+  private async processAsset(id: string, bypassAccess: boolean): Promise<AssetDetail> {
     const before = await this.repository.read()
-    if (!before.assets.some((asset) => asset.id === id)) throw new Error('ASSET_NOT_FOUND')
+    const beforeAsset = before.assets.find((asset) => asset.id === id)
+    if (!beforeAsset) throw new Error('ASSET_NOT_FOUND')
+    if (!bypassAccess) assertAssetActor(before, beforeAsset)
 
     try {
       await this.repository.transact((draft) => {
@@ -148,8 +180,8 @@ export class AssetService {
 
         const content = parseInput(input.content, input.mimeType, asset.title)
         const sections = parseTextSections(content)
-        const extracted = this.extractor.extract(sections)
-        retireStaleDerivatives(draft, asset.id, evidenceKeys(sections), timestamp)
+        const extracted = asset.isSessionAsset ? [] : this.extractor.extract(sections)
+        retireStaleDerivatives(draft, asset.id, asset.isSessionAsset ? new Set() : evidenceKeys(sections), timestamp)
         asset.sections = sections
         asset.summary = summarizeSections(sections)
         asset.contentHash = contentHash
@@ -243,7 +275,37 @@ export class AssetService {
       })
     }
 
-    return this.detail(id)
+    if (!bypassAccess) return this.detail(id)
+    return detailFromSnapshot(await this.repository.read(), id)
+  }
+
+  async promote(id: string, input: PromoteAssetInput): Promise<AssetDetail> {
+    await this.repository.transact((draft) => {
+      const asset = draft.assets.find((item) => item.id === id)
+      if (!asset) throw new Error('ASSET_NOT_FOUND')
+      if (asset.ownerId !== draft.session.userId && draft.session.role !== 'ADMIN') throw new Error('FORBIDDEN')
+      if (!asset.isSessionAsset) throw new Error('ASSET_ALREADY_PROMOTED')
+      if (asset.processStatus !== 'PROCESSED') throw new Error('ASSET_NOT_PROCESSED')
+      const owner = draft.users.find((user) => user.id === input.ownerId)
+      if (!owner) throw new Error('OWNER_NOT_FOUND')
+      if (owner.role === 'EMPLOYEE') throw new Error('INVALID_REQUEST')
+
+      asset.isSessionAsset = false
+      asset.businessType = input.businessType
+      asset.ownerId = input.ownerId
+      asset.authority = 'L1'
+      asset.expiresAt = undefined
+      asset.processStatus = 'NEW'
+      asset.processedAt = undefined
+      asset.contentHash = undefined
+      asset.errorMessage = undefined
+      asset.updatedAt = now()
+      for (const conversation of draft.conversations) {
+        conversation.sessionAssetIds = conversation.sessionAssetIds.filter((assetId) => assetId !== asset.id)
+      }
+    })
+
+    return this.processAsset(id, true)
   }
 }
 

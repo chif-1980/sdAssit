@@ -136,6 +136,7 @@ const citationSchema = z.object({
   knowledgeId: z.string(),
   title: z.string(),
   assetId: z.string(),
+  assetOwnerId: z.string().optional(),
   locator: z.string(),
   excerpt: z.string(),
 }).strict()
