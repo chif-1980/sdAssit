@@ -60,10 +60,18 @@ describe('ChatPage', () => {
     await userEvent.click(openButton)
     expect(openButton).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByLabelText('会话历史')).toHaveClass('mobile-open')
+    const closeButton = screen.getByRole('button', { name: '关闭会话列表' })
+    expect(closeButton).toHaveFocus()
 
-    await userEvent.click(screen.getByRole('button', { name: '关闭会话列表' }))
+    await userEvent.click(closeButton)
     expect(openButton).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByLabelText('会话历史')).not.toHaveClass('mobile-open')
+    expect(openButton).toHaveFocus()
+
+    await userEvent.click(openButton)
+    await userEvent.click(screen.getByRole('button', { name: '新对话' }))
+    expect(openButton).toHaveAttribute('aria-expanded', 'false')
+    expect(openButton).toHaveFocus()
   })
 
   it('creates a conversation, keeps message order, and opens a citation source drawer', async () => {

@@ -80,6 +80,8 @@ export function ChatPage() {
   const [promoteOwnerId, setPromoteOwnerId] = useState('')
   const contextVersionRef = useRef(0)
   const activeUserIdRef = useRef(user?.id)
+  const conversationTriggerRef = useRef<HTMLButtonElement>(null)
+  const conversationCloseRef = useRef<HTMLButtonElement>(null)
   activeUserIdRef.current = user?.id
 
   const loadDetail = useCallback(async (id: string) => {
@@ -150,9 +152,22 @@ export function ChatPage() {
     if (!factoryOwners.some((owner) => owner.id === promoteOwnerId)) setPromoteOwnerId(factoryOwners[0]?.id ?? '')
   }, [factoryOwners, promoteOwnerId])
 
+  useEffect(() => {
+    if (conversationListOpen) conversationCloseRef.current?.focus()
+  }, [conversationListOpen])
+
+  function openConversationList() {
+    setConversationListOpen(true)
+  }
+
+  function closeConversationList() {
+    setConversationListOpen(false)
+    conversationTriggerRef.current?.focus()
+  }
+
   async function selectConversation(item: Conversation) {
     if (navigationLocked) return
-    setConversationListOpen(false)
+    closeConversationList()
     const version = ++contextVersionRef.current
     const actorId = user?.id
     setErrorText(undefined)
@@ -177,7 +192,7 @@ export function ChatPage() {
 
   function startConversation() {
     if (navigationLocked) return
-    setConversationListOpen(false)
+    closeConversationList()
     contextVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
@@ -384,7 +399,7 @@ export function ChatPage() {
             type="button"
             className={conversationListOpen ? 'conversation-backdrop is-open' : 'conversation-backdrop'}
             aria-label="关闭会话列表遮罩"
-            onClick={() => setConversationListOpen(false)}
+            onClick={closeConversationList}
           />
           <aside
             id="conversation-sidebar"
@@ -393,7 +408,7 @@ export function ChatPage() {
           >
             <div className="sidebar-product-title">
               <div><h1>知识问答</h1><p>企业知识助手</p></div>
-              <button type="button" className="icon-button conversation-sidebar-close" aria-label="关闭会话列表" onClick={() => setConversationListOpen(false)}><X aria-hidden="true" size={17} /></button>
+              <button ref={conversationCloseRef} type="button" className="icon-button conversation-sidebar-close" aria-label="关闭会话列表" onClick={closeConversationList}><X aria-hidden="true" size={17} /></button>
             </div>
             <div className="sidebar-heading"><h2>会话</h2><button type="button" className="icon-button" aria-label="新对话" disabled={navigationLocked} onClick={startConversation}><Plus aria-hidden="true" size={17} /></button></div>
             {visibleConversations.length ? <ul>{visibleConversations.map((item) => <li key={item.id}><button type="button" disabled={navigationLocked} className={item.id === activeConversationId ? 'conversation-link active' : 'conversation-link'} onClick={() => void selectConversation(item)}>{item.title}</button></li>)}</ul> : <p className="inline-empty">暂无历史会话</p>}
@@ -402,12 +417,13 @@ export function ChatPage() {
             <header className="chat-conversation-header">
               <div className="chat-conversation-title">
                 <button
+                  ref={conversationTriggerRef}
                   type="button"
                   className="icon-button conversation-drawer-trigger"
                   aria-label="打开会话列表"
                   aria-controls="conversation-sidebar"
                   aria-expanded={conversationListOpen}
-                  onClick={() => setConversationListOpen(true)}
+                  onClick={openConversationList}
                 ><PanelLeft aria-hidden="true" size={17} /></button>
                 <strong>{conversation?.title ?? '新对话'}</strong>
               </div>
