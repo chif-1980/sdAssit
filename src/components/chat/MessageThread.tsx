@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 import type { ConversationMessage } from '../../../shared/domain/models.js'
 
 interface MessageThreadProps {
@@ -6,6 +8,13 @@ interface MessageThreadProps {
 }
 
 export function MessageThread({ messages, onCitation }: MessageThreadProps) {
+  const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const end = endRef.current
+    if (typeof end?.scrollIntoView === 'function') end.scrollIntoView({ block: 'end' })
+  }, [messages])
+
   return (
     <div className="message-thread" aria-label="消息线程">
       {messages.map((message) => (
@@ -29,6 +38,7 @@ export function MessageThread({ messages, onCitation }: MessageThreadProps) {
           ) : null}
         </article>
       ))}
+      <div ref={endRef} aria-hidden="true" />
     </div>
   )
 }
