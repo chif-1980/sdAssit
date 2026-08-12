@@ -10,6 +10,12 @@ export function ProductShell() {
   const { status, user, users, switchRole, reload } = useSession()
   const canUseFactory = user?.role === 'OWNER' || user?.role === 'ADMIN'
   const inFactory = location.pathname.startsWith('/factory') && canUseFactory
+  const inChat = location.pathname === '/chat'
+  const shellClassName = inFactory
+    ? 'product-shell factory-mode'
+    : inChat
+      ? 'product-shell chat-mode'
+      : 'product-shell'
 
   if (status === 'loading') {
     return <main className="center-state" aria-label="正在加载"><span className="spinner" /></main>
@@ -28,7 +34,7 @@ export function ProductShell() {
   }
 
   return (
-    <div className={inFactory ? 'product-shell factory-mode' : 'product-shell'}>
+    <div className={shellClassName}>
       <header className="topbar">
         <Link className="brand" to="/chat" aria-label="Knowledge AI">
           <span className="brand-mark"><Bot aria-hidden="true" size={18} /></span>

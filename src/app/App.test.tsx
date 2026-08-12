@@ -74,6 +74,7 @@ describe('role-aware application routes', () => {
     renderAt('/', 'EMPLOYEE')
 
     expect(await screen.findByRole('heading', { level: 1, name: '知识问答' })).toBeInTheDocument()
+    expect(document.querySelector('.product-shell')).toHaveClass('chat-mode')
     expect(screen.queryByText('Knowledge Factory')).not.toBeInTheDocument()
     expect(window.location.pathname).toBe('/chat')
   })

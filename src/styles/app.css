@@ -19,6 +19,17 @@ button { cursor: pointer; }
 }
 
 .product-shell.factory-mode { grid-template-columns: 208px minmax(0, 1fr); }
+.product-shell.chat-mode {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.product-shell.chat-mode .topbar { border-bottom-color: transparent; }
+.product-shell.chat-mode .page-content {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
 .topbar {
   grid-column: 1 / -1;
   display: flex;
