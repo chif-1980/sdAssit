@@ -38,17 +38,32 @@ afterEach(() => {
 })
 
 describe('ChatPage', () => {
-  it('shows a centered composer when there is no conversation history', async () => {
+  it('keeps the workspace and bottom composer visible for a new conversation', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ conversations: [] })))
 
     renderPage()
 
-    expect(await screen.findByRole('heading', { name: '知识问答' })).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('输入你的问题')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '发送' })).toBeInTheDocument()
-    expect(screen.getByLabelText('回答范围')).toHaveValue('ENTERPRISE')
-    expect(screen.queryByLabelText('会话历史')).not.toBeInTheDocument()
-    expect(screen.queryByText('从一个问题开始')).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: '知识问答' })).toBeInTheDocument()
+    expect(screen.getByLabelText('会话历史')).toBeInTheDocument()
+    expect(screen.getByLabelText('消息滚动区域')).toBeInTheDocument()
+    expect(screen.getByLabelText('底部输入区')).toContainElement(screen.getByPlaceholderText('输入你的问题'))
+    expect(screen.getByText('从一个问题开始')).toBeInTheDocument()
+  })
+
+  it('opens and closes the mobile conversation drawer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ conversations: [] })))
+
+    renderPage()
+    const openButton = await screen.findByRole('button', { name: '打开会话列表' })
+    expect(openButton).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(openButton)
+    expect(openButton).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByLabelText('会话历史')).toHaveClass('mobile-open')
+
+    await userEvent.click(screen.getByRole('button', { name: '关闭会话列表' }))
+    expect(openButton).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByLabelText('会话历史')).not.toHaveClass('mobile-open')
   })
 
   it('creates a conversation, keeps message order, and opens a citation source drawer', async () => {

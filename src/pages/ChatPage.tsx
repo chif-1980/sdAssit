@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, Plus, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Archive, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Asset, Conversation, ConversationMessage, Citation } from '../../shared/domain/models.js'
@@ -70,6 +70,7 @@ export function ChatPage() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const [conversationListOpen, setConversationListOpen] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<Citation>()
   const [attachments, setAttachments] = useState<SessionAttachment[]>([])
   const [pendingUploads, setPendingUploads] = useState(0)
@@ -96,6 +97,7 @@ export function ChatPage() {
     setErrorText(undefined)
     setSending(false)
     setArchiving(false)
+    setConversationListOpen(false)
     setPendingUploads(0)
     setLoadingConversation(false)
     setPromotingAssetId(undefined)
@@ -150,6 +152,7 @@ export function ChatPage() {
 
   async function selectConversation(item: Conversation) {
     if (navigationLocked) return
+    setConversationListOpen(false)
     const version = ++contextVersionRef.current
     const actorId = user?.id
     setErrorText(undefined)
@@ -174,6 +177,7 @@ export function ChatPage() {
 
   function startConversation() {
     if (navigationLocked) return
+    setConversationListOpen(false)
     contextVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
@@ -369,52 +373,60 @@ export function ChatPage() {
 
   return (
     <section className="chat-page">
-      <div className="chat-page-heading">
-        <div>
-          <h1>知识问答</h1>
-          <p>基于已验证企业知识回答，并保留可追溯来源。</p>
-        </div>
-        <button type="button" className="secondary-button" disabled={navigationLocked} onClick={startConversation}>
-          <Plus aria-hidden="true" size={16} />
-          新对话
-        </button>
-      </div>
       {errorText ? <p className="error-banner"><AlertTriangle aria-hidden="true" size={16} />{errorText}</p> : null}
       {status === 'loading' || status === 'error' || status === 'forbidden' ? (
         <AsyncState status={status} emptyTitle="还没有会话" errorTitle="会话加载失败" onRetry={() => void load()}>
           <div />
         </AsyncState>
-      ) : conversation ? (
+      ) : (
         <div className={selectedCitation ? 'chat-layout source-open' : 'chat-layout'}>
-          <aside className="conversation-sidebar" aria-label="会话历史">
-            <div className="sidebar-heading"><h2>会话历史</h2><button type="button" className="icon-button" aria-label="新对话" disabled={navigationLocked} onClick={startConversation}><Plus aria-hidden="true" size={17} /></button></div>
+          <button
+            type="button"
+            className={conversationListOpen ? 'conversation-backdrop is-open' : 'conversation-backdrop'}
+            aria-label="关闭会话列表遮罩"
+            onClick={() => setConversationListOpen(false)}
+          />
+          <aside
+            id="conversation-sidebar"
+            className={conversationListOpen ? 'conversation-sidebar mobile-open' : 'conversation-sidebar'}
+            aria-label="会话历史"
+          >
+            <div className="sidebar-product-title">
+              <div><h1>知识问答</h1><p>企业知识助手</p></div>
+              <button type="button" className="icon-button conversation-sidebar-close" aria-label="关闭会话列表" onClick={() => setConversationListOpen(false)}><X aria-hidden="true" size={17} /></button>
+            </div>
+            <div className="sidebar-heading"><h2>会话</h2><button type="button" className="icon-button" aria-label="新对话" disabled={navigationLocked} onClick={startConversation}><Plus aria-hidden="true" size={17} /></button></div>
             {visibleConversations.length ? <ul>{visibleConversations.map((item) => <li key={item.id}><button type="button" disabled={navigationLocked} className={item.id === activeConversationId ? 'conversation-link active' : 'conversation-link'} onClick={() => void selectConversation(item)}>{item.title}</button></li>)}</ul> : <p className="inline-empty">暂无历史会话</p>}
           </aside>
-          <section className="chat-main active" aria-label="对话工作区">
-            <div className="chat-content">
-              <div className="chat-conversation-header">
-                <strong>{conversation.title}</strong>
-                {conversation.status === 'ACTIVE' ? <button type="button" className="secondary-button" disabled={navigationLocked} onClick={() => void archiveConversation()}><Archive aria-hidden="true" size={16} />归档会话</button> : <span className="status-chip">已归档</span>}
+          <section className="chat-main" aria-label="对话工作区">
+            <header className="chat-conversation-header">
+              <div className="chat-conversation-title">
+                <button
+                  type="button"
+                  className="icon-button conversation-drawer-trigger"
+                  aria-label="打开会话列表"
+                  aria-controls="conversation-sidebar"
+                  aria-expanded={conversationListOpen}
+                  onClick={() => setConversationListOpen(true)}
+                ><PanelLeft aria-hidden="true" size={17} /></button>
+                <strong>{conversation?.title ?? '新对话'}</strong>
               </div>
+              {conversation?.status === 'ACTIVE' ? <button type="button" className="secondary-button" disabled={navigationLocked} onClick={() => void archiveConversation()}><Archive aria-hidden="true" size={16} />归档会话</button> : null}
+              {conversation?.status === 'ARCHIVED' ? <span className="status-chip">已归档</span> : null}
+            </header>
+            <div className="chat-message-scroll" aria-label="消息滚动区域">
               {messages.length ? <MessageThread messages={messages} onCitation={setSelectedCitation} /> : (
                 <div className="chat-empty"><Archive aria-hidden="true" size={28} /><h2>从一个问题开始</h2><p>提问后，回答会显示在这里，并附带可核验来源。</p></div>
               )}
+              {status === 'ready' && conversation?.status === 'ARCHIVED' ? <p className="inline-empty">此会话已归档。</p> : null}
+              {status === 'ready' && conversation && sending ? <p className="chat-loading"><RefreshCw aria-hidden="true" size={14} />正在生成回答</p> : null}
             </div>
             {promotePanel}
-            {composer}
+            <div className="chat-composer-dock" aria-label="底部输入区">{composer}</div>
           </section>
           <SourceDrawer citation={selectedCitation} canViewAsset={canViewFactoryAsset} onClose={() => setSelectedCitation(undefined)} />
         </div>
-      ) : (
-        <div className="chat-start" aria-label="新对话">
-          <div className="chat-start-content">
-            {composer}
-            {promotePanel}
-          </div>
-        </div>
       )}
-      {status === 'ready' && conversation?.status === 'ARCHIVED' ? <p className="inline-empty">此会话已归档。</p> : null}
-      {status === 'ready' && conversation && sending ? <p className="chat-loading"><RefreshCw aria-hidden="true" size={14} />正在生成回答</p> : null}
     </section>
   )
 }
