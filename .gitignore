@@ -5,3 +5,4 @@ data/knowledge-platform.json
 *.tsbuildinfo
 .DS_Store
 .env
+.worktrees/
