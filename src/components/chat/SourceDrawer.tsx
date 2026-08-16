@@ -5,16 +5,24 @@ import type { ProductCitation } from '../../../shared/api/product.js'
 
 interface SourceDrawerProps {
   citation?: ProductCitation
+  modal: boolean
   onClose: () => void
 }
 
-export function SourceDrawer({ citation, onClose }: SourceDrawerProps) {
+export function SourceDrawer({ citation, modal, onClose }: SourceDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const previousModalRef = useRef(modal)
 
   useEffect(() => {
     if (citation) closeRef.current?.focus()
   }, [citation])
+
+  useEffect(() => {
+    const becameModal = modal && !previousModalRef.current
+    previousModalRef.current = modal
+    if (citation && becameModal) closeRef.current?.focus()
+  }, [citation, modal])
 
   if (!citation) return null
 
@@ -24,7 +32,7 @@ export function SourceDrawer({ citation, onClose }: SourceDrawerProps) {
       id="source-drawer"
       className="source-drawer"
       role="dialog"
-      aria-modal="true"
+      aria-modal={modal ? 'true' : undefined}
       aria-label="来源详情"
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -32,7 +40,7 @@ export function SourceDrawer({ citation, onClose }: SourceDrawerProps) {
           onClose()
           return
         }
-        if (event.key !== 'Tab') return
+        if (!modal || event.key !== 'Tab') return
         const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>(
           'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ) ?? [])

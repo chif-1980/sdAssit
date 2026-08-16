@@ -259,12 +259,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .chat-empty h2 { margin: 0; color: #1f2937; font-size: 18px; }
 .chat-empty p { margin: 0; font-size: 13px; }
 .message-thread { width: min(820px, 100%); display: grid; align-content: start; gap: 24px; margin: 0 auto; padding: 0; overflow: visible; }
-.message-bubble { max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.message-bubble { min-width: 0; max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .message-user { max-width: min(76%, 680px); justify-self: end; padding: 10px 13px; border-radius: 8px; background: #eaf2ff; }
 .message-assistant { justify-self: stretch; }
 .message-role { margin-bottom: 7px; color: #697586; font-size: 11px; font-weight: 700; }
 .message-assistant .message-role { color: #3b74d7; }
-.message-bubble p { margin: 0; line-height: 1.75; white-space: pre-wrap; }
+.message-bubble p { margin: 0; overflow-wrap: anywhere; line-height: 1.75; white-space: pre-wrap; }
 .answer-status {
   display: inline-block;
   margin: 0 0 8px;
@@ -311,9 +311,10 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 .chat-error button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 0; color: #8f1b15; background: transparent; font-weight: 700; }
 .source-drawer { padding: 18px; overflow: auto; }
-.source-drawer-content { display: grid; align-content: start; gap: 12px; padding-top: 18px; }
+.source-drawer-content { min-width: 0; display: grid; align-content: start; gap: 12px; padding-top: 18px; }
 .source-drawer-content h3 { margin: 0; font-size: 16px; }
 .source-drawer-content p { margin: 0; line-height: 1.7; }
+.source-drawer-content h3, .source-drawer-content p { overflow-wrap: anywhere; }
 .source-drawer-content .secondary-button { justify-self: start; }
 .source-path, .source-line { color: #697586; font-size: 13px; }
 .chat-loading { min-height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; color: #697586; font-size: 12px; }

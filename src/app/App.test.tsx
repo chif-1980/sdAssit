@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
@@ -81,5 +82,66 @@ describe('authenticated product routes', () => {
 
     expect(await screen.findByRole('textbox', { name: '问题' })).toBeInTheDocument()
     await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  })
+
+  it.each(['network rejection', '5xx response'] as const)('handles a %s during logout and allows a successful retry', async (failureKind) => {
+    const user = userEvent.setup()
+    let logoutAttempts = 0
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const path = String(input)
+      if (path === '/api/session') return Promise.resolve(jsonResponse({ user: productUser }))
+      if (path === '/api/chat/conversations') return Promise.resolve(jsonResponse({ conversations: [] }))
+      if (path === '/api/auth/logout') {
+        logoutAttempts += 1
+        if (logoutAttempts === 1) {
+          return failureKind === 'network rejection'
+            ? Promise.reject(new Error('connection reset'))
+            : Promise.resolve(jsonResponse({ error: { code: 'LOGOUT_FAILED', message: 'internal detail' } }, 503))
+        }
+        return Promise.resolve(jsonResponse({}))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderAt('/chat')
+    await screen.findByRole('textbox', { name: '问题' })
+    const logoutButton = screen.getByRole('button', { name: '退出登录' })
+
+    await user.click(logoutButton)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('退出失败，请重试')
+    expect(logoutButton).toBeEnabled()
+    expect(screen.getByText('陈晨')).toBeInTheDocument()
+    await user.click(logoutButton)
+    expect(await screen.findByRole('link', { name: '使用飞书登录' })).toBeInTheDocument()
+    expect(logoutAttempts).toBe(2)
+  })
+
+  it('disables logout while the request is pending and ignores repeated clicks', async () => {
+    const user = userEvent.setup()
+    let resolveLogout!: (response: Response) => void
+    const pendingLogout = new Promise<Response>((resolve) => { resolveLogout = resolve })
+    let logoutAttempts = 0
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      const path = String(input)
+      if (path === '/api/session') return Promise.resolve(jsonResponse({ user: productUser }))
+      if (path === '/api/chat/conversations') return Promise.resolve(jsonResponse({ conversations: [] }))
+      if (path === '/api/auth/logout') {
+        logoutAttempts += 1
+        return pendingLogout
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    }))
+    renderAt('/chat')
+    await screen.findByRole('textbox', { name: '问题' })
+    const logoutButton = screen.getByRole('button', { name: '退出登录' })
+
+    await user.click(logoutButton)
+
+    expect(logoutButton).toBeDisabled()
+    await user.click(logoutButton)
+    expect(logoutAttempts).toBe(1)
+    resolveLogout(jsonResponse({}))
+    expect(await screen.findByRole('link', { name: '使用飞书登录' })).toBeInTheDocument()
   })
 })

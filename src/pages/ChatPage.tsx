@@ -42,6 +42,7 @@ export function ChatPage() {
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
+  const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
   const citationTriggerRef = useRef<HTMLButtonElement>()
@@ -86,6 +87,22 @@ export function ChatPage() {
   useEffect(() => {
     if (conversationListOpen) conversationCloseRef.current?.focus()
   }, [conversationListOpen])
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mediaQuery = window.matchMedia('(max-width: 1024px)')
+    const syncModalState = () => setSourceDrawerModal(mediaQuery.matches)
+    syncModalState()
+    mediaQuery.addEventListener('change', syncModalState)
+    return () => mediaQuery.removeEventListener('change', syncModalState)
+  }, [])
+
+  useEffect(() => {
+    if (selectedCitation || !citationTriggerRef.current) return
+    const trigger = citationTriggerRef.current
+    citationTriggerRef.current = undefined
+    trigger.focus()
+  }, [selectedCitation])
 
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const switchLocked = sending || archiving
@@ -226,15 +243,18 @@ export function ChatPage() {
   function closeCitation() {
     citationVersionRef.current += 1
     setSelectedCitation(undefined)
-    citationTriggerRef.current?.focus()
   }
 
+  const sourceBackgroundInert = Boolean(selectedCitation && sourceDrawerModal)
+  const sourceBackgroundProps = sourceBackgroundInert ? { inert: '' } : {}
+
   return (
-    <ProductShell>
+    <ProductShell headerInert={sourceBackgroundInert}>
       <section className="chat-page" aria-label="企业知识助手工作区">
         <div className={`chat-layout${selectedCitation ? ' source-open' : ''}`}>
           <aside
             ref={conversationSidebarRef}
+            {...sourceBackgroundProps}
             id="conversation-sidebar"
             className={`conversation-sidebar${conversationListOpen ? ' mobile-open' : ''}`}
             aria-label="对话列表"
@@ -274,7 +294,7 @@ export function ChatPage() {
             </ul>
           </aside>
 
-          <main className="chat-main">
+          <main className="chat-main" {...sourceBackgroundProps}>
             <header className="chat-conversation-header">
               <button
                 ref={conversationTriggerRef}
@@ -348,7 +368,7 @@ export function ChatPage() {
             </div>
           </main>
 
-          <SourceDrawer citation={selectedCitation} onClose={closeCitation} />
+          <SourceDrawer citation={selectedCitation} modal={sourceDrawerModal} onClose={closeCitation} />
         </div>
         <button
           type="button"

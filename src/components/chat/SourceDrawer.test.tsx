@@ -19,9 +19,10 @@ afterEach(cleanup)
 
 describe('SourceDrawer', () => {
   it('shows source details and always links to the Feishu original', () => {
-    render(<SourceDrawer citation={citation} onClose={vi.fn()} />)
+    render(<SourceDrawer citation={citation} modal={false} onClose={vi.fn()} />)
 
     expect(screen.getByRole('dialog', { name: '来源详情' })).toHaveAttribute('id', 'source-drawer')
+    expect(screen.getByRole('dialog', { name: '来源详情' })).not.toHaveAttribute('aria-modal')
     expect(screen.getByRole('heading', { name: '标准部署要求' })).toBeInTheDocument()
     expect(screen.getByText('技术中心 / 部署手册')).toBeInTheDocument()
     expect(screen.getByText('第 4 页')).toBeInTheDocument()
@@ -33,7 +34,7 @@ describe('SourceDrawer', () => {
   it('offers an accessible close action', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
-    render(<SourceDrawer citation={citation} onClose={onClose} />)
+    render(<SourceDrawer citation={citation} modal={false} onClose={onClose} />)
 
     await user.click(screen.getByRole('button', { name: '关闭来源' }))
 
@@ -43,7 +44,7 @@ describe('SourceDrawer', () => {
   it('moves focus inside, contains Tab navigation, and closes with Escape', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
-    render(<SourceDrawer citation={citation} onClose={onClose} />)
+    render(<SourceDrawer citation={citation} modal onClose={onClose} />)
 
     const close = screen.getByRole('button', { name: '关闭来源' })
     const originalLink = screen.getByRole('link', { name: '打开飞书原文' })
@@ -56,5 +57,20 @@ describe('SourceDrawer', () => {
     await user.keyboard('{Escape}')
 
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trap focus when rendered as a desktop side panel', async () => {
+    const user = userEvent.setup()
+    render(
+      <>
+        <button type="button">外部操作</button>
+        <SourceDrawer citation={citation} modal={false} onClose={vi.fn()} />
+      </>,
+    )
+
+    expect(screen.getByRole('button', { name: '关闭来源' })).toHaveFocus()
+    await user.tab({ shift: true })
+
+    expect(screen.getByRole('button', { name: '外部操作' })).toHaveFocus()
   })
 })

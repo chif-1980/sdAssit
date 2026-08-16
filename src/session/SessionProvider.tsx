@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { ProductUser } from '../../shared/api/product.js'
 import { api, ApiError } from '../api/client'
@@ -21,15 +21,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<ProductUser>()
   const [status, setStatus] = useState<SessionContextValue['status']>('loading')
   const [error, setError] = useState<Error>()
+  const requestGenerationRef = useRef(0)
+  const mountedRef = useRef(false)
 
   const reload = useCallback(async () => {
+    const generation = ++requestGenerationRef.current
+    if (!mountedRef.current) return
     setStatus('loading')
     setError(undefined)
     try {
       const payload = await api<SessionPayload>('/api/session')
+      if (!mountedRef.current || requestGenerationRef.current !== generation) return
       setUser(payload.user)
       setStatus('authenticated')
     } catch (cause) {
+      if (!mountedRef.current || requestGenerationRef.current !== generation) return
       setUser(undefined)
       if (cause instanceof ApiError && cause.status === 401) {
         setStatus('anonymous')
@@ -41,11 +47,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
     void reload()
+    return () => {
+      mountedRef.current = false
+      requestGenerationRef.current += 1
+    }
   }, [reload])
 
   const logout = useCallback(async () => {
+    requestGenerationRef.current += 1
     await api('/api/auth/logout', { method: 'POST' })
+    requestGenerationRef.current += 1
+    if (!mountedRef.current) return
     setUser(undefined)
     setError(undefined)
     setStatus('anonymous')

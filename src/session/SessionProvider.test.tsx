@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionProvider, useSession } from './SessionProvider'
@@ -14,6 +15,12 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 function SessionConsumer() {
@@ -117,5 +124,95 @@ describe('SessionProvider', () => {
       credentials: 'include',
     }))
     expect(screen.queryByText('陈晨')).not.toBeInTheDocument()
+  })
+
+  it('keeps the newest reload result when concurrent requests finish in reverse order', async () => {
+    const olderReload = deferred<Response>()
+    const newerReload = deferred<Response>()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401))
+      .mockImplementationOnce(() => olderReload.promise)
+      .mockImplementationOnce(() => newerReload.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    renderSession()
+    await waitFor(() => expect(screen.getByLabelText('会话状态')).toHaveTextContent('anonymous'))
+
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }))
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }))
+    await act(async () => {
+      newerReload.resolve(jsonResponse({ user: productUser }))
+      await newerReload.promise
+    })
+    await waitFor(() => expect(screen.getByLabelText('会话状态')).toHaveTextContent('authenticated'))
+
+    await act(async () => {
+      olderReload.resolve(jsonResponse({ error: { code: 'SERVICE_UNAVAILABLE', message: '迟到错误' } }, 503))
+      await olderReload.promise
+    })
+
+    expect(screen.getByLabelText('会话状态')).toHaveTextContent('authenticated')
+    expect(screen.getByText('陈晨')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('ignores the first StrictMode request after effect cleanup', async () => {
+    const staleRequest = deferred<Response>()
+    const currentRequest = deferred<Response>()
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => staleRequest.promise)
+      .mockImplementationOnce(() => currentRequest.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <StrictMode>
+        <SessionProvider><SessionConsumer /></SessionProvider>
+      </StrictMode>,
+    )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      currentRequest.resolve(jsonResponse({ user: productUser }))
+      await currentRequest.promise
+    })
+    await waitFor(() => expect(screen.getByLabelText('会话状态')).toHaveTextContent('authenticated'))
+
+    await act(async () => {
+      staleRequest.resolve(jsonResponse({ error: { code: 'SERVICE_UNAVAILABLE', message: 'StrictMode 迟到错误' } }, 503))
+      await staleRequest.promise
+    })
+
+    expect(screen.getByLabelText('会话状态')).toHaveTextContent('authenticated')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('invalidates a pending session request when logout starts', async () => {
+    const staleSession = deferred<Response>()
+    const pendingLogout = deferred<Response>()
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const path = String(input)
+      if (path === '/api/session' && fetchMock.mock.calls.filter(([value]) => String(value) === '/api/session').length === 1) {
+        return Promise.resolve(jsonResponse({ user: productUser }))
+      }
+      if (path === '/api/session') return staleSession.promise
+      if (path === '/api/auth/logout') return pendingLogout.promise
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderSession()
+    await screen.findByText('陈晨')
+
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }))
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }))
+    await act(async () => {
+      staleSession.resolve(jsonResponse({ error: { code: 'SERVICE_UNAVAILABLE', message: '退出期间迟到错误' } }, 503))
+      await staleSession.promise
+    })
+    expect(screen.getByLabelText('会话状态')).toHaveTextContent('loading')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await act(async () => {
+      pendingLogout.resolve(jsonResponse({}))
+      await pendingLogout.promise
+    })
+    await waitFor(() => expect(screen.getByLabelText('会话状态')).toHaveTextContent('anonymous'))
   })
 })

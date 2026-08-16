@@ -78,6 +78,27 @@ function emptyWorkspaceFetch() {
   })
 }
 
+function stubMatchMedia(matches: boolean) {
+  let currentMatches = matches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
+  const mediaQuery = {
+    get matches() { return currentMatches },
+    media: '(max-width: 1024px)',
+    onchange: null,
+    addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener)),
+    removeEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener)),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    setMatches(nextMatches: boolean) {
+      currentMatches = nextMatches
+      listeners.forEach((listener) => listener({ matches: nextMatches, media: mediaQuery.media } as MediaQueryListEvent))
+    },
+  }
+  vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery))
+  return mediaQuery
+}
+
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
@@ -361,13 +382,125 @@ describe('ChatPage product workspace', () => {
     await user.click(trigger)
 
     const drawer = await screen.findByRole('dialog', { name: '来源详情' })
+    const topbar = document.querySelector('.assistant-topbar')
     expect(drawer).toHaveAttribute('id', 'source-drawer')
+    expect(drawer).not.toHaveAttribute('aria-modal')
+    expect(topbar).not.toHaveAttribute('inert')
+    expect(screen.getByRole('button', { name: '退出登录' }).closest('[inert]')).toBeNull()
+    expect(screen.getByLabelText('对话列表')).not.toHaveAttribute('inert')
+    expect(document.querySelector('.chat-main')).not.toHaveAttribute('inert')
     expect(drawer).toHaveTextContent('飞书中的完整来源')
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
     expect(fetchMock).toHaveBeenCalledWith('/api/citations/CIT-1', expect.any(Object))
     await user.click(screen.getByRole('button', { name: '关闭来源' }))
     expect(trigger).toHaveFocus()
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('makes the source drawer modal and the background inert at the responsive breakpoint', async () => {
+    const user = userEvent.setup()
+    stubMatchMedia(true)
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, citations: [citation] }]))
+      }
+      if (path === '/api/citations/CIT-1') return jsonResponse(citation)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    const topbar = document.querySelector('.assistant-topbar')
+    const logoutButton = screen.getByRole('button', { name: '退出登录' })
+
+    await user.click(await screen.findByRole('button', { name: '[1]' }))
+
+    expect(await screen.findByRole('dialog', { name: '来源详情' })).toHaveAttribute('aria-modal', 'true')
+    expect(topbar).toHaveAttribute('inert')
+    expect(logoutButton.closest('[inert]')).toBe(topbar)
+    expect(document.querySelector('.page-content')).not.toHaveAttribute('inert')
+    expect(screen.getByLabelText('对话列表')).toHaveAttribute('inert')
+    expect(document.querySelector('.chat-main')).toHaveAttribute('inert')
+    expect(document.querySelector('.conversation-backdrop')).not.toHaveClass('is-open')
+  })
+
+  it('removes background inertness before restoring citation focus on mobile close', async () => {
+    const user = userEvent.setup()
+    stubMatchMedia(true)
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, citations: [citation] }]))
+      }
+      if (path === '/api/citations/CIT-1') return jsonResponse(citation)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    const trigger = await screen.findByRole('button', { name: '[1]' })
+    await user.click(trigger)
+    await screen.findByRole('dialog', { name: '来源详情' })
+    const chatMain = document.querySelector('.chat-main')
+    const topbar = document.querySelector('.assistant-topbar')
+    expect(chatMain).toHaveAttribute('inert')
+    expect(topbar).toHaveAttribute('inert')
+    let focusCalledWhileInert: boolean | undefined
+    const focusTrigger = trigger.focus.bind(trigger)
+    vi.spyOn(trigger, 'focus').mockImplementation(() => {
+      focusCalledWhileInert = chatMain?.hasAttribute('inert')
+      focusTrigger()
+    })
+
+    await user.click(screen.getByRole('button', { name: '关闭来源' }))
+
+    expect(screen.getByLabelText('对话列表')).not.toHaveAttribute('inert')
+    expect(chatMain).not.toHaveAttribute('inert')
+    expect(topbar).not.toHaveAttribute('inert')
+    expect(focusCalledWhileInert).toBe(false)
+    expect(trigger).toHaveFocus()
+  })
+
+  it('moves focus into an open drawer when the responsive breakpoint becomes modal', async () => {
+    const user = userEvent.setup()
+    const mediaQuery = stubMatchMedia(false)
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, citations: [citation] }]))
+      }
+      if (path === '/api/citations/CIT-1') return jsonResponse(citation)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    const trigger = await screen.findByRole('button', { name: '[1]' })
+    await user.click(trigger)
+    await screen.findByRole('dialog', { name: '来源详情' })
+    const topbar = document.querySelector('.assistant-topbar')
+    expect(topbar).not.toHaveAttribute('inert')
+    trigger.focus()
+
+    act(() => mediaQuery.setMatches(true))
+
+    expect(screen.getByRole('dialog', { name: '来源详情' })).toHaveAttribute('aria-modal', 'true')
+    expect(topbar).toHaveAttribute('inert')
+    expect(screen.getByRole('button', { name: '关闭来源' })).toHaveFocus()
+    await user.tab({ shift: true })
+    expect(screen.getByRole('link', { name: '打开飞书原文' })).toHaveFocus()
+
+    act(() => mediaQuery.setMatches(false))
+
+    expect(screen.getByRole('dialog', { name: '来源详情' })).not.toHaveAttribute('aria-modal')
+    expect(topbar).not.toHaveAttribute('inert')
+  })
+
+  it('removes the responsive breakpoint listener on unmount', () => {
+    const mediaQuery = stubMatchMedia(false)
+    emptyWorkspaceFetch()
+    const { unmount } = render(<ChatPage />)
+    const listener = mediaQuery.addEventListener.mock.calls[0]?.[1]
+
+    expect(mediaQuery.addEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    unmount()
+
+    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith('change', listener)
   })
 
   it('keeps the fixed three-column chat layout and static composer dock', () => {
@@ -379,5 +512,16 @@ describe('ChatPage product workspace', () => {
     expect(appCss).toMatch(/\.chat-message-scroll\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s)
     expect(appCss).toMatch(/\.chat-composer-dock\s*\{[^}]*position:\s*static;[^}]*padding:\s*12px 24px 18px/s)
     expect(appCss).toMatch(/\.conversation-sidebar,[^}]*\.source-drawer\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*#f4f8fd/s)
+    expect(appCss).toMatch(/\.conversation-drawer-trigger,[^}]*\.conversation-backdrop\s*\{[^}]*display:\s*none;/s)
+    expect(appCss).toMatch(/\.conversation-backdrop\.is-open\s*\{[^}]*display:\s*block;/s)
+  })
+
+  it('wraps long unbroken message and source tokens without widening the layout', () => {
+    const appCss = readFileSync('src/styles/app.css', 'utf8')
+
+    expect(appCss).toMatch(/\.message-bubble\s*\{[^}]*min-width:\s*0;/s)
+    expect(appCss).toMatch(/\.message-bubble p\s*\{[^}]*overflow-wrap:\s*anywhere;/s)
+    expect(appCss).toMatch(/\.source-drawer-content\s*\{[^}]*min-width:\s*0;/s)
+    expect(appCss).toMatch(/\.source-drawer-content h3,[^}]*\.source-drawer-content p\s*\{[^}]*overflow-wrap:\s*anywhere;/s)
   })
 })
