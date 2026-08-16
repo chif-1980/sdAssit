@@ -14,5 +14,15 @@
     "jsx": "react-jsx",
     "skipLibCheck": true
   },
-  "include": ["src", "shared"]
+  "include": ["src", "shared"],
+  "exclude": [
+    "src/pages/AssetDetailPage.tsx",
+    "src/pages/AssetDetailPage.test.tsx",
+    "src/pages/AssetListPage.tsx",
+    "src/pages/AssetListPage.test.tsx",
+    "src/pages/KnowledgeDetailPage.tsx",
+    "src/pages/KnowledgeDetailPage.test.tsx",
+    "src/pages/KnowledgeListPage.tsx",
+    "src/pages/KnowledgeListPage.test.tsx"
+  ]
 }

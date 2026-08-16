@@ -3,10 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
 
-vi.mock('../pages/ChatPage', () => ({
-  ChatPage: () => <main><h1>企业知识助手</h1></main>,
-}))
-
 const productUser = {
   id: 'USR-1',
   name: '陈晨',
@@ -20,8 +16,14 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-function mockSession(body: unknown, status = 200) {
-  const fetchMock = vi.fn(async () => jsonResponse(body, status))
+function mockApi(sessionBody: unknown, sessionStatus = 200) {
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const path = String(input)
+    if (path === '/api/session') return jsonResponse(sessionBody, sessionStatus)
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [] })
+    if (path === '/api/auth/logout') return jsonResponse({})
+    throw new Error(`Unexpected request: ${path}`)
+  })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
@@ -47,7 +49,7 @@ describe('authenticated product routes', () => {
   })
 
   it.each(['/chat', '/', '/missing'])('routes an anonymous user from %s to login', async (path) => {
-    mockSession({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401)
+    mockApi({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401)
 
     renderAt(path)
 
@@ -58,34 +60,26 @@ describe('authenticated product routes', () => {
     expect(window.location.pathname).toBe('/login')
   })
 
-  it('shows the chat page to an authenticated user', async () => {
-    const fetchMock = mockSession({ user: productUser })
+  it('renders the real chat page for an authenticated user', async () => {
+    const fetchMock = mockApi({ user: productUser })
 
     renderAt('/chat')
 
-    expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
-    expect(fetchMock).toHaveBeenCalledWith('/api/session', expect.objectContaining({
-      credentials: 'include',
-    }))
+    expect(await screen.findByRole('textbox', { name: '问题' })).toBeInTheDocument()
+    expect(screen.getByText('陈晨')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '退出登录' })).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/演示身份|模型|Agent|智能体|Skill|知识库|回答范围|Factory|Knowledge Factory|@/iu)
+    expect(fetchMock).toHaveBeenCalledWith('/api/session', expect.objectContaining({ credentials: 'include' }))
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations', expect.objectContaining({ credentials: 'include' }))
     expect(window.location.pathname).toBe('/chat')
   })
 
   it.each(['/login', '/', '/missing'])('routes an authenticated user from %s to chat', async (path) => {
-    mockSession({ user: productUser })
+    mockApi({ user: productUser })
 
     renderAt(path)
 
-    expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
+    expect(await screen.findByRole('textbox', { name: '问题' })).toBeInTheDocument()
     await waitFor(() => expect(window.location.pathname).toBe('/chat'))
-  })
-
-  it('does not expose technical or demonstration entry points', async () => {
-    mockSession({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401)
-
-    renderAt('/login')
-    await screen.findByRole('link', { name: '使用飞书登录' })
-
-    expect(document.body).not.toHaveTextContent(/演示身份|模型|Agent|智能体|Skill|知识库|回答范围|Factory|Knowledge Factory/iu)
-    expect(document.body).not.toHaveTextContent('@')
   })
 })

@@ -1,62 +1,35 @@
-import { Bot, Database, RefreshCw } from 'lucide-react'
-import { Link, Outlet, useLocation } from 'react-router-dom'
+import { LogOut } from 'lucide-react'
 
-import type { UserRole } from '../../../shared/domain/enums.js'
 import { useSession } from '../../session/SessionProvider'
-import { FactoryNav } from './FactoryNav'
 
-export function ProductShell() {
-  const location = useLocation()
-  const { status, user, users, switchRole, reload } = useSession()
-  const canUseFactory = user?.role === 'OWNER' || user?.role === 'ADMIN'
-  const inFactory = location.pathname.startsWith('/factory') && canUseFactory
-  const inChat = location.pathname === '/chat'
-  const shellClassName = inFactory
-    ? 'product-shell factory-mode'
-    : inChat
-      ? 'product-shell chat-mode'
-      : 'product-shell'
-
-  if (status === 'loading') {
-    return <main className="center-state" aria-label="正在加载"><span className="spinner" /></main>
-  }
-
-  if (status === 'error' || !user) {
-    return (
-      <main className="center-state">
-        <h1>暂时无法加载</h1>
-        <button type="button" onClick={() => void reload()}>
-          <RefreshCw aria-hidden="true" size={17} />
-          重新加载
-        </button>
-      </main>
-    )
-  }
+export function ProductShell({ children }: { children: React.ReactNode }) {
+  const { user, logout } = useSession()
 
   return (
-    <div className={shellClassName}>
-      <header className="topbar">
-        <Link className="brand" to="/chat" aria-label="Knowledge AI">
-          <span className="brand-mark"><Bot aria-hidden="true" size={18} /></span>
-          <span>Knowledge AI</span>
-        </Link>
-        <nav className="product-nav" aria-label="产品">
-          <Link to="/chat">知识问答</Link>
-          {canUseFactory ? <Link to="/factory"><Database aria-hidden="true" size={16} />Knowledge Factory</Link> : null}
-        </nav>
-        <label className="role-switcher">
-          <span>身份</span>
-          <select
-            aria-label="演示身份"
-            value={user.role}
-            onChange={(event) => void switchRole(event.target.value as UserRole)}
-          >
-            {users.map((item) => <option key={item.id} value={item.role}>{item.name}</option>)}
-          </select>
-        </label>
+    <div className="product-shell chat-mode">
+      <header className="topbar assistant-topbar">
+        <h1>企业知识助手</h1>
+        {user ? (
+          <div className="current-user">
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt="" />
+            ) : (
+              <span className="user-avatar" aria-hidden="true">{user.name.trim().charAt(0)}</span>
+            )}
+            <span className="user-name">{user.name}</span>
+            <button
+              type="button"
+              className="icon-button logout-button"
+              aria-label="退出登录"
+              title="退出登录"
+              onClick={() => void logout()}
+            >
+              <LogOut aria-hidden="true" size={17} />
+            </button>
+          </div>
+        ) : null}
       </header>
-      {inFactory ? <aside className="factory-sidebar"><FactoryNav /></aside> : null}
-      <main className="page-content"><Outlet /></main>
+      <main className="page-content">{children}</main>
     </div>
   )
 }
