@@ -1,65 +1,33 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { UserRole } from '../../shared/domain/enums.js'
 import App from './App'
 
-const users = [
-  { id: 'USR-EMPLOYEE', name: '演示员工', role: 'EMPLOYEE' as const },
-  { id: 'USR-OWNER', name: '知识负责人', role: 'OWNER' as const },
-  { id: 'USR-ADMIN', name: '系统管理员', role: 'ADMIN' as const },
-]
+vi.mock('../pages/ChatPage', () => ({
+  ChatPage: () => <main><h1>企业知识助手</h1></main>,
+}))
 
-function sessionResponse(role: UserRole) {
-  const user = users.find((item) => item.role === role)
-  if (!user) throw new Error('Missing test user')
-  return { session: { userId: user.id, role }, user, users }
+const productUser = {
+  id: 'USR-1',
+  name: '陈晨',
+  avatarUrl: null,
 }
 
-function mockSession(role: UserRole) {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input)
-    let body: unknown = sessionResponse(role)
-    if (url.startsWith('/api/reviews/')) body = {
-      review: {
-        id: 'RVW-DEMO', title: '演示审核', reviewType: 'NEW', risk: 'LOW', status: 'PENDING',
-        reviewerId: 'USR-OWNER', createdAt: '2026-08-11T12:00:00.000Z',
-      },
-      allowedActions: [],
-    }
-    if (url === '/api/reviews') body = { reviews: [] }
-    if (url.startsWith('/api/knowledge/')) body = {
-      knowledge: {
-        id: 'KNW-DEMO', title: '演示知识', content: '演示内容', category: 'OTHER', tags: [],
-        authority: 'L0', ownerId: 'USR-OWNER', primaryAssetId: 'AST-DEMO', supportingAssetIds: [],
-        sourceLocator: 'paragraph:1', status: 'ACTIVE', version: 1,
-        lastVerifiedAt: '2026-08-11T12:00:00.000Z', aiEnabled: true, indexStatus: 'INDEXED',
-        createdAt: '2026-08-11T12:00:00.000Z', updatedAt: '2026-08-11T12:00:00.000Z',
-      },
-      primaryAsset: { id: 'AST-DEMO', title: '演示资料', sections: [] },
-      supportingAssets: [],
-      history: [],
-    }
-    if (url === '/api/knowledge' || url.startsWith('/api/knowledge?')) body = { knowledge: [] }
-    if (url === '/api/assets') body = { assets: [] }
-    if (url.startsWith('/api/assets/')) body = {
-      asset: {
-        id: 'AST-DEMO', title: '演示资料', businessType: 'OTHER', authority: 'L0',
-        ownerId: 'USR-OWNER', processStatus: 'NEW', sections: [],
-      },
-      candidates: [],
-      reviews: [],
-    }
-    return new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })
-  }))
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
-function renderAt(path: string, role: UserRole) {
+function mockSession(body: unknown, status = 200) {
+  const fetchMock = vi.fn(async () => jsonResponse(body, status))
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+function renderAt(path: string) {
   window.history.pushState({}, '', path)
-  mockSession(role)
   return render(<App />)
 }
 
@@ -69,42 +37,55 @@ afterEach(() => {
   window.history.pushState({}, '', '/')
 })
 
-describe('role-aware application routes', () => {
-  it('sends an Employee from the root to Knowledge AI without factory navigation', async () => {
-    renderAt('/', 'EMPLOYEE')
+describe('authenticated product routes', () => {
+  it('shows a stable loading state while authentication is pending', () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
 
-    expect(await screen.findByRole('heading', { level: 1, name: '知识问答' })).toBeInTheDocument()
-    expect(document.querySelector('.product-shell')).toHaveClass('chat-mode')
-    expect(screen.queryByText('Knowledge Factory')).not.toBeInTheDocument()
+    renderAt('/chat')
+
+    expect(screen.getByLabelText('正在加载')).toBeInTheDocument()
+  })
+
+  it.each(['/chat', '/', '/missing'])('routes an anonymous user from %s to login', async (path) => {
+    mockSession({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401)
+
+    renderAt(path)
+
+    expect(await screen.findByRole('link', { name: '使用飞书登录' })).toHaveAttribute(
+      'href',
+      '/api/auth/feishu/login?return_path=%2Fchat',
+    )
+    expect(window.location.pathname).toBe('/login')
+  })
+
+  it('shows the chat page to an authenticated user', async () => {
+    const fetchMock = mockSession({ user: productUser })
+
+    renderAt('/chat')
+
+    expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith('/api/session', expect.objectContaining({
+      credentials: 'include',
+    }))
     expect(window.location.pathname).toBe('/chat')
   })
 
-  it('lets an Owner open the Knowledge Factory', async () => {
-    renderAt('/factory', 'OWNER')
+  it.each(['/login', '/', '/missing'])('routes an authenticated user from %s to chat', async (path) => {
+    mockSession({ user: productUser })
 
-    expect(await screen.findByRole('heading', { level: 1, name: '工作台' })).toBeInTheDocument()
-    expect(screen.getByText('Knowledge Factory')).toBeInTheDocument()
+    renderAt(path)
+
+    expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
+    await waitFor(() => expect(window.location.pathname).toBe('/chat'))
   })
 
-  it('shows a not-found page for unknown routes', async () => {
-    renderAt('/missing', 'OWNER')
+  it('does not expose technical or demonstration entry points', async () => {
+    mockSession({ error: { code: 'UNAUTHENTICATED', message: '请先登录' } }, 401)
 
-    expect(await screen.findByRole('heading', { level: 1, name: '页面不存在' })).toBeInTheDocument()
-  })
+    renderAt('/login')
+    await screen.findByRole('link', { name: '使用飞书登录' })
 
-  it.each([
-    ['/chat', 'EMPLOYEE', '知识问答'],
-    ['/factory', 'OWNER', '工作台'],
-    ['/factory/assets', 'OWNER', '资料'],
-    ['/factory/assets/AST-DEMO', 'OWNER', '资料详情'],
-    ['/factory/reviews', 'OWNER', '审核'],
-    ['/factory/reviews/RVW-DEMO', 'OWNER', '审核详情'],
-    ['/factory/knowledge', 'OWNER', '知识'],
-    ['/factory/knowledge/KNW-DEMO', 'OWNER', '知识详情'],
-  ] as const)('renders one page heading at %s', async (path, role, heading) => {
-    renderAt(path, role)
-
-    expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
-    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(document.body).not.toHaveTextContent(/演示身份|模型|Agent|智能体|Skill|知识库|回答范围|Factory|Knowledge Factory/iu)
+    expect(document.body).not.toHaveTextContent('@')
   })
 })

@@ -1,31 +1,24 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import type { User, PlatformSnapshot } from '../../shared/domain/models.js'
-import type { UserRole } from '../../shared/domain/enums.js'
-import { api } from '../api/client'
-
-type Session = PlatformSnapshot['session']
+import type { ProductUser } from '../../shared/api/product.js'
+import { api, ApiError } from '../api/client'
 
 interface SessionPayload {
-  session: Session
-  user: User
-  users: User[]
+  user: ProductUser
 }
 
 interface SessionContextValue {
-  session?: Session
-  user?: User
-  users: User[]
-  status: 'loading' | 'ready' | 'error'
+  user?: ProductUser
+  status: 'loading' | 'authenticated' | 'anonymous' | 'error'
   error?: Error
-  switchRole: (role: UserRole) => Promise<void>
   reload: () => Promise<void>
+  logout: () => Promise<void>
 }
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined)
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
-  const [payload, setPayload] = useState<SessionPayload>()
+  const [user, setUser] = useState<ProductUser>()
   const [status, setStatus] = useState<SessionContextValue['status']>('loading')
   const [error, setError] = useState<Error>()
 
@@ -33,9 +26,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setStatus('loading')
     setError(undefined)
     try {
-      setPayload(await api<SessionPayload>('/api/session'))
-      setStatus('ready')
+      const payload = await api<SessionPayload>('/api/session')
+      setUser(payload.user)
+      setStatus('authenticated')
     } catch (cause) {
+      setUser(undefined)
+      if (cause instanceof ApiError && cause.status === 401) {
+        setStatus('anonymous')
+        return
+      }
       setError(cause instanceof Error ? cause : new Error('UNKNOWN_ERROR'))
       setStatus('error')
     }
@@ -45,24 +44,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     void reload()
   }, [reload])
 
-  const switchRole = useCallback(async (role: UserRole) => {
-    const next = await api<SessionPayload>('/api/session/role', {
-      method: 'PUT',
-      body: JSON.stringify({ role }),
-    })
-    setPayload(next)
-    setStatus('ready')
+  const logout = useCallback(async () => {
+    await api('/api/auth/logout', { method: 'POST' })
+    setUser(undefined)
+    setError(undefined)
+    setStatus('anonymous')
   }, [])
 
   const value = useMemo<SessionContextValue>(() => ({
-    session: payload?.session,
-    user: payload?.user,
-    users: payload?.users ?? [],
+    user,
     status,
     error,
-    switchRole,
     reload,
-  }), [error, payload, reload, status, switchRole])
+    logout,
+  }), [error, logout, reload, status, user])
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
