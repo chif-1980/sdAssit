@@ -11,6 +11,7 @@ import type {
   ProductMessage,
 } from '../../../shared/api/product.js'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
 
 interface MessageThreadProps {
   messages: ProductMessage[]
@@ -18,6 +19,7 @@ interface MessageThreadProps {
   answerProgress?: ProductAnswerProgress
   answerProgressTrail?: readonly ProductAnswerProgress[]
   streamedAnswer?: string
+  highlightedPairId?: string
   expandedCitationId?: string
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
@@ -113,12 +115,125 @@ function AssistantMarkdown({
   )
 }
 
+interface MessageBubbleProps {
+  message: ProductMessage
+  expandedCitationId?: string
+  onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
+  feedbackPendingIds?: ReadonlySet<string>
+  feedbackDisabled: boolean
+  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+}
+
+function MessageBubble({
+  message,
+  expandedCitationId,
+  onCitation,
+  feedbackPendingIds,
+  feedbackDisabled,
+  onFeedback,
+}: MessageBubbleProps) {
+  return (
+    <article className={`message-bubble message-${message.role.toLowerCase()}`}>
+      <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
+      {message.answerStatus ? (
+        <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
+          {statusLabels[message.answerStatus]}
+        </span>
+      ) : null}
+      {message.role === 'ASSISTANT' ? (
+        <AssistantMarkdown
+          content={message.answerStatus === 'INSUFFICIENT' ? '暂无足够可靠资料' : message.content}
+          citations={message.citations}
+          expandedCitationId={expandedCitationId}
+          onCitation={onCitation}
+        />
+      ) : <p>{message.content}</p>}
+      {message.role === 'ASSISTANT' ? (
+        <div className="message-footer">
+          {message.citations.length ? (
+            <div className="message-citations" aria-label="回答引用">
+              {message.citations.map((citation, index) => (
+                <button
+                  type="button"
+                  className="citation-button"
+                  key={citation.id}
+                  aria-label={`[${index + 1}]`}
+                  aria-controls="source-drawer"
+                  aria-haspopup="dialog"
+                  aria-expanded={citation.id === expandedCitationId}
+                  onClick={(event) => onCitation(citation, event.currentTarget)}
+                >
+                  [{index + 1}]
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="message-feedback" aria-label="回答反馈">
+            <button
+              type="button"
+              className={`feedback-button${message.feedbackRating === 'LIKE' ? ' is-selected is-like' : ''}`}
+              aria-label="点赞这条回答"
+              aria-pressed={message.feedbackRating === 'LIKE'}
+              title="点赞这条回答"
+              disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
+              onClick={() => onFeedback?.(message.id, message.feedbackRating === 'LIKE' ? null : 'LIKE')}
+            >
+              <ThumbsUp aria-hidden="true" size={15} strokeWidth={1.8} />
+            </button>
+            <button
+              type="button"
+              className={`feedback-button${message.feedbackRating === 'DISLIKE' ? ' is-selected is-dislike' : ''}`}
+              aria-label="点踩这条回答"
+              aria-pressed={message.feedbackRating === 'DISLIKE'}
+              title="点踩这条回答"
+              disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
+              onClick={() => onFeedback?.(message.id, message.feedbackRating === 'DISLIKE' ? null : 'DISLIKE')}
+            >
+              <ThumbsDown aria-hidden="true" size={15} strokeWidth={1.8} />
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </article>
+  )
+}
+
+function MessagePairBlock({
+  pair,
+  highlighted,
+  expandedCitationId,
+  onCitation,
+  feedbackPendingIds,
+  feedbackDisabled,
+  onFeedback,
+}: {
+  pair: MessagePair
+  highlighted: boolean
+  expandedCitationId?: string
+  onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
+  feedbackPendingIds?: ReadonlySet<string>
+  feedbackDisabled: boolean
+  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+}) {
+  return (
+    <div
+      id={messagePairAnchorId(pair.id)}
+      data-message-pair={pair.id}
+      className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
+    >
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} /> : null}
+    </div>
+  )
+}
+
 export function MessageThread({
   messages,
   pendingQuestion,
   answerProgress,
   answerProgressTrail,
   streamedAnswer,
+  highlightedPairId,
   expandedCitationId,
   onCitation,
   feedbackPendingIds,
@@ -127,6 +242,7 @@ export function MessageThread({
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
+  const pairs = groupMessagePairs(messages)
 
   useEffect(() => {
     const end = endRef.current
@@ -135,75 +251,17 @@ export function MessageThread({
 
   return (
     <div className="message-thread" aria-label="消息线程">
-      {messages.map((message) => (
-        <article key={message.id} className={`message-bubble message-${message.role.toLowerCase()}`}>
-          <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
-          {message.answerStatus ? (
-            <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
-              {statusLabels[message.answerStatus]}
-            </span>
-          ) : null}
-          {message.role === 'ASSISTANT' ? (
-            <AssistantMarkdown
-              content={message.answerStatus === 'INSUFFICIENT' ? '暂无足够可靠资料' : message.content}
-              citations={message.citations}
-              expandedCitationId={expandedCitationId}
-              onCitation={onCitation}
-            />
-          ) : <p>{message.content}</p>}
-          {message.role === 'ASSISTANT' ? (
-            <div className="message-footer">
-              {message.citations.length ? (
-                <div className="message-citations" aria-label="回答引用">
-                  {message.citations.map((citation, index) => (
-                    <button
-                      type="button"
-                      className="citation-button"
-                      key={citation.id}
-                      aria-label={`[${index + 1}]`}
-                      aria-controls="source-drawer"
-                      aria-haspopup="dialog"
-                      aria-expanded={citation.id === expandedCitationId}
-                      onClick={(event) => onCitation(citation, event.currentTarget)}
-                    >
-                      [{index + 1}]
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="message-feedback" aria-label="回答反馈">
-                <button
-                  type="button"
-                  className={`feedback-button${message.feedbackRating === 'LIKE' ? ' is-selected is-like' : ''}`}
-                  aria-label="点赞这条回答"
-                  aria-pressed={message.feedbackRating === 'LIKE'}
-                  title="点赞这条回答"
-                  disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
-                  onClick={() => onFeedback?.(
-                    message.id,
-                    message.feedbackRating === 'LIKE' ? null : 'LIKE',
-                  )}
-                >
-                  <ThumbsUp aria-hidden="true" size={15} strokeWidth={1.8} />
-                </button>
-                <button
-                  type="button"
-                  className={`feedback-button${message.feedbackRating === 'DISLIKE' ? ' is-selected is-dislike' : ''}`}
-                  aria-label="点踩这条回答"
-                  aria-pressed={message.feedbackRating === 'DISLIKE'}
-                  title="点踩这条回答"
-                  disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
-                  onClick={() => onFeedback?.(
-                    message.id,
-                    message.feedbackRating === 'DISLIKE' ? null : 'DISLIKE',
-                  )}
-                >
-                  <ThumbsDown aria-hidden="true" size={15} strokeWidth={1.8} />
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </article>
+      {pairs.map((pair) => (
+        <MessagePairBlock
+          key={pair.id}
+          pair={pair}
+          highlighted={pair.id === highlightedPairId}
+          expandedCitationId={expandedCitationId}
+          onCitation={onCitation}
+          feedbackPendingIds={feedbackPendingIds}
+          feedbackDisabled={feedbackDisabled}
+          onFeedback={onFeedback}
+        />
       ))}
       {pendingQuestion ? (
         <>

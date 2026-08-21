@@ -152,6 +152,20 @@ describe('Conversation flow', () => {
     expect(stored.conversations.find((item) => item.id === linked.json().conversation.id)?.sessionAssetIds).toEqual([])
   })
 
+  it('restores an archived conversation for its owner', async () => {
+    const seed = seedSnapshot()
+    seed.session = { userId: 'USR-EMPLOYEE', role: 'EMPLOYEE' }
+    const { app } = await fixture(seed)
+    const created = await app.inject({ method: 'POST', url: '/api/conversations', payload: { scope: 'ENTERPRISE' } })
+    const id = created.json().conversation.id
+
+    await app.inject({ method: 'POST', url: `/api/conversations/${id}/archive` })
+    const restored = await app.inject({ method: 'POST', url: `/api/conversations/${id}/restore` })
+
+    expect(restored.statusCode).toBe(200)
+    expect(restored.json().conversation).toMatchObject({ id, status: 'ACTIVE' })
+  })
+
   it('only promotes the current user Session Asset to a factory-capable owner', async () => {
     const seed = seedSnapshot()
     seed.session = { userId: 'USR-EMPLOYEE', role: 'EMPLOYEE' }

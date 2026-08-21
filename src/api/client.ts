@@ -25,18 +25,24 @@ function apiError(body: ErrorBody, status: number, fallback = '请求失败') {
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
-  if (init?.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json')
+  const requestBody = init?.body
+  const isFormData = typeof FormData !== 'undefined' && requestBody instanceof FormData
+  const isBlob = typeof Blob !== 'undefined' && requestBody instanceof Blob
+  const isUrlEncoded = typeof URLSearchParams !== 'undefined' && requestBody instanceof URLSearchParams
+  if (requestBody !== undefined && !isFormData && !isBlob && !isUrlEncoded && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json')
+  }
 
   const response = await fetch(path, {
     ...init,
     credentials: 'include',
     headers,
   })
-  const body = await response.json().catch(() => ({})) as ErrorBody
+  const responseBody = await response.json().catch(() => ({})) as ErrorBody
   if (!response.ok) {
-    throw apiError(body, response.status)
+    throw apiError(responseBody, response.status)
   }
-  return body as T
+  return responseBody as T
 }
 
 interface StreamApiOptions<TProgress> {

@@ -122,9 +122,26 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
 
     expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '开始一段新对话' })).toBeInTheDocument()
+    expect(screen.getByText('示例问题')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /产品标准部署|部署模式|实施方案/u })).toHaveLength(3)
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(/上传资料|回答范围|Factory|Knowledge Factory|Yuxi|模型|Agent|智能体|Skill|知识库|@/iu)
+  })
+
+  it('fills the composer with an example question and returns to concise mode', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
+    await user.click(screen.getByRole('button', { name: '详细模式' }))
+    await user.click(screen.getByRole('button', { name: '产品标准部署需要哪些前置条件？' }))
+
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('产品标准部署需要哪些前置条件？')
+    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('blocks mutations during initial loading and ignores the response after starting a new conversation', async () => {
@@ -168,6 +185,23 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByText('开始一段新对话')).toBeInTheDocument()
   })
 
+  it('resets the answer mode when starting a new conversation', async () => {
+    const user = userEvent.setup()
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '详细模式' }))
+    await user.click(screen.getByRole('button', { name: '新对话' }))
+
+    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('manages focus and keyboard dismissal for the conversation drawer', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
@@ -183,7 +217,7 @@ describe('ChatPage product workspace', () => {
     const close = within(screen.getByLabelText('对话列表')).getByRole('button', { name: '关闭对话列表' })
     await waitFor(() => expect(close).toHaveFocus())
     await user.tab({ shift: true })
-    expect(screen.getByRole('button', { name: '新对话' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: /已归档/ })).toHaveFocus()
     await user.tab()
     expect(close).toHaveFocus()
     await user.keyboard('{Escape}')
@@ -255,6 +289,71 @@ describe('ChatPage product workspace', () => {
         body: JSON.stringify({ content: '给出完整实施说明', mode: 'DETAILED' }),
       }),
     ))
+  })
+
+  it('uploads selected files before sending the question and includes their ids', async () => {
+    const user = userEvent.setup()
+    const uploadedAttachment = {
+      id: 'ATT-1',
+      name: '方案.pdf',
+      mimeType: 'application/pdf',
+      size: 7,
+      status: 'READY',
+    }
+    const userMessage: ProductMessage = { ...priorMessage, id: 'MSG-U', role: 'USER', content: '请结合方案回答', answerStatus: null }
+    const assistantMessage: ProductMessage = { ...priorMessage, id: 'MSG-A', content: '已结合方案。' }
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/attachments' && init?.method === 'POST') {
+        return jsonResponse({ attachment: uploadedAttachment }, 202)
+      }
+      if (path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST') {
+        return sseResponse({ conversation: { ...conversationA, messageCount: 3 }, userMessage, assistantMessage })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    const file = new File(['方案内容'], '方案.pdf', { type: 'application/pdf' })
+    await user.upload(screen.getByLabelText('选择附件'), file)
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '请结合方案回答')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    expect(await screen.findByText('已结合方案。')).toBeInTheDocument()
+    const uploadCall = fetchMock.mock.calls.find(([path]) => path === '/api/chat/conversations/CVS-A/attachments')
+    expect(uploadCall).toBeDefined()
+    expect(uploadCall?.[1]?.body).toBeInstanceOf(FormData)
+    expect((uploadCall?.[1]?.body as FormData).get('file')).toBeInstanceOf(File)
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ content: '请结合方案回答', mode: 'CONCISE', attachmentIds: ['ATT-1'] }),
+    }))
+  })
+
+  it('keeps an attachment and explains the failure when upload is rejected', async () => {
+    const user = userEvent.setup()
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/attachments' && init?.method === 'POST') {
+        return jsonResponse({ error: { code: 'UNSUPPORTED_FORMAT', message: '暂不支持此文件格式' } }, 400)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    const file = new File(['binary'], '资料.pdf', { type: 'application/pdf' })
+    await user.upload(screen.getByLabelText('选择附件'), file)
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '请分析资料')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    expect(await screen.findByText('暂不支持此文件格式')).toBeInTheDocument()
+    expect(screen.getByText('资料.pdf')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '移除附件 资料.pdf' })).toBeInTheDocument()
+    expect(screen.queryByText('原有回答')).toBeInTheDocument()
   })
 
   it('shows streamed answer text before the complete event arrives', async () => {
@@ -524,8 +623,38 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '归档当前对话' }))
 
     await waitFor(() => expect(screen.getByRole('textbox', { name: '问题' })).toBeDisabled())
-    expect(screen.getByText('已归档')).toBeInTheDocument()
+    expect(document.querySelector('.archive-label')).toHaveTextContent('已归档')
     expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/archive', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('finds archived conversations and restores the selected conversation', async () => {
+    const user = userEvent.setup()
+    const archivedConversation = { ...conversationA, id: 'CVS-C', title: '已归档项目', status: 'ARCHIVED' as const }
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, archivedConversation] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-C') return jsonResponse(detail(archivedConversation))
+      if (path === '/api/chat/conversations/CVS-C/restore' && init?.method === 'POST') return jsonResponse({ conversation: conversationA })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    const archiveFilter = screen.getByRole('button', { name: /已归档/ })
+    expect(archiveFilter).toHaveTextContent('1')
+    await user.click(archiveFilter)
+    expect(screen.getByRole('button', { name: '已归档项目' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '已归档项目' }))
+    expect(await screen.findByRole('button', { name: '恢复当前会话' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '恢复当前会话' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/conversations/CVS-C/restore',
+      expect.objectContaining({ method: 'POST' }),
+    ))
+    expect(screen.getByRole('button', { name: '归档当前对话' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
   })
 
   it('fetches citation detail before opening the drawer and restores trigger focus on close', async () => {
@@ -680,8 +809,11 @@ describe('ChatPage product workspace', () => {
     expect(appCss).toMatch(/\.chat-layout\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\)/s)
     expect(appCss).toMatch(/\.chat-layout\.source-open\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\) 320px/s)
     expect(appCss).toMatch(/\.chat-main\s*\{[^}]*grid-template-rows:\s*56px minmax\(0, 1fr\) auto/s)
+    expect(appCss).toMatch(/\.chat-message-area\s*\{[^}]*position:\s*relative;[^}]*min-height:\s*0;/s)
     expect(appCss).toMatch(/\.chat-message-scroll\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s)
+    expect(appCss).toMatch(/\.chat-scroll-to-bottom\s*\{[^}]*bottom:\s*16px;/s)
     expect(appCss).toMatch(/\.chat-composer-dock\s*\{[^}]*position:\s*static;[^}]*padding:\s*12px 24px 18px/s)
+    expect(appCss).toMatch(/\.chat-composer textarea:focus-visible\s*\{[^}]*box-shadow:\s*none;/s)
     expect(appCss).toMatch(/\.conversation-sidebar,[^}]*\.source-drawer\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*#f4f8fd/s)
     expect(appCss).toMatch(/\.conversation-drawer-trigger,[^}]*\.conversation-backdrop\s*\{[^}]*display:\s*none;/s)
     expect(appCss).toMatch(/\.conversation-backdrop\.is-open\s*\{[^}]*display:\s*block;/s)

@@ -311,4 +311,16 @@ export class ConversationService {
     })
     return { conversation }
   }
+
+  async restore(id: string) {
+    const conversation = await this.repository.transact((draft) => {
+      const target = draft.conversations.find((item) => item.id === id)
+      if (!target) throw new Error('CONVERSATION_NOT_FOUND')
+      assertConversationOwner(draft, target)
+      target.status = 'ACTIVE'
+      target.lastActiveAt = now()
+      return structuredClone(target)
+    })
+    return { conversation }
+  }
 }

@@ -29,6 +29,17 @@ export interface ProductConversation {
   updatedAt: string
 }
 
+export type ProductAttachmentStatus = 'PROCESSING' | 'READY' | 'FAILED'
+
+export interface ProductAttachment {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  status: ProductAttachmentStatus
+  errorMessage?: string
+}
+
 export interface ProductCitation {
   id: string
   kind: 'ENTERPRISE_EVIDENCE'
@@ -46,5 +57,6 @@ export interface ProductMessage {
   answerStatus: AnswerStatus | null
   feedbackRating?: FeedbackRating | null
   citations: ProductCitation[]
+  attachments?: ProductAttachment[]
   createdAt: string
 }

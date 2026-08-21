@@ -47,4 +47,8 @@ export function registerConversationRoutes(app: FastifyInstance, repository: Pla
   app.post<{ Params: { conversationId: string } }>('/api/conversations/:conversationId/archive', async (request) => {
     return service.archive(request.params.conversationId)
   })
+
+  app.post<{ Params: { conversationId: string } }>('/api/conversations/:conversationId/restore', async (request) => {
+    return service.restore(request.params.conversationId)
+  })
 }

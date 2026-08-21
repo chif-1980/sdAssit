@@ -1,18 +1,23 @@
-import { Archive, ArrowDown, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowDown, ArrowUpRight, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   AnswerMode,
   FeedbackRating,
   ProductAnswerProgress,
+  ProductAttachment,
   ProductCitation,
   ProductConversation,
   ProductMessage,
 } from '../../shared/api/product.js'
-import { api, streamApi } from '../api/client'
+import { ApiError, api, streamApi } from '../api/client'
 import { ChatComposer } from '../components/chat/ChatComposer'
+import type { ComposerAttachment } from '../components/chat/ChatComposer'
+import { ConversationOutline } from '../components/chat/ConversationOutline'
 import { MessageThread } from '../components/chat/MessageThread'
+import { messagePairAnchorId } from '../components/chat/messagePairs'
 import { SourceDrawer } from '../components/chat/SourceDrawer'
+import { attachmentError as getAttachmentError } from '../components/chat/fileAttachments'
 import { ProductShell } from '../components/layout/ProductShell'
 
 interface ConversationDetail {
@@ -31,6 +36,14 @@ interface FeedbackResponse {
   feedbackRating: FeedbackRating | null
 }
 
+const MAX_COMPOSER_ATTACHMENTS = 5
+
+const exampleQuestions = [
+  '产品标准部署需要哪些前置条件？',
+  '请对比不同部署模式的适用场景和限制。',
+  '如何根据正式资料制定一份实施方案？',
+] as const
+
 function sortConversations(conversations: ProductConversation[]) {
   return [...conversations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
@@ -42,11 +55,23 @@ function upsertConversation(current: ProductConversation[], next: ProductConvers
     : [next, ...current])
 }
 
+function attachmentUploadMessage(error: unknown) {
+  if (error instanceof ApiError && (error.status === 404 || error.code === 'NOT_FOUND')) {
+    return '附件解析服务暂不可用，请稍后重试'
+  }
+  if (error instanceof Error && error.message && !/^[A-Z][A-Z0-9_]*$/u.test(error.message)) {
+    return error.message
+  }
+  return '附件上传失败，请重试'
+}
+
 export function ChatPage() {
   const [conversations, setConversations] = useState<ProductConversation[]>([])
   const [conversation, setConversation] = useState<ProductConversation>()
   const [messages, setMessages] = useState<ProductMessage[]>([])
   const [draft, setDraft] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState<string>()
   const [answerMode, setAnswerMode] = useState<AnswerMode>('CONCISE')
   const [pendingQuestion, setPendingQuestion] = useState<string>()
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
@@ -56,10 +81,14 @@ export function ChatPage() {
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const [restoring, setRestoring] = useState(false)
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [activePairId, setActivePairId] = useState<string>()
+  const [highlightedPairId, setHighlightedPairId] = useState<string>()
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const contextVersionRef = useRef(0)
@@ -80,8 +109,10 @@ export function ChatPage() {
       if (contextVersionRef.current !== version) return
       const items = sortConversations(result.conversations)
       setConversations(items)
-      if (items[0]) {
-        const detail = await api<ConversationDetail>(`/api/chat/conversations/${items[0].id}`)
+      const initialConversation = items.find((item) => item.status === 'ACTIVE') ?? items[0]
+      setShowArchived(initialConversation?.status === 'ARCHIVED')
+      if (initialConversation) {
+        const detail = await api<ConversationDetail>(`/api/chat/conversations/${initialConversation.id}`)
         if (contextVersionRef.current !== version) return
         setConversation(detail.conversation)
         setMessages(detail.messages)
@@ -153,6 +184,34 @@ export function ChatPage() {
   }, [lastMessageId, loadingConversation, loadingWorkspace, messages.length, pendingQuestion])
 
   useEffect(() => {
+    const element = messageScrollRef.current
+    if (!element) return
+
+    const syncActivePair = () => {
+      const anchors = Array.from(element.querySelectorAll<HTMLElement>('[data-message-pair]'))
+      if (!anchors.length) {
+        setActivePairId(undefined)
+        return
+      }
+      const threshold = element.getBoundingClientRect().top + Math.min(180, element.clientHeight * 0.28)
+      const current = anchors.reduce((closest, anchor) => {
+        const closestDistance = Math.abs(closest.getBoundingClientRect().top - threshold)
+        const anchorDistance = Math.abs(anchor.getBoundingClientRect().top - threshold)
+        return anchorDistance < closestDistance ? anchor : closest
+      })
+      setActivePairId(current.dataset.messagePair)
+    }
+
+    syncActivePair()
+    element.addEventListener('scroll', syncActivePair, { passive: true })
+    window.addEventListener('resize', syncActivePair)
+    return () => {
+      element.removeEventListener('scroll', syncActivePair)
+      window.removeEventListener('resize', syncActivePair)
+    }
+  }, [loadingConversation, loadingWorkspace, messages.length])
+
+  useEffect(() => {
     if (!streamedAnswer) return
     const element = messageScrollRef.current
     if (!element) return
@@ -173,7 +232,9 @@ export function ChatPage() {
   }, [])
 
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
-  const switchLocked = sending || archiving
+  const archivedConversations = visibleConversations.filter((item) => item.status === 'ARCHIVED')
+  const listedConversations = visibleConversations.filter((item) => item.status === (showArchived ? 'ARCHIVED' : 'ACTIVE'))
+  const switchLocked = sending || archiving || restoring
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
 
@@ -209,11 +270,17 @@ export function ChatPage() {
     citationVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
+    setAnswerMode('CONCISE')
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     setStreamedAnswer('')
+    setActivePairId(undefined)
+    setHighlightedPairId(undefined)
+    setShowArchived(false)
     setDraft('')
+    setAttachments([])
+    setAttachmentError(undefined)
     setErrorText(undefined)
     setLoadingWorkspace(false)
     setLoadingConversation(false)
@@ -231,7 +298,12 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     setStreamedAnswer('')
+    setActivePairId(undefined)
+    setHighlightedPairId(undefined)
+    setShowArchived(item.status === 'ARCHIVED')
     setSelectedCitation(undefined)
+    setAttachments([])
+    setAttachmentError(undefined)
     setFeedbackPendingIds(new Set())
     setLoadingWorkspace(false)
     setLoadingConversation(true)
@@ -259,6 +331,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     setStreamedAnswer('')
+    setAttachmentError(undefined)
     followLatestRef.current = true
     setErrorText(undefined)
     try {
@@ -273,11 +346,39 @@ export function ChatPage() {
         setConversation(target)
         setConversations((current) => upsertConversation(current, target!))
       }
+      const attachmentIds: string[] = []
+      if (attachments.length) {
+        setAttachments((current) => current.map((attachment) => ({ ...attachment, status: 'UPLOADING', error: undefined })))
+        try {
+          for (const attachment of attachments) {
+            const formData = new FormData()
+            formData.append('file', attachment.file, attachment.file.name)
+            const uploaded = await api<{ attachment: ProductAttachment }>(
+              `/api/chat/conversations/${target.id}/attachments`,
+              { method: 'POST', body: formData },
+            )
+            attachmentIds.push(uploaded.attachment.id)
+          }
+        } catch (error) {
+          const message = attachmentUploadMessage(error)
+          setAttachments((current) => current.map((attachment) => ({
+            ...attachment,
+            status: 'FAILED',
+            error: message,
+          })))
+          setAttachmentError(message)
+          throw error
+        }
+      }
+
+      const messageBody = attachmentIds.length
+        ? JSON.stringify({ content, mode, attachmentIds })
+        : JSON.stringify({ content, mode })
       const result = await streamApi<SendResponse, ProductAnswerProgress>(
         `/api/chat/conversations/${target.id}/messages/stream`,
         {
           method: 'POST',
-          body: JSON.stringify({ content, mode }),
+          body: messageBody,
         },
         {
           onProgress: (progress) => {
@@ -303,6 +404,8 @@ export function ChatPage() {
       setAnswerProgressTrail([])
       setStreamedAnswer('')
       setDraft('')
+      setAttachments([])
+      setAttachmentError(undefined)
     } catch {
       if (contextVersionRef.current !== version) return
       setPendingQuestion(undefined)
@@ -313,6 +416,36 @@ export function ChatPage() {
     } finally {
       if (contextVersionRef.current === version) setSending(false)
     }
+  }
+
+  function addAttachments(files: File[]) {
+    if (mutationLocked || archived) return
+    const next: ComposerAttachment[] = []
+    let firstError: string | undefined
+    const existing = new Set(attachments.map((attachment) => `${attachment.file.name}:${attachment.file.size}:${attachment.file.lastModified}`))
+    for (const file of files) {
+      const error = getAttachmentError(file)
+      if (error) {
+        firstError ??= error
+        continue
+      }
+      const key = `${file.name}:${file.size}:${file.lastModified}`
+      if (existing.has(key)) continue
+      existing.add(key)
+      next.push({ id: `attachment-${file.name}-${file.size}-${file.lastModified}`, file, status: 'PENDING' })
+    }
+    if (attachments.length + next.length > MAX_COMPOSER_ATTACHMENTS) {
+      firstError ??= `最多同时添加 ${MAX_COMPOSER_ATTACHMENTS} 个文件`
+      next.splice(Math.max(0, MAX_COMPOSER_ATTACHMENTS - attachments.length))
+    }
+    if (next.length) setAttachments((current) => [...current, ...next])
+    setAttachmentError(firstError)
+  }
+
+  function removeAttachment(id: string) {
+    if (mutationLocked || archived) return
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
+    setAttachmentError(undefined)
   }
 
   async function archiveConversation() {
@@ -332,6 +465,27 @@ export function ChatPage() {
       setErrorText('归档失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setArchiving(false)
+    }
+  }
+
+  async function restoreConversation() {
+    if (!conversation || !archived || mutationLocked) return
+    const version = contextVersionRef.current
+    const target = conversation
+    setRestoring(true)
+    setErrorText(undefined)
+    try {
+      await api<unknown>(`/api/chat/conversations/${target.id}/restore`, { method: 'POST' })
+      if (contextVersionRef.current !== version) return
+      const restoredConversation: ProductConversation = { ...target, status: 'ACTIVE' }
+      setConversation(restoredConversation)
+      setConversations((current) => upsertConversation(current, restoredConversation))
+      setShowArchived(false)
+    } catch {
+      if (contextVersionRef.current !== version) return
+      setErrorText('恢复会话失败，请重试')
+    } finally {
+      if (contextVersionRef.current === version) setRestoring(false)
     }
   }
 
@@ -393,6 +547,19 @@ export function ChatPage() {
     setSelectedCitation(undefined)
   }
 
+  function activatePair(pairId: string) {
+    const target = document.getElementById(messagePairAnchorId(pairId))
+    if (!target) return
+    setActivePairId(pairId)
+    setHighlightedPairId(pairId)
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  function selectExampleQuestion(question: string) {
+    setAnswerMode('CONCISE')
+    setDraft(question)
+  }
+
   const sourceBackgroundInert = Boolean(selectedCitation && sourceDrawerModal)
   const sourceBackgroundProps = sourceBackgroundInert ? { inert: '' } : {}
 
@@ -421,12 +588,25 @@ export function ChatPage() {
                 <X aria-hidden="true" size={17} />
               </button>
             </div>
-            <button type="button" className="new-conversation-button" disabled={switchLocked} onClick={startConversation}>
-              <Plus aria-hidden="true" size={17} />
-              新对话
-            </button>
+            <div className="conversation-sidebar-actions">
+              <button type="button" className="new-conversation-button" disabled={switchLocked} onClick={startConversation}>
+                <Plus aria-hidden="true" size={17} />
+                新对话
+              </button>
+              <button
+                type="button"
+                className={`archived-conversations-button${showArchived ? ' active' : ''}`}
+                aria-pressed={showArchived}
+                disabled={switchLocked}
+                onClick={() => setShowArchived((current) => !current)}
+              >
+                <ArchiveRestore aria-hidden="true" size={15} />
+                <span>已归档</span>
+                <span className="archived-conversations-count">{archivedConversations.length}</span>
+              </button>
+            </div>
             <ul>
-              {visibleConversations.map((item) => (
+              {listedConversations.map((item) => (
                 <li key={item.id}>
                   <button
                     type="button"
@@ -439,6 +619,9 @@ export function ChatPage() {
                   </button>
                 </li>
               ))}
+              {!listedConversations.length ? (
+                <li className="conversation-list-empty">{showArchived ? '暂无已归档会话' : '暂无进行中会话'}</li>
+              ) : null}
             </ul>
           </aside>
 
@@ -465,51 +648,79 @@ export function ChatPage() {
                 <button
                   type="button"
                   className="icon-button"
-                  aria-label="归档当前对话"
-                  title="归档当前对话"
-                  disabled={mutationLocked || archived}
-                  onClick={() => void archiveConversation()}
+                  aria-label={archived ? '恢复当前会话' : '归档当前对话'}
+                  title={archived ? '恢复当前会话' : '归档当前对话'}
+                  disabled={mutationLocked}
+                  onClick={() => void (archived ? restoreConversation() : archiveConversation())}
                 >
-                  <Archive aria-hidden="true" size={17} />
+                  {archived ? <ArchiveRestore aria-hidden="true" size={17} /> : <Archive aria-hidden="true" size={17} />}
                 </button>
               ) : null}
             </header>
 
-            <div ref={messageScrollRef} className="chat-message-scroll">
-              {loadingWorkspace || loadingConversation ? (
-                <div className="chat-loading" role="status"><span className="spinner" />正在加载</div>
-              ) : messages.length || pendingQuestion ? (
-                <MessageThread
-                  messages={messages}
-                  pendingQuestion={pendingQuestion}
-                  answerProgress={answerProgress}
-                  answerProgressTrail={answerProgressTrail}
-                  streamedAnswer={streamedAnswer}
-                  expandedCitationId={selectedCitation?.id}
-                  onCitation={(item, trigger) => void openCitation(item, trigger)}
-                  feedbackPendingIds={feedbackPendingIds}
-                  feedbackDisabled={archived}
-                  onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
-                />
-              ) : (
-                <div className="chat-empty">
-                  <h2>开始一段新对话</h2>
-                  <p>输入问题，查找企业正式资料中的答案。</p>
-                </div>
-              )}
-            </div>
+            <ConversationOutline
+              messages={messages}
+              activePairId={activePairId}
+              onActivate={activatePair}
+              onHighlight={setHighlightedPairId}
+            />
 
-            {showScrollToBottom ? (
-              <button
-                type="button"
-                className="chat-scroll-to-bottom"
-                aria-label="滚动到最新消息"
-                title="滚动到最新消息"
-                onClick={scrollToLatest}
-              >
-                <ArrowDown aria-hidden="true" size={19} strokeWidth={1.9} />
-              </button>
-            ) : null}
+            <div className="chat-message-area">
+              <div ref={messageScrollRef} className="chat-message-scroll">
+                {loadingWorkspace || loadingConversation ? (
+                  <div className="chat-loading" role="status"><span className="spinner" />正在加载</div>
+                ) : messages.length || pendingQuestion ? (
+                  <MessageThread
+                    messages={messages}
+                    pendingQuestion={pendingQuestion}
+                    answerProgress={answerProgress}
+                    answerProgressTrail={answerProgressTrail}
+                    streamedAnswer={streamedAnswer}
+                    highlightedPairId={highlightedPairId}
+                    expandedCitationId={selectedCitation?.id}
+                    onCitation={(item, trigger) => void openCitation(item, trigger)}
+                    feedbackPendingIds={feedbackPendingIds}
+                    feedbackDisabled={archived}
+                    onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
+                  />
+                ) : (
+                  <div className="chat-empty">
+                    <div className="chat-empty-copy">
+                      <h2>开始一段新对话</h2>
+                      <p>输入问题，查找企业正式资料中的答案。</p>
+                    </div>
+                    <div className="chat-recommendations">
+                      <p className="chat-recommendations-label">示例问题</p>
+                      <div className="chat-recommendations-list">
+                        {exampleQuestions.map((question) => (
+                          <button
+                            key={question}
+                            type="button"
+                            className="chat-recommendation"
+                            onClick={() => selectExampleQuestion(question)}
+                          >
+                            <span>{question}</span>
+                            <ArrowUpRight aria-hidden="true" size={15} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {showScrollToBottom ? (
+                <button
+                  type="button"
+                  className="chat-scroll-to-bottom"
+                  aria-label="滚动到最新消息"
+                  title="滚动到最新消息"
+                  onClick={scrollToLatest}
+                >
+                  <ArrowDown aria-hidden="true" size={19} strokeWidth={1.9} />
+                </button>
+              ) : null}
+            </div>
 
             {errorText ? (
               <div className="chat-error" role="alert">
@@ -518,6 +729,11 @@ export function ChatPage() {
                   <button type="button" onClick={() => void send()}>重试</button>
                 ) : errorText === '会话加载失败，请重试' ? (
                   <button type="button" onClick={() => void loadWorkspace()}>
+                    <RefreshCw aria-hidden="true" size={14} />
+                    重试
+                  </button>
+                ) : errorText === '恢复会话失败，请重试' ? (
+                  <button type="button" onClick={() => void restoreConversation()}>
                     <RefreshCw aria-hidden="true" size={14} />
                     重试
                   </button>
@@ -532,6 +748,10 @@ export function ChatPage() {
                 disabled={mutationLocked || archived}
                 onChange={setDraft}
                 onModeChange={setAnswerMode}
+                attachments={attachments}
+                attachmentError={attachmentError}
+                onFiles={addAttachments}
+                onRemoveAttachment={removeAttachment}
                 onSubmit={() => void send()}
               />
             </div>
