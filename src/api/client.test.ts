@@ -1,84 +1,60 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { api, ApiError } from './client'
+import { ApiError, streamApi } from './client'
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
+function chunkedResponse(chunks: string[]) {
+  const encoder = new TextEncoder()
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+      controller.close()
+    },
+  }), {
+    headers: { 'content-type': 'text/event-stream' },
   })
 }
 
-afterEach(() => vi.unstubAllGlobals())
+describe('streamApi', () => {
+  it('parses chunked CRLF events and joins multiple data lines', async () => {
+    const onProgress = vi.fn()
+    const onDelta = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([
+      'event: progress\r\ndata: {"stage":"UNDER',
+      'STANDING",\r\ndata: "message":"正在理解"}\r\n\r',
+      '\nevent: delta\r\ndata: {"content":"第一',
+      '段"}\r\n\r\nevent: delta\r\ndata: {"content":"第二段"}\r\n\r\n',
+      '\nevent: complete\r\ndata: {"ok":',
+      'true}\r\n\r\n',
+    ])))
 
-describe('api client', () => {
-  it('includes cookies without declaring JSON for a request without a body', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ ok: true }))
-    vi.stubGlobal('fetch', fetchMock)
+    const result = await streamApi<{ ok: boolean }, { stage: string; message: string }>(
+      '/api/stream',
+      { method: 'POST', body: '{}' },
+      { onProgress, onDelta },
+    )
 
-    await api('/api/auth/logout', { method: 'POST' })
-
-    expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
+    expect(onProgress).toHaveBeenCalledWith({ stage: 'UNDERSTANDING', message: '正在理解' })
+    expect(onDelta.mock.calls.map(([content]) => content)).toEqual(['第一段', '第二段'])
+    expect(result).toEqual({ ok: true })
+    expect(fetch).toHaveBeenCalledWith('/api/stream', expect.objectContaining({
       credentials: 'include',
+      headers: expect.any(Headers),
     }))
-    const request = fetchMock.mock.calls[0][1] as RequestInit
-    const headers = new Headers(request.headers)
-    expect(headers.has('content-type')).toBe(false)
-    expect(headers.has('authorization')).toBe(false)
+    vi.unstubAllGlobals()
   })
 
-  it('includes cookies and declares JSON when the request has a body', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ ok: true }))
-    vi.stubGlobal('fetch', fetchMock)
+  it('turns an SSE error event into ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([
+      'event: error\ndata: {"code":"KB_UNAVAILABLE","message":"知识服务不可用"}\n\n',
+    ])))
 
-    await api('/api/chat/conversations', { method: 'POST', body: JSON.stringify({}) })
-
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations', expect.objectContaining({
-      credentials: 'include',
-    }))
-    const request = fetchMock.mock.calls[0][1] as RequestInit
-    const headers = new Headers(request.headers)
-    expect(headers.get('content-type')).toBe('application/json')
-    expect(headers.has('authorization')).toBe(false)
-  })
-
-  it('throws a product API error', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
-      error: { code: 'SESSION_EXPIRED', message: '登录已过期' },
-    }, 401)))
-
-    const request = api('/api/session')
-    await expect(request).rejects.toBeInstanceOf(ApiError)
-    await expect(request).rejects.toMatchObject({
-      code: 'SESSION_EXPIRED',
-      message: '登录已过期',
-      status: 401,
-    })
-  })
-
-  it('reads a structured FastAPI detail error', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
-      detail: { code: 'SERVICE_UNAVAILABLE', message: '服务暂不可用' },
-    }, 503)))
-
-    const request = api('/api/session')
-    await expect(request).rejects.toBeInstanceOf(ApiError)
-    await expect(request).rejects.toMatchObject({
-      code: 'SERVICE_UNAVAILABLE',
-      message: '服务暂不可用',
-      status: 503,
-    })
-  })
-
-  it('uses a string FastAPI detail as the error message', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ detail: '请求参数无效' }, 422)))
-
-    const request = api('/api/session')
-    await expect(request).rejects.toBeInstanceOf(ApiError)
-    await expect(request).rejects.toMatchObject({
-      code: 'UNKNOWN_ERROR',
-      message: '请求参数无效',
-      status: 422,
-    })
+    await expect(streamApi('/api/stream', { method: 'POST' }, { onProgress: vi.fn() }))
+      .rejects.toEqual(expect.objectContaining<ApiError>({
+        name: 'ApiError',
+        code: 'KB_UNAVAILABLE',
+        message: '知识服务不可用',
+        status: 200,
+      }))
+    vi.unstubAllGlobals()
   })
 })

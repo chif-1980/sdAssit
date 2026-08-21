@@ -5,6 +5,7 @@ const prefixes = {
   candidate: 'KCD',
   knowledge: 'KNW',
   review: 'RVW',
+  relation: 'REL',
   conversation: 'CVS',
 } as const
 

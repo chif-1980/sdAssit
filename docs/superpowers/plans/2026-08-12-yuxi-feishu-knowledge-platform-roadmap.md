@@ -29,7 +29,7 @@
 - 不运行 Yuxi 的 `make reset`；该命令会删除 `docker/volumes`。需要重启时只使用 `docker compose restart` 或 `make down && make up`。
 - 新系统整体验收完成前，不删除当前 `server/`、`data/`、Git 历史或现有恢复点。
 - 第一阶段不实现音视频 ASR、Neo4j、多租户、本地模型、GPU 解析、自动发布、正式 Word/PDF 排版、Kubernetes 或高可用。
-- 真实飞书根节点 `VO95wRtWri5XoNkKqU0cLjQ3nqc` 只做读取、导出、权限查询与事件接收，不回写、移动或删除原文。
+- 真实飞书根节点 `POFEwqvUaiwFBXkNRuScMy3inkd` 只做读取、导出、权限查询与事件接收，不回写、移动或删除原文。
 
 ## 1. 跨阶段稳定契约
 

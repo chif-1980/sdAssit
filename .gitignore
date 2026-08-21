@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+artifacts/acceptance/
 data/knowledge-platform.json
 *.tsbuildinfo
 .DS_Store

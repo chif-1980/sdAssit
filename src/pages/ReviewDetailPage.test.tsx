@@ -42,6 +42,10 @@ describe('ReviewDetailPage', () => {
 
     expect(await screen.findByRole('button', { name: '创建新知识' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '更新知识' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '发布' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '需要修改' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '驳回' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '转交' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '归档知识' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '创建新知识' }))
     expect(screen.getByRole('button', { name: '确认裁决' })).toBeDisabled()

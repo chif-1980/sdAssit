@@ -105,7 +105,7 @@ FEISHU_OAUTH_REDIRECT_URI=http://127.0.0.1:5050/api/auth/feishu/callback
 FEISHU_EVENT_VERIFICATION_TOKEN=
 FEISHU_EVENT_ENCRYPT_KEY=
 FEISHU_TOKEN_ENCRYPTION_KEY=
-FEISHU_WIKI_ROOT_TOKEN=VO95wRtWri5XoNkKqU0cLjQ3nqc
+FEISHU_WIKI_ROOT_TOKEN=POFEwqvUaiwFBXkNRuScMy3inkd
 FEISHU_API_BASE=https://open.feishu.cn
 FEISHU_TENANT_DOMAIN=quickdone.feishu.cn
 ```
@@ -612,7 +612,7 @@ git commit -m "feat: reconcile feishu events and managed roots"
 
 - [ ] **Step 1: 写显式 opt-in E2E 测试**
 
-测试仅在 `RUN_REAL_FEISHU_E2E=1` 时运行，断言环境 root token 等于 `VO95wRtWri5XoNkKqU0cLjQ3nqc`；调用 `get_node` 和递归 `dry_run`，记录节点数、深度和 obj_type 统计。测试源码中不得出现 App Secret/token；测试不调用任何 POST/PUT/PATCH/DELETE 飞书资源接口。
+测试仅在 `RUN_REAL_FEISHU_E2E=1` 时运行，断言环境 root token 等于 `POFEwqvUaiwFBXkNRuScMy3inkd`；调用 `get_node` 和递归 `dry_run`，记录节点数、深度和 obj_type 统计。测试源码中不得出现 App Secret/token；测试不调用任何 POST/PUT/PATCH/DELETE 飞书资源接口。
 
 - [ ] **Step 2: 先运行默认测试确认真实测试跳过**
 

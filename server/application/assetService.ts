@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import type { PlatformRepository } from './ports.js'
 import { DeterministicAi, parseTextSections, summarizeSections } from '../adapters/deterministicAi.js'
 import { LocalRetrieval, normalizeKnowledgeText } from '../adapters/localRetrieval.js'
+import { compareCandidateAcrossDocuments, deriveApplicability } from './crossDocumentService.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
 import type {
   Asset,
@@ -181,6 +182,7 @@ export class AssetService {
         const content = parseInput(input.content, input.mimeType, asset.title)
         const sections = parseTextSections(content)
         const extracted = asset.isSessionAsset ? [] : this.extractor.extract(sections)
+        if (!draft.crossDocumentRelations) draft.crossDocumentRelations = []
         retireStaleDerivatives(draft, asset.id, asset.isSessionAsset ? new Set() : evidenceKeys(sections), timestamp)
         asset.sections = sections
         asset.summary = summarizeSections(sections)
@@ -200,7 +202,8 @@ export class AssetService {
             && candidate.sourceExcerpt === extractedCandidate.sourceExcerpt
             && !hasCancelledReview(draft, candidate.id))) continue
 
-          const match = this.retrieval.findMatch(extractedCandidate.content, draft.knowledge)
+          const applicability = deriveApplicability(extractedCandidate.content, asset.title)
+          const match = this.retrieval.findMatch(extractedCandidate.content, draft.knowledge, applicability)
           const candidateId = createBusinessId('candidate')
           const candidateTimestamp = now()
           const autoRejected = match.relation === 'DUPLICATE' && match.confidence >= 0.9
@@ -220,16 +223,44 @@ export class AssetService {
             status: autoRejected ? 'REJECTED' : 'PENDING',
             reviewRequired: !autoRejected,
             candidateHash,
+            applicability,
             createdAt: candidateTimestamp,
             ...(autoRejected ? { reviewedAt: candidateTimestamp } : {}),
           }
           draft.candidates.push(candidate)
 
+          const comparisons = compareCandidateAcrossDocuments(draft, {
+            asset,
+            candidate,
+            candidateScope: applicability,
+          })
+          for (const relation of comparisons) {
+            if (!draft.crossDocumentRelations.some((item) => item.relationKey === relation.relationKey)) {
+              draft.crossDocumentRelations.push(relation)
+            }
+          }
+          candidate.comparisonRelationIds = comparisons.map((relation) => relation.id)
+
+          if (autoRejected && match.existingKnowledgeId) {
+            const existingKnowledge = draft.knowledge.find((knowledge) => knowledge.id === match.existingKnowledgeId)
+            if (existingKnowledge) {
+              existingKnowledge.aliasAssetIds = [...new Set([...(existingKnowledge.aliasAssetIds ?? []), asset.id])]
+            }
+          }
+
           if (!autoRejected) {
-            const reviewType = reviewTypeFor(match.relation)
+            const comparisonTypes = new Set(comparisons.map((relation) => relation.relationType))
+            const reviewType = comparisonTypes.has('CONFLICT') ? 'CONFLICT' : reviewTypeFor(match.relation)
             const existing = match.existingKnowledgeId
               ? draft.knowledge.find((knowledge) => knowledge.id === match.existingKnowledgeId)
               : undefined
+            const problemTags = [
+              ...(match.relation === 'DUPLICATE' ? ['DUPLICATE' as const] : []),
+              ...(comparisonTypes.has('OVERLAP') ? ['OVERLAP' as const] : []),
+              ...(comparisonTypes.has('CONFLICT') ? ['CONFLICT' as const] : []),
+              ...(comparisonTypes.has('INSUFFICIENT') ? ['INSUFFICIENT_EVIDENCE' as const] : []),
+              ...(Object.keys(applicability).length <= 1 ? ['MISSING_SCOPE' as const] : []),
+            ]
             draft.reviews.push({
               id: createBusinessId('review'),
               title: candidate.title,
@@ -243,6 +274,9 @@ export class AssetService {
               risk: reviewType === 'CONFLICT' ? 'HIGH' : reviewType === 'UPDATE' ? 'MEDIUM' : 'LOW',
               proposedContent: candidate.content,
               aiSuggestion: candidate.aiReason,
+              ...(problemTags.length ? { problemTags } : {}),
+              applicability,
+              ...(comparisons.length ? { comparisonRelationIds: comparisons.map((relation) => relation.id) } : {}),
               reviewerId: asset.ownerId,
               status: 'PENDING',
               createdAt: candidateTimestamp,

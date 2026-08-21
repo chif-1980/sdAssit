@@ -6,9 +6,9 @@
 
 **部署边界：** 单一企业、单一飞书租户、私有化部署
 
-**目标飞书根节点：** `VO95wRtWri5XoNkKqU0cLjQ3nqc`
+**目标飞书根节点：** `POFEwqvUaiwFBXkNRuScMy3inkd`
 
-**目标链接：** <https://quickdone.feishu.cn/wiki/VO95wRtWri5XoNkKqU0cLjQ3nqc>
+**目标链接：** <https://quickdone.feishu.cn/wiki/POFEwqvUaiwFBXkNRuScMy3inkd>
 
 ## 1. 文档效力
 

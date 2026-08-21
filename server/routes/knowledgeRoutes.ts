@@ -52,6 +52,14 @@ export function registerKnowledgeRoutes(app: FastifyInstance, service: ReviewSer
     return service.knowledgeDetail(request.params.knowledgeId)
   })
 
+  app.get<{ Params: { knowledgeId: string } }>('/api/knowledge/:knowledgeId/relations', async (request) => {
+    return { relations: await service.knowledgeRelations(request.params.knowledgeId) }
+  })
+
+  app.get<{ Params: { knowledgeId: string } }>('/api/knowledge/:knowledgeId/versions', async (request) => {
+    return { versions: await service.knowledgeVersions(request.params.knowledgeId) }
+  })
+
   app.post<{ Params: { knowledgeId: string } }>('/api/knowledge/:knowledgeId/request-update', async (request, reply) => {
     const parsed = requestUpdateBody.safeParse(request.body)
     if (!parsed.success) throw invalidRequest()

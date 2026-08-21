@@ -7,11 +7,14 @@ import { ChatComposer } from './ChatComposer'
 
 function ComposerHarness({ disabled = false, onSubmit = vi.fn() }: { disabled?: boolean; onSubmit?: () => void }) {
   const [value, setValue] = useState('')
+  const [mode, setMode] = useState<'CONCISE' | 'DETAILED'>('CONCISE')
   return (
     <ChatComposer
       value={value}
+      mode={mode}
       disabled={disabled}
       onChange={setValue}
+      onModeChange={setMode}
       onSubmit={onSubmit}
     />
   )
@@ -20,12 +23,26 @@ function ComposerHarness({ disabled = false, onSubmit = vi.fn() }: { disabled?: 
 afterEach(cleanup)
 
 describe('ChatComposer', () => {
-  it('only exposes the question field and send action', () => {
+  it('exposes the question field, answer mode, and send action', () => {
     render(<ComposerHarness />)
 
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
     expect(screen.queryByText(/上传资料|回答范围/)).not.toBeInTheDocument()
+  })
+
+  it('switches answer mode and locks the switch while disabled', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<ComposerHarness />)
+
+    await user.click(screen.getByRole('button', { name: '详细模式' }))
+    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'true')
+
+    rerender(<ComposerHarness disabled />)
+    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
   })
 
   it('submits with Enter when the draft is not blank', async () => {
@@ -73,6 +90,8 @@ describe('ChatComposer', () => {
     const sendButton = screen.getByRole('button', { name: '发送问题' })
     expect(textbox).toBeDisabled()
     expect(sendButton).toBeDisabled()
+    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
 
     await user.type(textbox, '不会写入')
     await user.click(sendButton)

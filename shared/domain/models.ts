@@ -3,6 +3,8 @@ import type {
   Authority,
   BusinessType,
   CandidateStatus,
+  CrossDocumentRelationStatus,
+  CrossDocumentRelationType,
   ConversationScope,
   ConversationStatus,
   FeedbackType,
@@ -12,6 +14,9 @@ import type {
   MessageRole,
   ProcessStatus,
   Relation,
+  KnowledgeSourceRole,
+  ProblemTag,
+  ReviewDecision,
   ResolutionAction,
   ReviewStatus,
   ReviewType,
@@ -73,6 +78,8 @@ export interface Candidate {
   reviewRequired: boolean
   reviewerId?: string
   candidateHash: string
+  applicability?: ApplicabilityScope
+  comparisonRelationIds?: string[]
   createdAt: string
   reviewedAt?: string
 }
@@ -96,6 +103,69 @@ export interface Knowledge {
   staleReason?: string
   aiEnabled: boolean
   indexStatus: IndexStatus
+  createdAt: string
+  updatedAt: string
+  applicability?: ApplicabilityScope
+  logicalFactKey?: string
+  aliasAssetIds?: string[]
+  sourceLinks?: KnowledgeSourceLink[]
+}
+
+export interface KnowledgeSourceLink {
+  assetId: string
+  locator?: string
+  role: KnowledgeSourceRole
+}
+
+export interface KnowledgeVersion {
+  id: string
+  knowledgeId: string
+  version: number
+  content: string
+  applicability?: ApplicabilityScope
+  primaryAssetId: string
+  supportingAssetIds: string[]
+  aliasAssetIds: string[]
+  sourceLinks: KnowledgeSourceLink[]
+  sourceLocator: string
+  reviewId: string
+  reviewerId: string
+  decisionComment: string
+  createdAt: string
+}
+
+export interface ApplicabilityScope {
+  industry?: string
+  product?: string
+  productVersion?: string
+  deploymentMode?: string
+  customerType?: string
+  locale?: string
+  effectiveFrom?: string
+  effectiveTo?: string
+}
+
+export interface CrossDocumentRelation {
+  id: string
+  relationKey: string
+  relationType: CrossDocumentRelationType
+  leftAssetId: string
+  rightAssetId: string
+  leftCandidateId?: string
+  rightCandidateId?: string
+  leftLocator: string
+  rightLocator: string
+  leftExcerpt: string
+  rightExcerpt: string
+  similarity: number
+  confidence: number
+  scopeDiffs: string[]
+  sharedContent?: string
+  diffContent?: string
+  aiReason: string
+  status: CrossDocumentRelationStatus
+  reviewerId?: string
+  resolutionAction?: ResolutionAction
   createdAt: string
   updatedAt: string
 }
@@ -122,6 +192,13 @@ export interface Review {
   createdAt: string
   dueAt?: string
   resolvedAt?: string
+  decision?: ReviewDecision
+  problemTags?: ProblemTag[]
+  applicability?: ApplicabilityScope
+  requestedChanges?: string
+  assigneeId?: string
+  transferHistory?: Array<{ from: string; to: string; at: string; comment: string }>
+  comparisonRelationIds?: string[]
 }
 
 export interface Conversation {
@@ -175,7 +252,9 @@ export interface PlatformSnapshot {
   assets: Asset[]
   candidates: Candidate[]
   knowledge: Knowledge[]
+  knowledgeVersions?: KnowledgeVersion[]
   reviews: Review[]
+  crossDocumentRelations?: CrossDocumentRelation[]
   conversations: Conversation[]
   messages: ConversationMessage[]
   assetInputs: Record<string, { content: string; mimeType: string }>

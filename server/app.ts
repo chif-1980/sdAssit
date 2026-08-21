@@ -16,6 +16,9 @@ const badRequestCodes = new Set([
   'KNOWLEDGE_AUTHORITY_EXCEEDS_SOURCE',
   'REVIEW_ACTION_NOT_ALLOWED',
   'ASSET_NOT_PROCESSED',
+  'DECISION_COMMENT_REQUIRED',
+  'ASSIGNEE_NOT_FOUND',
+  'INVALID_APPLICABILITY_SCOPE',
 ])
 
 function classifyError(error: unknown) {

@@ -1,4 +1,4 @@
-import type { Knowledge } from '../../shared/domain/models.js'
+import type { ApplicabilityScope, Knowledge } from '../../shared/domain/models.js'
 import type { Relation } from '../../shared/domain/enums.js'
 
 export interface RetrievalMatch {
@@ -27,11 +27,22 @@ function tokenSet(value: string) {
 }
 
 export class LocalRetrieval {
-  findMatch(content: string, knowledge: Knowledge[]): RetrievalMatch {
+  findMatch(content: string, knowledge: Knowledge[], applicability?: ApplicabilityScope): RetrievalMatch {
     const active = knowledge.filter((item) => item.status === 'ACTIVE')
     const normalizedContent = normalizeKnowledgeText(content)
     const exact = active.find((item) => normalizeKnowledgeText(item.content) === normalizedContent)
     if (exact) {
+      const scopeDifferent = Object.entries(applicability ?? {}).some(([key, value]) => {
+        const existing = exact.applicability?.[key as keyof ApplicabilityScope]
+        return Boolean(value && existing && value !== existing)
+      })
+      if (scopeDifferent) {
+        return {
+          relation: 'NEW',
+          confidence: 0.94,
+          aiReason: 'LOCAL_EXACT_MATCH_DIFFERENT_SCOPE',
+        }
+      }
       const lowConfidence = content.includes('可能重复')
       return {
         relation: 'DUPLICATE',

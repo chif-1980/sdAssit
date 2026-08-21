@@ -1,8 +1,15 @@
-import { Archive, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
+import { Archive, ArrowDown, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { ProductCitation, ProductConversation, ProductMessage } from '../../shared/api/product.js'
-import { api } from '../api/client'
+import type {
+  AnswerMode,
+  FeedbackRating,
+  ProductAnswerProgress,
+  ProductCitation,
+  ProductConversation,
+  ProductMessage,
+} from '../../shared/api/product.js'
+import { api, streamApi } from '../api/client'
 import { ChatComposer } from '../components/chat/ChatComposer'
 import { MessageThread } from '../components/chat/MessageThread'
 import { SourceDrawer } from '../components/chat/SourceDrawer'
@@ -17,6 +24,11 @@ interface SendResponse {
   conversation: ProductConversation
   userMessage: ProductMessage
   assistantMessage: ProductMessage
+}
+
+interface FeedbackResponse {
+  messageId: string
+  feedbackRating: FeedbackRating | null
 }
 
 function sortConversations(conversations: ProductConversation[]) {
@@ -35,10 +47,17 @@ export function ChatPage() {
   const [conversation, setConversation] = useState<ProductConversation>()
   const [messages, setMessages] = useState<ProductMessage[]>([])
   const [draft, setDraft] = useState('')
+  const [answerMode, setAnswerMode] = useState<AnswerMode>('CONCISE')
+  const [pendingQuestion, setPendingQuestion] = useState<string>()
+  const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
+  const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
+  const [streamedAnswer, setStreamedAnswer] = useState('')
   const [loadingWorkspace, setLoadingWorkspace] = useState(true)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
@@ -46,6 +65,8 @@ export function ChatPage() {
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
   const citationTriggerRef = useRef<HTMLButtonElement>()
+  const messageScrollRef = useRef<HTMLDivElement>(null)
+  const followLatestRef = useRef(true)
   const conversationSidebarRef = useRef<HTMLElement>(null)
   const conversationTriggerRef = useRef<HTMLButtonElement>(null)
   const conversationCloseRef = useRef<HTMLButtonElement>(null)
@@ -104,6 +125,53 @@ export function ChatPage() {
     trigger.focus()
   }, [selectedCitation])
 
+  const lastMessageId = messages.at(-1)?.id
+
+  useEffect(() => {
+    const element = messageScrollRef.current
+    if (!element) return
+
+    const syncScrollButton = () => {
+      const distanceFromBottom = element.scrollHeight - element.clientHeight - element.scrollTop
+      followLatestRef.current = distanceFromBottom <= 24
+      setShowScrollToBottom(element.scrollHeight > element.clientHeight + 24 && distanceFromBottom > 24)
+    }
+
+    syncScrollButton()
+    element.addEventListener('scroll', syncScrollButton, { passive: true })
+    window.addEventListener('resize', syncScrollButton)
+    let resizeObserver: ResizeObserver | undefined
+    if (typeof ResizeObserver === 'function') {
+      resizeObserver = new ResizeObserver(syncScrollButton)
+      resizeObserver.observe(element)
+    }
+    return () => {
+      element.removeEventListener('scroll', syncScrollButton)
+      window.removeEventListener('resize', syncScrollButton)
+      resizeObserver?.disconnect()
+    }
+  }, [lastMessageId, loadingConversation, loadingWorkspace, messages.length, pendingQuestion])
+
+  useEffect(() => {
+    if (!streamedAnswer) return
+    const element = messageScrollRef.current
+    if (!element) return
+    if (followLatestRef.current) {
+      element.scrollTop = element.scrollHeight
+      setShowScrollToBottom(false)
+      return
+    }
+    setShowScrollToBottom(element.scrollHeight > element.clientHeight + 24)
+  }, [streamedAnswer])
+
+  const scrollToLatest = useCallback(() => {
+    const element = messageScrollRef.current
+    if (!element) return
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+    followLatestRef.current = true
+    setShowScrollToBottom(false)
+  }, [])
+
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const switchLocked = sending || archiving
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
@@ -141,11 +209,16 @@ export function ChatPage() {
     citationVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
+    setPendingQuestion(undefined)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    setStreamedAnswer('')
     setDraft('')
     setErrorText(undefined)
     setLoadingWorkspace(false)
     setLoadingConversation(false)
     setSelectedCitation(undefined)
+    setFeedbackPendingIds(new Set())
     closeConversationList()
   }
 
@@ -154,7 +227,12 @@ export function ChatPage() {
     const version = ++contextVersionRef.current
     citationVersionRef.current += 1
     setErrorText(undefined)
+    setPendingQuestion(undefined)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    setStreamedAnswer('')
     setSelectedCitation(undefined)
+    setFeedbackPendingIds(new Set())
     setLoadingWorkspace(false)
     setLoadingConversation(true)
     closeConversationList()
@@ -174,8 +252,14 @@ export function ChatPage() {
   async function send() {
     const content = draft.trim()
     if (!content || mutationLocked || archived) return
+    const mode = answerMode
     const version = contextVersionRef.current
     setSending(true)
+    setPendingQuestion(content)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    setStreamedAnswer('')
+    followLatestRef.current = true
     setErrorText(undefined)
     try {
       let target = conversation
@@ -189,17 +273,42 @@ export function ChatPage() {
         setConversation(target)
         setConversations((current) => upsertConversation(current, target!))
       }
-      const result = await api<SendResponse>(`/api/chat/conversations/${target.id}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ content }),
-      })
+      const result = await streamApi<SendResponse, ProductAnswerProgress>(
+        `/api/chat/conversations/${target.id}/messages/stream`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ content, mode }),
+        },
+        {
+          onProgress: (progress) => {
+            if (contextVersionRef.current !== version) return
+            setAnswerProgress(progress)
+            setAnswerProgressTrail((current) => (
+              current.at(-1)?.stage === progress.stage
+                ? [...current.slice(0, -1), progress]
+                : [...current, progress]
+            ))
+          },
+          onDelta: (delta) => {
+            if (contextVersionRef.current === version) setStreamedAnswer((current) => current + delta)
+          },
+        },
+      )
       if (contextVersionRef.current !== version) return
       setConversation(result.conversation)
       setConversations((current) => upsertConversation(current, result.conversation))
       setMessages((current) => [...current, result.userMessage, result.assistantMessage])
+      setPendingQuestion(undefined)
+      setAnswerProgress(undefined)
+      setAnswerProgressTrail([])
+      setStreamedAnswer('')
       setDraft('')
     } catch {
       if (contextVersionRef.current !== version) return
+      setPendingQuestion(undefined)
+      setAnswerProgress(undefined)
+      setAnswerProgressTrail([])
+      setStreamedAnswer('')
       setErrorText('发送失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setSending(false)
@@ -223,6 +332,45 @@ export function ChatPage() {
       setErrorText('归档失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setArchiving(false)
+    }
+  }
+
+  async function updateFeedback(messageId: string, rating: FeedbackRating | null) {
+    if (feedbackPendingIds.has(messageId)) return
+    const target = messages.find((message) => message.id === messageId && message.role === 'ASSISTANT')
+    if (!target || archived) return
+    const version = contextVersionRef.current
+    const previousRating = target.feedbackRating ?? null
+    setFeedbackPendingIds((current) => new Set(current).add(messageId))
+    setErrorText(undefined)
+    setMessages((current) => current.map((message) => (
+      message.id === messageId ? { ...message, feedbackRating: rating } : message
+    )))
+    try {
+      const response = await api<FeedbackResponse>(`/api/chat/messages/${messageId}/feedback`, {
+        method: 'PUT',
+        body: JSON.stringify({ rating }),
+      })
+      if (contextVersionRef.current !== version) return
+      setMessages((current) => current.map((message) => (
+        message.id === response.messageId
+          ? { ...message, feedbackRating: response.feedbackRating }
+          : message
+      )))
+    } catch {
+      if (contextVersionRef.current !== version) return
+      setMessages((current) => current.map((message) => (
+        message.id === messageId ? { ...message, feedbackRating: previousRating } : message
+      )))
+      setErrorText('反馈提交失败，请重试')
+    } finally {
+      if (contextVersionRef.current === version) {
+        setFeedbackPendingIds((current) => {
+          const next = new Set(current)
+          next.delete(messageId)
+          return next
+        })
+      }
     }
   }
 
@@ -327,14 +475,21 @@ export function ChatPage() {
               ) : null}
             </header>
 
-            <div className="chat-message-scroll">
+            <div ref={messageScrollRef} className="chat-message-scroll">
               {loadingWorkspace || loadingConversation ? (
                 <div className="chat-loading" role="status"><span className="spinner" />正在加载</div>
-              ) : messages.length ? (
+              ) : messages.length || pendingQuestion ? (
                 <MessageThread
                   messages={messages}
+                  pendingQuestion={pendingQuestion}
+                  answerProgress={answerProgress}
+                  answerProgressTrail={answerProgressTrail}
+                  streamedAnswer={streamedAnswer}
                   expandedCitationId={selectedCitation?.id}
                   onCitation={(item, trigger) => void openCitation(item, trigger)}
+                  feedbackPendingIds={feedbackPendingIds}
+                  feedbackDisabled={archived}
+                  onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
                 />
               ) : (
                 <div className="chat-empty">
@@ -343,6 +498,18 @@ export function ChatPage() {
                 </div>
               )}
             </div>
+
+            {showScrollToBottom ? (
+              <button
+                type="button"
+                className="chat-scroll-to-bottom"
+                aria-label="滚动到最新消息"
+                title="滚动到最新消息"
+                onClick={scrollToLatest}
+              >
+                <ArrowDown aria-hidden="true" size={19} strokeWidth={1.9} />
+              </button>
+            ) : null}
 
             {errorText ? (
               <div className="chat-error" role="alert">
@@ -361,8 +528,10 @@ export function ChatPage() {
             <div className="chat-composer-dock">
               <ChatComposer
                 value={draft}
+                mode={answerMode}
                 disabled={mutationLocked || archived}
                 onChange={setDraft}
+                onModeChange={setAnswerMode}
                 onSubmit={() => void send()}
               />
             </div>

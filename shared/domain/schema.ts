@@ -9,6 +9,18 @@ const knowledgeTypeSchema = z.enum([
   'POLICY', 'BEST_PRACTICE', 'PROJECT', 'OTHER',
 ])
 const feedbackTypeSchema = z.enum(['WRONG', 'OUTDATED', 'MISSING', 'CITATION_ERROR', 'OTHER'])
+const applicabilitySchema = z.object({
+  industry: z.string().max(120).optional(),
+  product: z.string().max(120).optional(),
+  productVersion: z.string().max(120).optional(),
+  deploymentMode: z.string().max(120).optional(),
+  customerType: z.string().max(120).optional(),
+  locale: z.string().max(120).optional(),
+  effectiveFrom: isoSchema.optional(),
+  effectiveTo: isoSchema.optional(),
+}).strict().refine(
+  (value) => value.effectiveFrom === undefined || value.effectiveTo === undefined || value.effectiveFrom <= value.effectiveTo,
+)
 
 const assetSectionSchema = z.object({
   id: z.string(),
@@ -56,10 +68,12 @@ const candidateSchema = z.object({
   relation: z.enum(['NEW', 'DUPLICATE', 'UPDATE', 'CONFLICT']),
   existingKnowledgeId: z.string().optional(),
   aiReason: z.string(),
-  status: z.enum(['PENDING', 'APPROVED', 'REJECTED']),
+  status: z.enum(['PENDING', 'NEEDS_CHANGES', 'APPROVED', 'REJECTED']),
   reviewRequired: z.boolean(),
   reviewerId: z.string().optional(),
   candidateHash: z.string(),
+  applicability: applicabilitySchema.optional(),
+  comparisonRelationIds: z.array(z.string()).optional(),
   createdAt: isoSchema,
   reviewedAt: isoSchema.optional(),
 }).strict()
@@ -85,6 +99,55 @@ const knowledgeSchema = z.object({
   indexStatus: z.enum(['PENDING', 'INDEXED', 'FAILED']),
   createdAt: isoSchema,
   updatedAt: isoSchema,
+  applicability: applicabilitySchema.optional(),
+  logicalFactKey: z.string().optional(),
+  aliasAssetIds: z.array(z.string()).optional(),
+  sourceLinks: z.array(z.object({ assetId: z.string(), locator: z.string().optional(), role: z.enum(['PRIMARY', 'SUPPORTING', 'ALIAS']) }).strict()).optional(),
+}).strict()
+
+const crossDocumentRelationSchema = z.object({
+  id: z.string(),
+  relationKey: z.string(),
+  relationType: z.enum(['EXACT_DUPLICATE', 'OVERLAP', 'COMPLEMENTARY', 'CONDITIONAL_VARIANT', 'CONFLICT', 'INSUFFICIENT']),
+  leftAssetId: z.string(),
+  rightAssetId: z.string(),
+  leftCandidateId: z.string().optional(),
+  rightCandidateId: z.string().optional(),
+  leftLocator: z.string(),
+  rightLocator: z.string(),
+  leftExcerpt: z.string(),
+  rightExcerpt: z.string(),
+  similarity: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  scopeDiffs: z.array(z.string()),
+  sharedContent: z.string().optional(),
+  diffContent: z.string().optional(),
+  aiReason: z.string(),
+  status: z.enum(['AUTO_RESOLVED', 'PENDING', 'RESOLVED']),
+  reviewerId: z.string().optional(),
+  resolutionAction: z.enum([
+    'CREATE_KNOWLEDGE', 'UPDATE_KNOWLEDGE', 'KEEP_CURRENT', 'REJECT_CANDIDATE',
+    'ARCHIVE_KNOWLEDGE', 'CONFIRM_VALID', 'MARK_DUPLICATE', 'SPLIT_BY_SCOPE', 'MARK_INSUFFICIENT',
+  ]).optional(),
+  createdAt: isoSchema,
+  updatedAt: isoSchema,
+}).strict()
+
+const knowledgeVersionSchema = z.object({
+  id: z.string(),
+  knowledgeId: z.string(),
+  version: z.number().int().positive(),
+  content: z.string(),
+  applicability: applicabilitySchema.optional(),
+  primaryAssetId: z.string(),
+  supportingAssetIds: z.array(z.string()),
+  aliasAssetIds: z.array(z.string()),
+  sourceLinks: z.array(z.object({ assetId: z.string(), locator: z.string().optional(), role: z.enum(['PRIMARY', 'SUPPORTING', 'ALIAS']) }).strict()),
+  sourceLocator: z.string(),
+  reviewId: z.string(),
+  reviewerId: z.string(),
+  decisionComment: z.string(),
+  createdAt: isoSchema,
 }).strict()
 
 const reviewSchema = z.object({
@@ -99,10 +162,11 @@ const reviewSchema = z.object({
   proposedContent: z.string().optional(),
   aiSuggestion: z.string().optional(),
   reviewerId: z.string(),
-  status: z.enum(['PENDING', 'RESOLVED', 'CANCELLED']),
+  status: z.enum(['PENDING', 'CHANGES_REQUESTED', 'RESOLVED', 'CANCELLED']),
   resolutionAction: z.enum([
     'CREATE_KNOWLEDGE', 'UPDATE_KNOWLEDGE', 'KEEP_CURRENT',
-    'REJECT_CANDIDATE', 'ARCHIVE_KNOWLEDGE', 'CONFIRM_VALID',
+    'REJECT_CANDIDATE', 'ARCHIVE_KNOWLEDGE', 'CONFIRM_VALID', 'MARK_DUPLICATE',
+    'SPLIT_BY_SCOPE', 'MARK_INSUFFICIENT',
   ]).optional(),
   finalContent: z.string().optional(),
   decisionComment: z.string().optional(),
@@ -112,6 +176,18 @@ const reviewSchema = z.object({
   createdAt: isoSchema,
   dueAt: isoSchema.optional(),
   resolvedAt: isoSchema.optional(),
+  decision: z.enum(['PUBLISH', 'REQUEST_CHANGES', 'REJECT', 'TRANSFER']).optional(),
+  problemTags: z.array(z.enum([
+    'DUPLICATE', 'OVERLAP', 'CONFLICT', 'INSUFFICIENT_EVIDENCE', 'MISSING_SCOPE',
+    'OUTDATED', 'OCR_ERROR', 'SOURCE_UNCLEAR',
+  ])).optional(),
+  applicability: applicabilitySchema.optional(),
+  requestedChanges: z.string().optional(),
+  assigneeId: z.string().optional(),
+  transferHistory: z.array(z.object({
+    from: z.string(), to: z.string(), at: isoSchema, comment: z.string(),
+  }).strict()).optional(),
+  comparisonRelationIds: z.array(z.string()).optional(),
 }).strict()
 
 const conversationSchema = z.object({
@@ -170,7 +246,9 @@ export const platformSnapshotSchema = z.object({
   assets: z.array(assetSchema),
   candidates: z.array(candidateSchema),
   knowledge: z.array(knowledgeSchema),
+  knowledgeVersions: z.array(knowledgeVersionSchema).optional(),
   reviews: z.array(reviewSchema),
+  crossDocumentRelations: z.array(crossDocumentRelationSchema).optional(),
   conversations: z.array(conversationSchema),
   messages: z.array(messageSchema),
   assetInputs: z.record(z.string(), z.object({

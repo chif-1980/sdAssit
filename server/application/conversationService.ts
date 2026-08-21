@@ -10,6 +10,7 @@ import type {
 } from '../../shared/domain/models.js'
 import type { ConversationScope } from '../../shared/domain/enums.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
+import { deriveApplicability } from './crossDocumentService.js'
 import type { PlatformRepository } from './ports.js'
 
 export interface CreateConversationInput {
@@ -36,6 +37,8 @@ interface Evidence {
   authority: string
   updatedAt: string
   citation: Citation
+  logicalFactKey?: string
+  applicability?: Knowledge['applicability']
 }
 
 function now() {
@@ -70,6 +73,21 @@ function authorityRank(authority: string) {
   return Number(authority.slice(1)) || 0
 }
 
+function applicabilityKey(scope: Knowledge['applicability']) {
+  return Object.entries(scope ?? {})
+    .filter(([key]) => key !== 'locale')
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('|') || 'generic'
+}
+
+function applicabilityLabel(scope: Knowledge['applicability']) {
+  const labels = Object.entries(scope ?? {})
+    .filter(([key]) => key !== 'locale')
+    .map(([key, value]) => `${key}=${value}`)
+  return labels.length ? `（适用：${labels.join('，')}）` : ''
+}
+
 function eligibleKnowledge(snapshot: PlatformSnapshot, scope: ConversationScope) {
   if (scope === 'SESSION') return []
   const actor = snapshot.users.find((user) => user.id === snapshot.session.userId && user.role === snapshot.session.role)
@@ -90,6 +108,7 @@ function eligibleSessionAssets(snapshot: PlatformSnapshot, conversation: Convers
 
 function evidenceForKnowledge(knowledge: Knowledge, snapshot: PlatformSnapshot): Evidence | undefined {
   const asset = snapshot.assets.find((item) => item.id === knowledge.primaryAssetId)
+    ?? (knowledge.aliasAssetIds ?? []).map((id) => snapshot.assets.find((item) => item.id === id)).find(Boolean)
   if (!asset) return undefined
   return {
     title: knowledge.title,
@@ -104,6 +123,8 @@ function evidenceForKnowledge(knowledge: Knowledge, snapshot: PlatformSnapshot):
       locator: knowledge.sourceLocator,
       excerpt: knowledge.content,
     },
+    logicalFactKey: knowledge.logicalFactKey ?? `${knowledge.category}:${knowledge.title}:${knowledge.content}`,
+    applicability: knowledge.applicability,
   }
 }
 
@@ -132,16 +153,31 @@ function buildAnswer(snapshot: PlatformSnapshot, conversation: Conversation, que
   }
   for (const asset of eligibleSessionAssets(snapshot, conversation, scope)) evidence.push(...evidenceForAsset(asset))
 
+  const questionScope = deriveApplicability(question)
   const ranked = evidence
     .map((item) => ({ item, score: scoreEvidence(question, item) }))
     .filter(({ score }) => score > 0)
+    .filter(({ item }) => !item.applicability || Object.entries(questionScope).every(([key, value]) => {
+      const scopedValue = item.applicability?.[key as keyof NonNullable<Evidence['applicability']>]
+      return !value || !scopedValue || value === scopedValue
+    }))
     .sort((left, right) => authorityRank(right.item.authority) - authorityRank(left.item.authority)
       || right.score - left.score
       || right.item.updatedAt.localeCompare(left.item.updatedAt)
       || left.item.citation.knowledgeId.localeCompare(right.item.citation.knowledgeId))
-    .slice(0, 3)
+    .slice(0, 8)
 
-  if (!ranked.length) {
+  const distinctFacts = new Map<string, typeof ranked[number]>()
+  for (const match of ranked) {
+    const key = `${match.item.logicalFactKey ?? match.item.citation.knowledgeId}:${applicabilityKey(match.item.applicability)}`
+    const current = distinctFacts.get(key)
+    if (!current || match.score > current.score || authorityRank(match.item.authority) > authorityRank(current.item.authority)) {
+      distinctFacts.set(key, match)
+    }
+  }
+  const selected = [...distinctFacts.values()].slice(0, 3)
+
+  if (!selected.length) {
     return {
       text: '没有足够可靠资料回答这个问题。',
       confidence: 'INSUFFICIENT',
@@ -149,13 +185,20 @@ function buildAnswer(snapshot: PlatformSnapshot, conversation: Conversation, que
     }
   }
 
-  const citations = ranked.map(({ item }) => item.citation)
-  const distinctNumericFacts = new Set(ranked
+  const citations = selected.map(({ item }) => item.citation)
+  const distinctNumericFacts = new Set(selected
     .map(({ item }) => item.content.match(/\d+(?:\.\d+)?[^。！？!?；;]*/u)?.[0])
     .filter((value): value is string => Boolean(value)))
-  const confidence = distinctNumericFacts.size > 1 ? 'CONFLICTING' : 'SUPPORTED'
+  const selectedAssetIds = new Set(selected.map(({ item }) => item.citation.assetId))
+  const hasUnresolvedConflict = (snapshot.crossDocumentRelations ?? []).some((relation) =>
+    relation.relationType === 'CONFLICT' && relation.status !== 'RESOLVED'
+      && selectedAssetIds.has(relation.leftAssetId) && selectedAssetIds.has(relation.rightAssetId))
+  const confidence = distinctNumericFacts.size > 1 || hasUnresolvedConflict ? 'CONFLICTING' : 'SUPPORTED'
+  const selectedText = selected.map(({ item }) => `${applicabilityLabel(item.applicability)}${item.content}`).join('\n')
   return {
-    text: ranked.map(({ item }) => item.content).join('\n'),
+    text: hasUnresolvedConflict
+      ? `检索到可能存在冲突的资料，请先确认适用范围：\n${selectedText}`
+      : selectedText,
     confidence,
     citations,
   }

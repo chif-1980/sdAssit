@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -58,6 +58,16 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
+  })
+}
+
+function sseResponse(body: unknown) {
+  return new Response([
+    'event: progress\ndata: {"stage":"UNDERSTANDING","message":"正在结合当前对话理解问题"}\n\n',
+    'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n',
+    `event: complete\ndata: ${JSON.stringify(body)}\n\n`,
+  ].join(''), {
+    headers: { 'content-type': 'text/event-stream' },
   })
 }
 
@@ -190,8 +200,8 @@ describe('ChatPage product workspace', () => {
     const fetchMock = mockFetch((path, init) => {
       if (path === '/api/chat/conversations' && !init?.method) return jsonResponse({ conversations: [] })
       if (path === '/api/chat/conversations' && init?.method === 'POST') return jsonResponse({ conversation: createdConversation })
-      if (path === '/api/chat/conversations/CVS-A/messages' && init?.method === 'POST') {
-        return jsonResponse({ conversation: { ...conversationA, messageCount: 2 }, userMessage, assistantMessage })
+      if (path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST') {
+        return sseResponse({ conversation: { ...conversationA, messageCount: 2 }, userMessage, assistantMessage })
       }
       throw new Error(`Unexpected request: ${path}`)
     })
@@ -211,10 +221,163 @@ describe('ChatPage product workspace', () => {
       method: 'POST',
       body: JSON.stringify({}),
     }))
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ content: '上线条件是什么？' }),
+      body: JSON.stringify({ content: '上线条件是什么？', mode: 'CONCISE' }),
     }))
+  })
+
+  it('sends the selected detailed answer mode', async () => {
+    const user = userEvent.setup()
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST') {
+        return sseResponse({
+          conversation: conversationA,
+          userMessage: { ...priorMessage, id: 'MSG-U', role: 'USER', answerStatus: null },
+          assistantMessage: { ...priorMessage, id: 'MSG-A' },
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '详细模式' }))
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/conversations/CVS-A/messages/stream',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ content: '给出完整实施说明', mode: 'DETAILED' }),
+      }),
+    ))
+  })
+
+  it('shows streamed answer text before the complete event arrives', async () => {
+    const user = userEvent.setup()
+    const encoder = new TextEncoder()
+    let streamController!: ReadableStreamDefaultController<Uint8Array>
+    const userMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-STREAM-U',
+      role: 'USER',
+      content: '是否支持私有部署？',
+      answerStatus: null,
+    }
+    const assistantMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-STREAM-A',
+      content: '## 结论\n\n支持私有部署。',
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST') {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { streamController = controller },
+        }), { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '是否支持私有部署？')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+    await act(async () => {
+      streamController.enqueue(encoder.encode(
+        'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n'
+        + 'event: delta\ndata: {"content":"## 结论\\n\\n支持"}\n\n',
+      ))
+    })
+
+    expect(await screen.findByRole('heading', { level: 2, name: '结论' })).toBeInTheDocument()
+    expect(screen.getByText('支持')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('正在生成')
+    expect(within(document.querySelector('.message-streaming') as HTMLElement)
+      .queryByRole('button', { name: '点赞这条回答' })).not.toBeInTheDocument()
+
+    await act(async () => {
+      streamController.enqueue(encoder.encode('event: delta\ndata: {"content":"私有部署。"}\n\n'))
+    })
+    expect(await screen.findByText('支持私有部署。')).toBeInTheDocument()
+
+    await act(async () => {
+      streamController.enqueue(encoder.encode(
+        `event: complete\ndata: ${JSON.stringify({
+          conversation: { ...conversationA, messageCount: 3 },
+          userMessage,
+          assistantMessage,
+        })}\n\n`,
+      ))
+      streamController.close()
+    })
+
+    await waitFor(() => expect(screen.queryByText('正在生成')).not.toBeInTheDocument())
+    expect(screen.getAllByRole('button', { name: '点赞这条回答' })).toHaveLength(2)
+    expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)
+  })
+
+  it('submits, switches, and persists feedback through the product feedback endpoint', async () => {
+    const user = userEvent.setup()
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, feedbackRating: null }]))
+      }
+      if (path === '/api/chat/messages/MSG-PRIOR/feedback' && init?.method === 'PUT') {
+        const { rating } = JSON.parse(String(init.body)) as { rating: 'LIKE' | 'DISLIKE' | null }
+        return jsonResponse({ messageId: 'MSG-PRIOR', feedbackRating: rating })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    const like = await screen.findByRole('button', { name: '点赞这条回答' })
+    const dislike = screen.getByRole('button', { name: '点踩这条回答' })
+
+    await user.click(like)
+    await waitFor(() => expect(like).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(like).toBeEnabled())
+    expect(dislike).toHaveAttribute('aria-pressed', 'false')
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/MSG-PRIOR/feedback', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ rating: 'LIKE' }),
+    }))
+
+    await user.click(dislike)
+    await waitFor(() => expect(dislike).toHaveAttribute('aria-pressed', 'true'))
+    expect(like).toHaveAttribute('aria-pressed', 'false')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/chat/messages/MSG-PRIOR/feedback', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ rating: 'DISLIKE' }),
+    }))
+  })
+
+  it('rolls back optimistic feedback when submission fails', async () => {
+    const user = userEvent.setup()
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, feedbackRating: 'LIKE' }]))
+      }
+      if (path === '/api/chat/messages/MSG-PRIOR/feedback' && init?.method === 'PUT') {
+        return jsonResponse({ error: { code: 'FEEDBACK_FAILED', message: 'internal detail' } }, 500)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    const like = await screen.findByRole('button', { name: '点赞这条回答' })
+    const dislike = screen.getByRole('button', { name: '点踩这条回答' })
+
+    await user.click(dislike)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('反馈提交失败，请重试')
+    expect(like).toHaveAttribute('aria-pressed', 'true')
+    expect(dislike).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('preserves the draft and prior messages after a send failure and offers retry', async () => {
@@ -225,11 +388,11 @@ describe('ChatPage product workspace', () => {
     mockFetch((path, init) => {
       if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
       if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
-      if (path === '/api/chat/conversations/CVS-A/messages') {
+      if (path === '/api/chat/conversations/CVS-A/messages/stream') {
         messageAttempts += 1
         return messageAttempts === 1
           ? jsonResponse({ error: { code: 'SEND_FAILED', message: 'internal detail' } }, 500)
-          : jsonResponse({ conversation: conversationA, userMessage: recoveredUser, assistantMessage: recoveredAssistant })
+          : sseResponse({ conversation: conversationA, userMessage: recoveredUser, assistantMessage: recoveredAssistant })
       }
       throw new Error(`Unexpected request: ${path}`)
     })
@@ -254,7 +417,7 @@ describe('ChatPage product workspace', () => {
     mockFetch((path, init) => {
       if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
       if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
-      if (path === '/api/chat/conversations/CVS-A/messages') return pendingSend
+      if (path === '/api/chat/conversations/CVS-A/messages/stream') return pendingSend
       throw new Error(`Unexpected request: ${path}`)
     })
     render(<ChatPage />)
@@ -268,16 +431,24 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('button', { name: '项目 B' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '归档当前对话' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
     expect(textbox).toHaveValue('发送期间保留')
+    expect(document.querySelector('.message-pending-question')).toHaveTextContent('发送期间保留')
+    expect(screen.getByRole('status', { name: '正在整理答案' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看处理详情' })).toBeInTheDocument()
 
     await act(async () => {
-      resolveSend(jsonResponse({
+      resolveSend(sseResponse({
         conversation: conversationA,
         userMessage: { ...priorMessage, id: 'MSG-U', role: 'USER', content: '发送期间保留', answerStatus: null },
         assistantMessage: { ...priorMessage, id: 'MSG-A', content: '已回答' },
       }))
       await pendingSend
     })
+    expect(screen.queryByRole('status', { name: '正在整理答案' })).not.toBeInTheDocument()
+    expect(document.querySelector('.message-user:not(.message-pending-question)')).toHaveTextContent('发送期间保留')
+    expect(screen.getByText('已回答')).toBeInTheDocument()
   })
 
   it('finishes initial loading when switching away from a pending first detail', async () => {
@@ -523,5 +694,30 @@ describe('ChatPage product workspace', () => {
     expect(appCss).toMatch(/\.message-bubble p\s*\{[^}]*overflow-wrap:\s*anywhere;/s)
     expect(appCss).toMatch(/\.source-drawer-content\s*\{[^}]*min-width:\s*0;/s)
     expect(appCss).toMatch(/\.source-drawer-content h3,[^}]*\.source-drawer-content p\s*\{[^}]*overflow-wrap:\s*anywhere;/s)
+  })
+
+  it('shows a bottom arrow only while the message area is scrolled away from the latest answer', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+    await screen.findByText('开始一段新对话')
+    const messageScroll = document.querySelector('.chat-message-scroll') as HTMLDivElement
+    const scrollTo = vi.fn()
+    Object.defineProperty(messageScroll, 'scrollHeight', { configurable: true, value: 1200 })
+    Object.defineProperty(messageScroll, 'clientHeight', { configurable: true, value: 500 })
+    Object.defineProperty(messageScroll, 'scrollTop', { configurable: true, writable: true, value: 0 })
+    Object.defineProperty(messageScroll, 'scrollTo', { configurable: true, value: scrollTo })
+
+    fireEvent.scroll(messageScroll)
+    const scrollButton = await screen.findByRole('button', { name: '滚动到最新消息' })
+    expect(scrollButton).toBeInTheDocument()
+
+    await user.click(scrollButton)
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: 'smooth' })
+    expect(screen.queryByRole('button', { name: '滚动到最新消息' })).not.toBeInTheDocument()
+
+    Object.defineProperty(messageScroll, 'scrollTop', { configurable: true, writable: true, value: 700 })
+    fireEvent.scroll(messageScroll)
+    expect(screen.queryByRole('button', { name: '滚动到最新消息' })).not.toBeInTheDocument()
   })
 })
