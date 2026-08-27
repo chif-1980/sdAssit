@@ -1,0 +1,58 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/production-ip/api.Dockerfile
+    environment:
+      # HTTP-by-IP access cannot use Secure cookies. Switch to production after HTTPS is enabled.
+      YUXI_ENV: development
+      LITE_MODE: "false"
+    volumes: !override
+      - yuxi_data:/app/saves
+      - models_data:/app/models
+      - nltk_data:/root/nltk_data
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: uv run --no-sync --no-dev uvicorn server.main:app --host 0.0.0.0 --port 5050
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/production-ip/api.Dockerfile
+    volumes: !override
+      - yuxi_data:/app/saves
+      - models_data:/app/models
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: uv run --no-sync --no-dev arq server.worker_main.WorkerSettings
+
+  sandbox-provisioner:
+    volumes: !override
+      - yuxi_data:/app/saves
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      target: production
+    volumes: !override []
+    ports: !override
+      - "5173:80"
+    environment:
+      NODE_ENV: production
+      VITE_LITE_MODE: "false"
+    command: nginx -g "daemon off;"
+
+  assistant-web:
+    build:
+      context: ./assistant-app
+      dockerfile: Dockerfile
+    image: shanda-zhishu-assistant:0.1
+    container_name: quickdone-kb-assistant-web
+    ports:
+      - "5174:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped

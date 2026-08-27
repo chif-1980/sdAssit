@@ -197,14 +197,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .login-header, .login-stage, .login-footer { width: min(1120px, 100%); margin: 0 auto; }
 .login-header { min-height: 40px; display: flex; align-items: center; gap: 10px; }
 .login-brand-mark {
-  width: 36px;
+  width: 25px;
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
-  color: #ffffff;
-  background: var(--login-blue);
-  box-shadow: 0 7px 18px rgb(47 111 213 / 18%);
+  flex: 0 0 25px;
+}
+.login-brand-mark img {
+  display: block;
+  width: auto;
+  height: 36px;
+  object-fit: contain;
 }
 .login-brand-name { font-size: 15px; font-weight: 700; }
 .login-stage {
@@ -764,7 +767,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .login-page { min-height: 100dvh; padding: 18px 20px 16px; overflow: auto; background: #ffffff; }
   .login-page::before { inset: 0 0 auto; width: 100%; height: 184px; border-right: 0; border-bottom: 1px solid #d5e2f5; }
   .login-header { min-height: 36px; }
-  .login-brand-mark { width: 34px; height: 34px; }
+  .login-brand-mark { width: 23px; height: 34px; flex-basis: 23px; }
+  .login-brand-mark img { height: 34px; }
   .login-stage { grid-template-columns: 1fr; align-content: center; gap: 28px; padding: 32px 0 26px; }
   .login-intro { max-width: none; padding: 0; text-align: center; }
   .login-eyebrow { margin-bottom: 12px; font-size: 10px; }

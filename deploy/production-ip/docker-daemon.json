@@ -1,0 +1,7 @@
+{
+  "data-root": "/data/docker",
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://hub.rat.dev"
+  ]
+}

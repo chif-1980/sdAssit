@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   ArrowRight,
-  MessageSquareText,
   RefreshCw,
   ScanLine,
   ShieldCheck,
@@ -166,7 +165,9 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
   return (
     <main className="login-page">
       <header className="login-header" aria-label="企业知识助手">
-        <span className="login-brand-mark" aria-hidden="true"><MessageSquareText size={20} /></span>
+        <span className="login-brand-mark" aria-hidden="true">
+          <img src="/quickdone-mark.webp" alt="" />
+        </span>
         <span className="login-brand-name">企业知识助手</span>
       </header>
 
