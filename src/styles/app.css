@@ -346,6 +346,25 @@ tbody tr:last-child td { border-bottom: 0; }
   border-bottom-color: #e5eaf0;
   color: #1f2937;
 }
+.assistant-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.assistant-brand-mark {
+  width: 21px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 21px;
+}
+.assistant-brand-mark img {
+  display: block;
+  width: auto;
+  height: 30px;
+  object-fit: contain;
+}
 .assistant-topbar h1 {
   margin: 0;
   font-size: 17px;
@@ -785,6 +804,9 @@ tbody tr:last-child td { border-bottom: 0; }
   .login-callback-error { justify-content: center; }
   .login-footer { text-align: center; }
   .topbar { gap: 12px; padding: 0 12px; }
+  .assistant-brand { gap: 7px; }
+  .assistant-brand-mark { width: 20px; height: 28px; flex-basis: 20px; }
+  .assistant-brand-mark img { height: 28px; }
   .assistant-topbar h1 { font-size: 15px; }
   .current-user { gap: 7px; }
   .user-name { max-width: 90px; }

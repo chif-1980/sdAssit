@@ -29,7 +29,12 @@ export function ProductShell({ children, headerInert = false }: ProductShellProp
   return (
     <div className="product-shell chat-mode">
       <header className="topbar assistant-topbar" {...(headerInert ? { inert: '' } : {})}>
-        <h1>企业知识助手</h1>
+        <div className="assistant-brand">
+          <span className="assistant-brand-mark" aria-hidden="true">
+            <img src="/quickdone-mark.webp" alt="" />
+          </span>
+          <h1>企业知识助手</h1>
+        </div>
         {user ? (
           <div className="current-user">
             {user.avatarUrl ? (

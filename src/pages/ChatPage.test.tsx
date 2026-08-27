@@ -121,7 +121,9 @@ describe('ChatPage product workspace', () => {
 
     render(<ChatPage />)
 
-    expect(await screen.findByRole('heading', { level: 1, name: '企业知识助手' })).toBeInTheDocument()
+    const productHeading = await screen.findByRole('heading', { level: 1, name: '企业知识助手' })
+    expect(productHeading).toBeInTheDocument()
+    expect(productHeading.closest('.assistant-brand')?.querySelector('img')).toHaveAttribute('src', '/quickdone-mark.webp')
     expect(screen.getByRole('heading', { level: 2, name: '开始一段新对话' })).toBeInTheDocument()
     expect(screen.getByText('示例问题')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /产品标准部署|部署模式|实施方案/u })).toHaveLength(3)
