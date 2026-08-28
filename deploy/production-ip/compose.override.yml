@@ -12,7 +12,7 @@ services:
       - models_data:/app/models
       - nltk_data:/root/nltk_data
       - /var/run/docker.sock:/var/run/docker.sock
-    command: uv run --no-sync --no-dev uvicorn server.main:app --host 0.0.0.0 --port 5050
+    command: uv run --no-sync --no-dev uvicorn server.main:app --host 0.0.0.0 --port 5050 --no-server-header
 
   worker:
     build:
