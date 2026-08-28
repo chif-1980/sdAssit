@@ -47,6 +47,7 @@ const loginErrorMessages: Record<string, string> = {
   FEISHU_OAUTH_FAILED: '飞书登录未完成，请重新尝试',
   FEISHU_OAUTH_NOT_CONFIGURED: '登录服务尚未配置，请联系管理员',
   FEISHU_OAUTH_STATE_INVALID: '登录已过期，请重新开始',
+  FEISHU_DIRECTORY_UNAVAILABLE: '无法读取飞书组织信息，请联系管理员检查通讯录权限',
   IDENTITY_MAPPING_REQUIRED: '当前飞书账号尚未开通访问权限',
 }
 

@@ -145,6 +145,16 @@ describe('LoginPage', () => {
     expect(document.body).not.toHaveTextContent('FEISHU_OAUTH_STATE_INVALID')
   })
 
+  it('explains when Feishu directory permission is unavailable', () => {
+    installQrSdk()
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(qrConfig)))
+    window.history.pushState({}, '', '/login?error=FEISHU_DIRECTORY_UNAVAILABLE')
+
+    render(<LoginPage />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('请联系管理员检查通讯录权限')
+  })
+
   it('keeps the page focused on product login without technical controls', () => {
     installQrSdk()
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(qrConfig)))
