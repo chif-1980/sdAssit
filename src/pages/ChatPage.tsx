@@ -55,6 +55,12 @@ function upsertConversation(current: ProductConversation[], next: ProductConvers
     : [next, ...current])
 }
 
+function hasCompleteProgressTrail(progressTrail: readonly ProductAnswerProgress[]) {
+  const stages: ProductAnswerProgress['stage'][] = ['UNDERSTANDING', 'RETRIEVING', 'VERIFYING', 'COMPOSING']
+  return stages
+    .every((stage) => progressTrail.some((progress) => progress.stage === stage))
+}
+
 function attachmentUploadMessage(error: unknown) {
   if (error instanceof ApiError && (error.status === 404 || error.code === 'NOT_FOUND')) {
     return '附件解析服务暂不可用，请稍后重试'
@@ -77,6 +83,7 @@ export function ChatPage() {
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
   const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
   const [streamedAnswer, setStreamedAnswer] = useState('')
+  const [pendingAnswer, setPendingAnswer] = useState<SendResponse>()
   const [loadingWorkspace, setLoadingWorkspace] = useState(true)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
@@ -93,6 +100,8 @@ export function ChatPage() {
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
+  const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
+  const pendingAnswerRef = useRef<SendResponse>()
   const citationTriggerRef = useRef<HTMLButtonElement>()
   const messageScrollRef = useRef<HTMLDivElement>(null)
   const followLatestRef = useRef(true)
@@ -234,9 +243,30 @@ export function ChatPage() {
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const archivedConversations = visibleConversations.filter((item) => item.status === 'ARCHIVED')
   const listedConversations = visibleConversations.filter((item) => item.status === (showArchived ? 'ARCHIVED' : 'ACTIVE'))
-  const switchLocked = sending || archiving || restoring
+  const switchLocked = sending || Boolean(pendingAnswer) || archiving || restoring
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
+
+  const applyAnswer = useCallback((result: SendResponse) => {
+    pendingAnswerRef.current = undefined
+    setConversation(result.conversation)
+    setConversations((current) => upsertConversation(current, result.conversation))
+    setMessages((current) => [...current, result.userMessage, result.assistantMessage])
+    setPendingQuestion(undefined)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
+    setStreamedAnswer('')
+    setPendingAnswer(undefined)
+    setDraft('')
+    setAttachments([])
+    setAttachmentError(undefined)
+  }, [])
+
+  const finishProgressPlayback = useCallback(() => {
+    const result = pendingAnswerRef.current
+    if (result) applyAnswer(result)
+  }, [applyAnswer])
 
   function closeConversationList() {
     setConversationListOpen(false)
@@ -274,7 +304,10 @@ export function ChatPage() {
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(false)
@@ -297,7 +330,10 @@ export function ChatPage() {
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(item.status === 'ARCHIVED')
@@ -330,7 +366,10 @@ export function ChatPage() {
     setPendingQuestion(content)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setAttachmentError(undefined)
     followLatestRef.current = true
     setErrorText(undefined)
@@ -384,11 +423,10 @@ export function ChatPage() {
           onProgress: (progress) => {
             if (contextVersionRef.current !== version) return
             setAnswerProgress(progress)
-            setAnswerProgressTrail((current) => (
-              current.at(-1)?.stage === progress.stage
-                ? [...current.slice(0, -1), progress]
-                : [...current, progress]
-            ))
+            answerProgressTrailRef.current = answerProgressTrailRef.current.at(-1)?.stage === progress.stage
+              ? [...answerProgressTrailRef.current.slice(0, -1), progress]
+              : [...answerProgressTrailRef.current, progress]
+            setAnswerProgressTrail(answerProgressTrailRef.current)
           },
           onDelta: (delta) => {
             if (contextVersionRef.current === version) setStreamedAnswer((current) => current + delta)
@@ -396,22 +434,19 @@ export function ChatPage() {
         },
       )
       if (contextVersionRef.current !== version) return
-      setConversation(result.conversation)
-      setConversations((current) => upsertConversation(current, result.conversation))
-      setMessages((current) => [...current, result.userMessage, result.assistantMessage])
-      setPendingQuestion(undefined)
-      setAnswerProgress(undefined)
-      setAnswerProgressTrail([])
-      setStreamedAnswer('')
-      setDraft('')
-      setAttachments([])
-      setAttachmentError(undefined)
+      if (hasCompleteProgressTrail(answerProgressTrailRef.current)) {
+        pendingAnswerRef.current = result
+        setPendingAnswer(result)
+      } else applyAnswer(result)
     } catch {
       if (contextVersionRef.current !== version) return
       setPendingQuestion(undefined)
       setAnswerProgress(undefined)
       setAnswerProgressTrail([])
+      answerProgressTrailRef.current = []
       setStreamedAnswer('')
+      pendingAnswerRef.current = undefined
+      setPendingAnswer(undefined)
       setErrorText('发送失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setSending(false)
@@ -681,6 +716,7 @@ export function ChatPage() {
                     onCitation={(item, trigger) => void openCitation(item, trigger)}
                     feedbackPendingIds={feedbackPendingIds}
                     feedbackDisabled={archived}
+                    onProgressPlaybackComplete={finishProgressPlayback}
                     onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
                   />
                 ) : (

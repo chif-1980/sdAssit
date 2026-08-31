@@ -1,5 +1,5 @@
 import { ThumbsDown, ThumbsUp } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -24,6 +24,7 @@ interface MessageThreadProps {
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled?: boolean
+  onProgressPlaybackComplete?: () => void
   onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
 }
 
@@ -238,11 +239,15 @@ export function MessageThread({
   onCitation,
   feedbackPendingIds,
   feedbackDisabled = false,
+  onProgressPlaybackComplete,
   onFeedback,
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
   const pairs = groupMessagePairs(messages)
+  const handleProgressPlaybackComplete = useCallback(() => {
+    onProgressPlaybackComplete?.()
+  }, [onProgressPlaybackComplete])
 
   useEffect(() => {
     const end = endRef.current
@@ -277,7 +282,13 @@ export function MessageThread({
               </div>
               <AssistantMarkdown content={streamedAnswer} citations={[]} onCitation={onCitation} />
             </article>
-          ) : <ThinkingIndicator progress={answerProgress} progressTrail={answerProgressTrail} />}
+          ) : (
+            <ThinkingIndicator
+              progress={answerProgress}
+              progressTrail={answerProgressTrail}
+              onPlaybackComplete={handleProgressPlaybackComplete}
+            />
+          )}
         </>
       ) : null}
       <div ref={endRef} aria-hidden="true" />

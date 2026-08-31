@@ -21,9 +21,10 @@ function formatElapsed(elapsedMs: number) {
 interface ThinkingIndicatorProps {
   progress?: ProductAnswerProgress
   progressTrail?: readonly ProductAnswerProgress[]
+  onPlaybackComplete?: () => void
 }
 
-export function ThinkingIndicator({ progress, progressTrail = [] }: ThinkingIndicatorProps) {
+export function ThinkingIndicator({ progress, progressTrail = [], onPlaybackComplete }: ThinkingIndicatorProps) {
   const [elapsedMs, setElapsedMs] = useState(0)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
@@ -40,6 +41,12 @@ export function ThinkingIndicator({ progress, progressTrail = [] }: ThinkingIndi
     }, STAGE_VISIBILITY_MS)
     return () => window.clearTimeout(timer)
   }, [progressTrail.length, visibleProgressIndex])
+
+  useEffect(() => {
+    if (!progressTrail.length || visibleProgressIndex < progressTrail.length - 1) return
+    const timer = window.setTimeout(() => onPlaybackComplete?.(), STAGE_VISIBILITY_MS)
+    return () => window.clearTimeout(timer)
+  }, [onPlaybackComplete, progressTrail.length, visibleProgressIndex])
 
   useEffect(() => {
     const startedAt = Date.now()

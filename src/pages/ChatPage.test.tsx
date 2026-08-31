@@ -71,6 +71,18 @@ function sseResponse(body: unknown) {
   })
 }
 
+function completeProgressSseResponse(body: unknown) {
+  return new Response([
+    'event: progress\ndata: {"stage":"UNDERSTANDING","message":"正在结合当前对话理解问题"}\n\n',
+    'event: progress\ndata: {"stage":"RETRIEVING","message":"正在检索已审核发布的资料"}\n\n',
+    'event: progress\ndata: {"stage":"VERIFYING","message":"正在核对原文与适用条件"}\n\n',
+    'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n',
+    `event: complete\ndata: ${JSON.stringify(body)}\n\n`,
+  ].join(''), {
+    headers: { 'content-type': 'text/event-stream' },
+  })
+}
+
 function detail(conversation: ProductConversation, messages: ProductMessage[] = [priorMessage]) {
   return { conversation, messages }
 }
@@ -421,6 +433,51 @@ describe('ChatPage product workspace', () => {
     await waitFor(() => expect(screen.queryByText('正在生成')).not.toBeInTheDocument())
     expect(screen.getAllByRole('button', { name: '点赞这条回答' })).toHaveLength(2)
     expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)
+  })
+
+  it('plays all production progress events before replacing them with the final answer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const userMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-PROGRESS-U',
+      role: 'USER',
+      content: '什么是智能客服？',
+      answerStatus: null,
+    }
+    const assistantMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-PROGRESS-A',
+      content: '智能客服是企业服务方案。',
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST') {
+        return completeProgressSseResponse({
+          conversation: { ...conversationA, messageCount: 3 },
+          userMessage,
+          assistantMessage,
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '什么是智能客服？')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    expect(screen.getByText('理解问题').closest('li')).toHaveClass('is-current')
+    expect(screen.queryByText('智能客服是企业服务方案。')).not.toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(600))
+    expect(screen.getByText('检索资料').closest('li')).toHaveClass('is-current')
+    act(() => vi.advanceTimersByTime(600))
+    expect(screen.getByText('核对依据').closest('li')).toHaveClass('is-current')
+    act(() => vi.advanceTimersByTime(600))
+    expect(screen.getByText('组织答案').closest('li')).toHaveClass('is-current')
+    act(() => vi.advanceTimersByTime(600))
+    expect(await screen.findByText('智能客服是企业服务方案。')).toBeInTheDocument()
   })
 
   it('submits, switches, and persists feedback through the product feedback endpoint', async () => {
