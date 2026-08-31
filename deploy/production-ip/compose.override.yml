@@ -46,7 +46,7 @@ services:
     build:
       context: ./assistant-app
       dockerfile: Dockerfile
-    image: shanda-zhishu-assistant:0.1.2
+    image: shanda-zhishu-assistant:0.1.4
     container_name: quickdone-kb-assistant-web
     ports:
       - "5174:80"
