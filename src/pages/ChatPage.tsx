@@ -101,6 +101,7 @@ export function ChatPage() {
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
   const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
+  const streamedAnswerRef = useRef('')
   const pendingAnswerRef = useRef<SendResponse>()
   const citationTriggerRef = useRef<HTMLButtonElement>()
   const messageScrollRef = useRef<HTMLDivElement>(null)
@@ -257,6 +258,7 @@ export function ChatPage() {
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
     setPendingAnswer(undefined)
     setDraft('')
     setAttachments([])
@@ -306,6 +308,7 @@ export function ChatPage() {
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
     pendingAnswerRef.current = undefined
     setPendingAnswer(undefined)
     setActivePairId(undefined)
@@ -332,6 +335,7 @@ export function ChatPage() {
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
     pendingAnswerRef.current = undefined
     setPendingAnswer(undefined)
     setActivePairId(undefined)
@@ -368,6 +372,7 @@ export function ChatPage() {
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
     pendingAnswerRef.current = undefined
     setPendingAnswer(undefined)
     setAttachmentError(undefined)
@@ -429,12 +434,14 @@ export function ChatPage() {
             setAnswerProgressTrail(answerProgressTrailRef.current)
           },
           onDelta: (delta) => {
-            if (contextVersionRef.current === version) setStreamedAnswer((current) => current + delta)
+            if (contextVersionRef.current !== version) return
+            streamedAnswerRef.current += delta
+            setStreamedAnswer(streamedAnswerRef.current)
           },
         },
       )
       if (contextVersionRef.current !== version) return
-      if (hasCompleteProgressTrail(answerProgressTrailRef.current)) {
+      if (hasCompleteProgressTrail(answerProgressTrailRef.current) && !streamedAnswerRef.current) {
         pendingAnswerRef.current = result
         setPendingAnswer(result)
       } else applyAnswer(result)
@@ -445,6 +452,7 @@ export function ChatPage() {
       setAnswerProgressTrail([])
       answerProgressTrailRef.current = []
       setStreamedAnswer('')
+      streamedAnswerRef.current = ''
       pendingAnswerRef.current = undefined
       setPendingAnswer(undefined)
       setErrorText('发送失败，请重试')

@@ -403,7 +403,10 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '发送问题' }))
     await act(async () => {
       streamController.enqueue(encoder.encode(
-        'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n'
+        'event: progress\ndata: {"stage":"UNDERSTANDING","message":"正在结合当前对话理解问题"}\n\n'
+        + 'event: progress\ndata: {"stage":"RETRIEVING","message":"正在检索已审核发布的资料"}\n\n'
+        + 'event: progress\ndata: {"stage":"VERIFYING","message":"正在核对原文与适用条件"}\n\n'
+        + 'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n'
         + 'event: delta\ndata: {"content":"## 结论\\n\\n支持"}\n\n',
       ))
     })
