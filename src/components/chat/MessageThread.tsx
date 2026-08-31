@@ -34,6 +34,11 @@ const statusLabels: Record<AnswerStatus, string> = {
   CONFLICTING: '资料存在冲突',
 }
 
+function citationImageSrc(citation?: ProductCitation) {
+  if (citation?.mediaType !== 'IMAGE') return undefined
+  return citation.previewUrl || citation.imageUrl || undefined
+}
+
 interface MarkdownNode {
   type: string
   value?: string
@@ -41,32 +46,40 @@ interface MarkdownNode {
   children?: MarkdownNode[]
 }
 
-function remarkCitationLinks() {
-  return (tree: MarkdownNode) => {
-    const visit = (node: MarkdownNode) => {
-      if (!node.children || ['link', 'linkReference', 'code', 'inlineCode'].includes(node.type)) return
-      const children: MarkdownNode[] = []
-      for (const child of node.children) {
-        if (child.type !== 'text' || !child.value) {
-          visit(child)
-          children.push(child)
-          continue
+function createRemarkCitationLinks(citations: ProductCitation[]) {
+  return function remarkCitationLinks() {
+    return (tree: MarkdownNode) => {
+      const placedImageCitations = new Set<number>()
+      const visit = (node: MarkdownNode) => {
+        if (!node.children || ['link', 'linkReference', 'code', 'inlineCode'].includes(node.type)) return
+        const children: MarkdownNode[] = []
+        for (const child of node.children) {
+          if (child.type !== 'text' || !child.value) {
+            visit(child)
+            children.push(child)
+            continue
+          }
+          for (const part of child.value.split(/(\[\d+\])/g)) {
+            if (!part) continue
+            const match = /^\[(\d+)\]$/.exec(part)
+            const citationIndex = match ? Number(match[1]) - 1 : -1
+            const placeImage = match
+              && citationImageSrc(citations[citationIndex])
+              && !placedImageCitations.has(citationIndex)
+            if (placeImage) placedImageCitations.add(citationIndex)
+            children.push(match
+              ? {
+                  type: 'link',
+                  url: `#citation${placeImage ? '-image' : ''}-${match[1]}`,
+                  children: [{ type: 'text', value: part }],
+                }
+              : { type: 'text', value: part })
+          }
         }
-        for (const part of child.value.split(/(\[\d+\])/g)) {
-          if (!part) continue
-          const match = /^\[(\d+)\]$/.exec(part)
-          children.push(match
-            ? {
-                type: 'link',
-                url: `#citation-${match[1]}`,
-                children: [{ type: 'text', value: part }],
-              }
-            : { type: 'text', value: part })
-        }
+        node.children = children
       }
-      node.children = children
+      visit(tree)
     }
-    visit(tree)
   }
 }
 
@@ -84,21 +97,42 @@ function AssistantMarkdown({
   return (
     <div className="assistant-markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkCitationLinks]}
+        remarkPlugins={[remarkGfm, createRemarkCitationLinks(citations)]}
         skipHtml
         components={{
           a: ({ href, children }) => {
-            const match = /^#citation-(\d+)$/.exec(href ?? '')
+            const match = /^#citation(-image)?-(\d+)$/.exec(href ?? '')
             if (!match) {
               return <a href={href} target="_blank" rel="noreferrer">{children}</a>
             }
-            const citation = match ? citations[Number(match[1]) - 1] : undefined
+            const citationNumber = match[2]
+            const citation = citations[Number(citationNumber) - 1]
             if (!citation) return <>{children}</>
+            const imageSrc = citationImageSrc(citation)
+            if (match[1] && imageSrc) {
+              return (
+                <button
+                  type="button"
+                  className="inline-image-citation"
+                  aria-label={`查看图片来源 [${citationNumber}]`}
+                  aria-controls="source-drawer"
+                  aria-haspopup="dialog"
+                  aria-expanded={citation.id === expandedCitationId}
+                  onClick={(event) => onCitation(citation, event.currentTarget)}
+                >
+                  <img src={imageSrc} alt={citation.imageAlt || citation.title} loading="lazy" />
+                  <span className="inline-image-citation-caption">
+                    <span className="inline-image-citation-index">[{citationNumber}]</span>
+                    <span>{citation.imageAlt || citation.title}</span>
+                  </span>
+                </button>
+              )
+            }
             return (
               <button
                 type="button"
                 className="inline-citation"
-                aria-label={`查看来源 [${match![1]}]`}
+                aria-label={`查看来源 [${citationNumber}]`}
                 aria-controls="source-drawer"
                 aria-haspopup="dialog"
                 aria-expanded={citation.id === expandedCitationId}
@@ -151,12 +185,12 @@ function MessageBubble({
       ) : <p>{message.content}</p>}
       {message.role === 'ASSISTANT' ? (
         <div className="message-footer">
-          {message.citations.length ? (
+          {message.citations.some((citation) => !citationImageSrc(citation)) ? (
             <div className="message-citations" aria-label="回答引用">
-              {message.citations.map((citation, index) => (
+              {message.citations.map((citation, index) => citationImageSrc(citation) ? null : (
                 <button
                   type="button"
-                  className={`citation-button${citation.mediaType === 'IMAGE' && citation.previewUrl ? ' citation-image-button' : ''}`}
+                  className="citation-button"
                   key={citation.id}
                   aria-label={`[${index + 1}]`}
                   aria-controls="source-drawer"
@@ -164,12 +198,7 @@ function MessageBubble({
                   aria-expanded={citation.id === expandedCitationId}
                   onClick={(event) => onCitation(citation, event.currentTarget)}
                 >
-                  {citation.mediaType === 'IMAGE' && citation.previewUrl ? (
-                    <>
-                      <img src={citation.previewUrl} alt="" loading="lazy" />
-                      <span>[{index + 1}]</span>
-                    </>
-                  ) : <>[{index + 1}]</>}
+                  [{index + 1}]
                 </button>
               ))}
             </div>

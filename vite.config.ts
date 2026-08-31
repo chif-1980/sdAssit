@@ -7,6 +7,10 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       '/api': 'http://127.0.0.1:5050',
+      '/minio/public': {
+        target: 'http://127.0.0.1:9000',
+        rewrite: (path) => path.replace(/^\/minio/, ''),
+      },
     },
   },
 });
