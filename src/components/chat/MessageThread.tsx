@@ -156,7 +156,7 @@ function MessageBubble({
               {message.citations.map((citation, index) => (
                 <button
                   type="button"
-                  className="citation-button"
+                  className={`citation-button${citation.mediaType === 'IMAGE' && citation.previewUrl ? ' citation-image-button' : ''}`}
                   key={citation.id}
                   aria-label={`[${index + 1}]`}
                   aria-controls="source-drawer"
@@ -164,7 +164,12 @@ function MessageBubble({
                   aria-expanded={citation.id === expandedCitationId}
                   onClick={(event) => onCitation(citation, event.currentTarget)}
                 >
-                  [{index + 1}]
+                  {citation.mediaType === 'IMAGE' && citation.previewUrl ? (
+                    <>
+                      <img src={citation.previewUrl} alt="" loading="lazy" />
+                      <span>[{index + 1}]</span>
+                    </>
+                  ) : <>[{index + 1}]</>}
                 </button>
               ))}
             </div>

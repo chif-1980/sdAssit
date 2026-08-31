@@ -151,6 +151,28 @@ describe('MessageThread', () => {
     expect(onCitation).toHaveBeenCalledWith(citation, trigger)
   })
 
+  it('renders an image citation as a numbered thumbnail and opens the existing source drawer', async () => {
+    const user = userEvent.setup()
+    const onCitation = vi.fn()
+    const imageCitation: ProductCitation = {
+      ...citation,
+      mediaType: 'IMAGE',
+      imageUrl: '/minio/public/docs/architecture.png',
+      previewUrl: '/minio/public/docs/previews/architecture.webp',
+      imageAlt: '系统架构图',
+    }
+    render(<MessageThread
+      messages={[{ ...firstMessage, role: 'ASSISTANT', content: '架构如下。[1]', answerStatus: 'SUPPORTED', citations: [imageCitation] }]}
+      onCitation={onCitation}
+    />)
+
+    const trigger = screen.getByRole('button', { name: '[1]' })
+    expect(trigger).toHaveClass('citation-image-button')
+    expect(trigger.querySelector('img')).toHaveAttribute('src', imageCitation.previewUrl)
+    await user.click(trigger)
+    expect(onCitation).toHaveBeenCalledWith(imageCitation, trigger)
+  })
+
   it('links citation buttons to the source dialog and expands only the selected citation', () => {
     const secondCitation = { ...citation, id: 'CIT-2', title: '第二个来源' }
     render(<MessageThread

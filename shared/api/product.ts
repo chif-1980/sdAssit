@@ -48,6 +48,10 @@ export interface ProductCitation {
   locator: string
   excerpt: string
   versionAt: string | null
+  mediaType?: 'IMAGE' | null
+  imageUrl?: string | null
+  previewUrl?: string | null
+  imageAlt?: string | null
 }
 
 export interface ProductMessage {
