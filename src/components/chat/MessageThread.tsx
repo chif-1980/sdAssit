@@ -1,11 +1,12 @@
 import { ThumbsDown, ThumbsUp } from 'lucide-react'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type {
   AnswerStatus,
   FeedbackRating,
+  FeedbackReasonType,
   ProductAnswerProgress,
   ProductCitation,
   ProductMessage,
@@ -25,7 +26,12 @@ interface MessageThreadProps {
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled?: boolean
   onProgressPlaybackComplete?: () => void
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onFeedback?: (
+    messageId: string,
+    rating: FeedbackRating | null,
+    reasonType?: FeedbackReasonType,
+    reasonText?: string,
+  ) => void
 }
 
 const statusLabels: Record<AnswerStatus, string> = {
@@ -38,6 +44,14 @@ function citationImageSrc(citation?: ProductCitation) {
   if (citation?.mediaType !== 'IMAGE') return undefined
   return citation.previewUrl || citation.imageUrl || undefined
 }
+
+const feedbackReasons: { value: FeedbackReasonType; label: string }[] = [
+  { value: 'CONTENT_ERROR', label: '内容错误' },
+  { value: 'OUTDATED', label: '内容过时' },
+  { value: 'MISSING_SOURCE', label: '资料缺失' },
+  { value: 'CITATION_ERROR', label: '引用错误' },
+  { value: 'OTHER', label: '其他' },
+]
 
 interface MarkdownNode {
   type: string
@@ -156,7 +170,7 @@ interface MessageBubbleProps {
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onFeedback?: MessageThreadProps['onFeedback']
 }
 
 function MessageBubble({
@@ -167,6 +181,26 @@ function MessageBubble({
   feedbackDisabled,
   onFeedback,
 }: MessageBubbleProps) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [reasonType, setReasonType] = useState<FeedbackReasonType>(
+    message.feedbackReasonType ?? 'CONTENT_ERROR',
+  )
+  const [reasonText, setReasonText] = useState(message.feedbackReasonText ?? '')
+
+  function handleDislike() {
+    if (message.feedbackRating === 'DISLIKE') {
+      setFeedbackOpen(false)
+      onFeedback?.(message.id, null)
+      return
+    }
+    setFeedbackOpen(true)
+  }
+
+  function submitDislike() {
+    onFeedback?.(message.id, 'DISLIKE', reasonType, reasonText.trim() || undefined)
+    setFeedbackOpen(false)
+  }
+
   return (
     <article className={`message-bubble message-${message.role.toLowerCase()}`}>
       <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
@@ -222,11 +256,41 @@ function MessageBubble({
               aria-pressed={message.feedbackRating === 'DISLIKE'}
               title="点踩这条回答"
               disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
-              onClick={() => onFeedback?.(message.id, message.feedbackRating === 'DISLIKE' ? null : 'DISLIKE')}
+              onClick={handleDislike}
             >
               <ThumbsDown aria-hidden="true" size={15} strokeWidth={1.8} />
             </button>
           </div>
+          {feedbackOpen ? (
+            <div className="feedback-reason-panel" role="dialog" aria-label="选择不满意原因">
+              <div className="feedback-reason-options" role="radiogroup" aria-label="不满意原因">
+                {feedbackReasons.map((reason) => (
+                  <label key={reason.value} className={reasonType === reason.value ? 'is-selected' : ''}>
+                    <input
+                      type="radio"
+                      name={`feedback-reason-${message.id}`}
+                      value={reason.value}
+                      checked={reasonType === reason.value}
+                      onChange={() => setReasonType(reason.value)}
+                    />
+                    <span>{reason.label}</span>
+                  </label>
+                ))}
+              </div>
+              <textarea
+                value={reasonText}
+                maxLength={500}
+                rows={2}
+                placeholder="补充说明（选填）"
+                aria-label="补充说明"
+                onChange={(event) => setReasonText(event.target.value)}
+              />
+              <div className="feedback-reason-actions">
+                <button type="button" onClick={() => setFeedbackOpen(false)}>取消</button>
+                <button type="button" className="is-primary" onClick={submitDislike}>提交反馈</button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>
@@ -248,7 +312,7 @@ function MessagePairBlock({
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onFeedback?: MessageThreadProps['onFeedback']
 }) {
   return (
     <div

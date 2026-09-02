@@ -700,6 +700,51 @@ tbody tr:last-child td { border-bottom: 0; }
 .feedback-button.is-like { border-color: #cfe0f8; color: #2f6fd5; background: #eaf2ff; }
 .feedback-button.is-dislike { border-color: #f1d2d0; color: #a63a34; background: #fff1f0; }
 .feedback-button:disabled { cursor: default; opacity: .55; }
+.message-footer:has(.feedback-reason-panel) { flex-wrap: wrap; }
+.feedback-reason-panel {
+  flex: 1 0 100%;
+  max-width: 520px;
+  padding: 10px;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  background: #fff;
+}
+.feedback-reason-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.feedback-reason-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 3px 9px;
+  border: 1px solid #dbe2ea;
+  border-radius: 4px;
+  color: #475569;
+  cursor: pointer;
+}
+.feedback-reason-options label.is-selected { border-color: #9ab9e8; color: #245dab; background: #eef5ff; }
+.feedback-reason-options input { margin: 0; }
+.feedback-reason-panel textarea {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 9px;
+  resize: vertical;
+  border: 1px solid #dbe2ea;
+  border-radius: 4px;
+  color: #1e293b;
+  background: #fff;
+  font: inherit;
+}
+.feedback-reason-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.feedback-reason-actions button {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid #dbe2ea;
+  border-radius: 4px;
+  color: #334155;
+  background: #fff;
+  cursor: pointer;
+}
+.feedback-reason-actions button.is-primary { border-color: #2f6fd5; color: #fff; background: #2f6fd5; }
 .thinking-card {
   position: relative;
   width: min(100%, 520px);

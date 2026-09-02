@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AnswerMode,
   FeedbackRating,
+  FeedbackReasonType,
   ProductAnswerProgress,
   ProductAttachment,
   ProductCitation,
@@ -34,6 +35,8 @@ interface SendResponse {
 interface FeedbackResponse {
   messageId: string
   feedbackRating: FeedbackRating | null
+  feedbackReasonType?: FeedbackReasonType | null
+  feedbackReasonText?: string | null
 }
 
 const MAX_COMPOSER_ATTACHMENTS = 5
@@ -532,7 +535,12 @@ export function ChatPage() {
     }
   }
 
-  async function updateFeedback(messageId: string, rating: FeedbackRating | null) {
+  async function updateFeedback(
+    messageId: string,
+    rating: FeedbackRating | null,
+    reasonType?: FeedbackReasonType,
+    reasonText?: string,
+  ) {
     if (feedbackPendingIds.has(messageId)) return
     const target = messages.find((message) => message.id === messageId && message.role === 'ASSISTANT')
     if (!target || archived) return
@@ -541,17 +549,29 @@ export function ChatPage() {
     setFeedbackPendingIds((current) => new Set(current).add(messageId))
     setErrorText(undefined)
     setMessages((current) => current.map((message) => (
-      message.id === messageId ? { ...message, feedbackRating: rating } : message
+      message.id === messageId
+        ? {
+            ...message,
+            feedbackRating: rating,
+            feedbackReasonType: rating === 'DISLIKE' ? reasonType : null,
+            feedbackReasonText: rating === 'DISLIKE' ? reasonText : null,
+          }
+        : message
     )))
     try {
       const response = await api<FeedbackResponse>(`/api/chat/messages/${messageId}/feedback`, {
         method: 'PUT',
-        body: JSON.stringify({ rating }),
+        body: JSON.stringify({ rating, reasonType, reasonText }),
       })
       if (contextVersionRef.current !== version) return
       setMessages((current) => current.map((message) => (
         message.id === response.messageId
-          ? { ...message, feedbackRating: response.feedbackRating }
+          ? {
+              ...message,
+              feedbackRating: response.feedbackRating,
+              feedbackReasonType: response.feedbackReasonType,
+              feedbackReasonText: response.feedbackReasonText,
+            }
           : message
       )))
     } catch {
@@ -725,7 +745,9 @@ export function ChatPage() {
                     feedbackPendingIds={feedbackPendingIds}
                     feedbackDisabled={archived}
                     onProgressPlaybackComplete={finishProgressPlayback}
-                    onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
+                    onFeedback={(messageId, rating, reasonType, reasonText) => (
+                      void updateFeedback(messageId, rating, reasonType, reasonText)
+                    )}
                   />
                 ) : (
                   <div className="chat-empty">

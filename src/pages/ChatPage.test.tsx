@@ -510,11 +510,12 @@ describe('ChatPage product workspace', () => {
     }))
 
     await user.click(dislike)
+    await user.click(screen.getByRole('button', { name: '提交反馈' }))
     await waitFor(() => expect(dislike).toHaveAttribute('aria-pressed', 'true'))
     expect(like).toHaveAttribute('aria-pressed', 'false')
     expect(fetchMock).toHaveBeenLastCalledWith('/api/chat/messages/MSG-PRIOR/feedback', expect.objectContaining({
       method: 'PUT',
-      body: JSON.stringify({ rating: 'DISLIKE' }),
+      body: JSON.stringify({ rating: 'DISLIKE', reasonType: 'CONTENT_ERROR', reasonText: undefined }),
     }))
   })
 
@@ -535,6 +536,7 @@ describe('ChatPage product workspace', () => {
     const dislike = screen.getByRole('button', { name: '点踩这条回答' })
 
     await user.click(dislike)
+    await user.click(screen.getByRole('button', { name: '提交反馈' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('反馈提交失败，请重试')
     expect(like).toHaveAttribute('aria-pressed', 'true')
