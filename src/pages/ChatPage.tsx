@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AnswerMode,
   FeedbackRating,
+  FeedbackReasonType,
   ProductAnswerProgress,
   ProductAttachment,
   ProductCitation,
@@ -34,6 +35,8 @@ interface SendResponse {
 interface FeedbackResponse {
   messageId: string
   feedbackRating: FeedbackRating | null
+  feedbackReasonType?: FeedbackReasonType | null
+  feedbackReasonText?: string | null
 }
 
 const MAX_COMPOSER_ATTACHMENTS = 5
@@ -53,6 +56,12 @@ function upsertConversation(current: ProductConversation[], next: ProductConvers
   return sortConversations(existing
     ? current.map((item) => item.id === next.id ? next : item)
     : [next, ...current])
+}
+
+function hasCompleteProgressTrail(progressTrail: readonly ProductAnswerProgress[]) {
+  const stages: ProductAnswerProgress['stage'][] = ['UNDERSTANDING', 'RETRIEVING', 'VERIFYING', 'COMPOSING']
+  return stages
+    .every((stage) => progressTrail.some((progress) => progress.stage === stage))
 }
 
 function attachmentUploadMessage(error: unknown) {
@@ -77,6 +86,7 @@ export function ChatPage() {
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
   const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
   const [streamedAnswer, setStreamedAnswer] = useState('')
+  const [pendingAnswer, setPendingAnswer] = useState<SendResponse>()
   const [loadingWorkspace, setLoadingWorkspace] = useState(true)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
@@ -93,6 +103,9 @@ export function ChatPage() {
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
+  const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
+  const streamedAnswerRef = useRef('')
+  const pendingAnswerRef = useRef<SendResponse>()
   const citationTriggerRef = useRef<HTMLButtonElement>()
   const messageScrollRef = useRef<HTMLDivElement>(null)
   const followLatestRef = useRef(true)
@@ -234,9 +247,31 @@ export function ChatPage() {
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const archivedConversations = visibleConversations.filter((item) => item.status === 'ARCHIVED')
   const listedConversations = visibleConversations.filter((item) => item.status === (showArchived ? 'ARCHIVED' : 'ACTIVE'))
-  const switchLocked = sending || archiving || restoring
+  const switchLocked = sending || Boolean(pendingAnswer) || archiving || restoring
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
+
+  const applyAnswer = useCallback((result: SendResponse) => {
+    pendingAnswerRef.current = undefined
+    setConversation(result.conversation)
+    setConversations((current) => upsertConversation(current, result.conversation))
+    setMessages((current) => [...current, result.userMessage, result.assistantMessage])
+    setPendingQuestion(undefined)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
+    setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    setPendingAnswer(undefined)
+    setDraft('')
+    setAttachments([])
+    setAttachmentError(undefined)
+  }, [])
+
+  const finishProgressPlayback = useCallback(() => {
+    const result = pendingAnswerRef.current
+    if (result) applyAnswer(result)
+  }, [applyAnswer])
 
   function closeConversationList() {
     setConversationListOpen(false)
@@ -274,7 +309,11 @@ export function ChatPage() {
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(false)
@@ -297,7 +336,11 @@ export function ChatPage() {
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(item.status === 'ARCHIVED')
@@ -330,7 +373,11 @@ export function ChatPage() {
     setPendingQuestion(content)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
     setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
     setAttachmentError(undefined)
     followLatestRef.current = true
     setErrorText(undefined)
@@ -384,34 +431,33 @@ export function ChatPage() {
           onProgress: (progress) => {
             if (contextVersionRef.current !== version) return
             setAnswerProgress(progress)
-            setAnswerProgressTrail((current) => (
-              current.at(-1)?.stage === progress.stage
-                ? [...current.slice(0, -1), progress]
-                : [...current, progress]
-            ))
+            answerProgressTrailRef.current = answerProgressTrailRef.current.at(-1)?.stage === progress.stage
+              ? [...answerProgressTrailRef.current.slice(0, -1), progress]
+              : [...answerProgressTrailRef.current, progress]
+            setAnswerProgressTrail(answerProgressTrailRef.current)
           },
           onDelta: (delta) => {
-            if (contextVersionRef.current === version) setStreamedAnswer((current) => current + delta)
+            if (contextVersionRef.current !== version) return
+            streamedAnswerRef.current += delta
+            setStreamedAnswer(streamedAnswerRef.current)
           },
         },
       )
       if (contextVersionRef.current !== version) return
-      setConversation(result.conversation)
-      setConversations((current) => upsertConversation(current, result.conversation))
-      setMessages((current) => [...current, result.userMessage, result.assistantMessage])
-      setPendingQuestion(undefined)
-      setAnswerProgress(undefined)
-      setAnswerProgressTrail([])
-      setStreamedAnswer('')
-      setDraft('')
-      setAttachments([])
-      setAttachmentError(undefined)
+      if (hasCompleteProgressTrail(answerProgressTrailRef.current) && !streamedAnswerRef.current) {
+        pendingAnswerRef.current = result
+        setPendingAnswer(result)
+      } else applyAnswer(result)
     } catch {
       if (contextVersionRef.current !== version) return
       setPendingQuestion(undefined)
       setAnswerProgress(undefined)
       setAnswerProgressTrail([])
+      answerProgressTrailRef.current = []
       setStreamedAnswer('')
+      streamedAnswerRef.current = ''
+      pendingAnswerRef.current = undefined
+      setPendingAnswer(undefined)
       setErrorText('发送失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setSending(false)
@@ -489,7 +535,12 @@ export function ChatPage() {
     }
   }
 
-  async function updateFeedback(messageId: string, rating: FeedbackRating | null) {
+  async function updateFeedback(
+    messageId: string,
+    rating: FeedbackRating | null,
+    reasonType?: FeedbackReasonType,
+    reasonText?: string,
+  ) {
     if (feedbackPendingIds.has(messageId)) return
     const target = messages.find((message) => message.id === messageId && message.role === 'ASSISTANT')
     if (!target || archived) return
@@ -498,17 +549,29 @@ export function ChatPage() {
     setFeedbackPendingIds((current) => new Set(current).add(messageId))
     setErrorText(undefined)
     setMessages((current) => current.map((message) => (
-      message.id === messageId ? { ...message, feedbackRating: rating } : message
+      message.id === messageId
+        ? {
+            ...message,
+            feedbackRating: rating,
+            feedbackReasonType: rating === 'DISLIKE' ? reasonType : null,
+            feedbackReasonText: rating === 'DISLIKE' ? reasonText : null,
+          }
+        : message
     )))
     try {
       const response = await api<FeedbackResponse>(`/api/chat/messages/${messageId}/feedback`, {
         method: 'PUT',
-        body: JSON.stringify({ rating }),
+        body: JSON.stringify({ rating, reasonType, reasonText }),
       })
       if (contextVersionRef.current !== version) return
       setMessages((current) => current.map((message) => (
         message.id === response.messageId
-          ? { ...message, feedbackRating: response.feedbackRating }
+          ? {
+              ...message,
+              feedbackRating: response.feedbackRating,
+              feedbackReasonType: response.feedbackReasonType,
+              feedbackReasonText: response.feedbackReasonText,
+            }
           : message
       )))
     } catch {
@@ -681,7 +744,10 @@ export function ChatPage() {
                     onCitation={(item, trigger) => void openCitation(item, trigger)}
                     feedbackPendingIds={feedbackPendingIds}
                     feedbackDisabled={archived}
-                    onFeedback={(messageId, rating) => void updateFeedback(messageId, rating)}
+                    onProgressPlaybackComplete={finishProgressPlayback}
+                    onFeedback={(messageId, rating, reasonType, reasonText) => (
+                      void updateFeedback(messageId, rating, reasonType, reasonText)
+                    )}
                   />
                 ) : (
                   <div className="chat-empty">

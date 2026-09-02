@@ -64,6 +64,12 @@ export function SourceDrawer({ citation, modal, onClose }: SourceDrawerProps) {
       </div>
       <div className="source-drawer-content">
         <h3>{citation.title}</h3>
+        {citation.mediaType === 'IMAGE' && citation.imageUrl ? (
+          <figure className="source-image">
+            <img src={citation.imageUrl} alt={citation.imageAlt || citation.title} />
+            {citation.imageAlt ? <figcaption>{citation.imageAlt}</figcaption> : null}
+          </figure>
+        ) : null}
         {citation.path ? <p className="source-path">{citation.path}</p> : null}
         <p className="source-line">{citation.locator}</p>
         <p>{citation.excerpt}</p>

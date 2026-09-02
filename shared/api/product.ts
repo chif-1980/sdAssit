@@ -1,6 +1,7 @@
 export type AnswerStatus = 'SUPPORTED' | 'INSUFFICIENT' | 'CONFLICTING'
 export type ConversationStatus = 'ACTIVE' | 'ARCHIVED'
 export type FeedbackRating = 'LIKE' | 'DISLIKE'
+export type FeedbackReasonType = 'CONTENT_ERROR' | 'OUTDATED' | 'MISSING_SOURCE' | 'CITATION_ERROR' | 'OTHER'
 export type AnswerMode = 'CONCISE' | 'DETAILED'
 export type ProductAnswerStage = 'UNDERSTANDING' | 'RETRIEVING' | 'VERIFYING' | 'COMPOSING'
 
@@ -48,6 +49,10 @@ export interface ProductCitation {
   locator: string
   excerpt: string
   versionAt: string | null
+  mediaType?: 'IMAGE' | null
+  imageUrl?: string | null
+  previewUrl?: string | null
+  imageAlt?: string | null
 }
 
 export interface ProductMessage {
@@ -56,6 +61,8 @@ export interface ProductMessage {
   content: string
   answerStatus: AnswerStatus | null
   feedbackRating?: FeedbackRating | null
+  feedbackReasonType?: FeedbackReasonType | null
+  feedbackReasonText?: string | null
   citations: ProductCitation[]
   attachments?: ProductAttachment[]
   createdAt: string

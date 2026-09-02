@@ -114,8 +114,10 @@ describe('MessageThread', () => {
     expect(screen.getByRole('button', { name: '点踩这条回答' })).toHaveAttribute('aria-pressed', 'false')
     await user.click(screen.getByRole('button', { name: '点赞这条回答' }))
     await user.click(screen.getByRole('button', { name: '点踩这条回答' }))
+    expect(screen.getByRole('dialog', { name: '选择不满意原因' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '提交反馈' }))
     expect(onFeedback).toHaveBeenNthCalledWith(2, 'MSG-ASSISTANT', null)
-    expect(onFeedback).toHaveBeenNthCalledWith(3, 'MSG-ASSISTANT', 'DISLIKE')
+    expect(onFeedback).toHaveBeenNthCalledWith(3, 'MSG-ASSISTANT', 'DISLIKE', 'CONTENT_ERROR', undefined)
 
     rerender(<MessageThread
       messages={[assistantMessage]}
@@ -149,6 +151,32 @@ describe('MessageThread', () => {
     await user.click(trigger)
 
     expect(onCitation).toHaveBeenCalledWith(citation, trigger)
+  })
+
+  it('renders an image citation in the answer body without repeating it in the footer', async () => {
+    const user = userEvent.setup()
+    const onCitation = vi.fn()
+    const imageCitation: ProductCitation = {
+      ...citation,
+      mediaType: 'IMAGE',
+      imageUrl: '/minio/public/docs/architecture.png',
+      previewUrl: '/minio/public/docs/previews/architecture.webp',
+      imageAlt: '系统架构图',
+    }
+    render(<MessageThread
+      messages={[{ ...firstMessage, role: 'ASSISTANT', content: '架构如下。[1] 后文再次引用。[1]', answerStatus: 'SUPPORTED', citations: [imageCitation] }]}
+      onCitation={onCitation}
+    />)
+
+    const trigger = screen.getByRole('button', { name: '查看图片来源 [1]' })
+    expect(trigger).toHaveClass('inline-image-citation')
+    expect(trigger.querySelector('img')).toHaveAttribute('src', imageCitation.previewUrl)
+    expect(trigger).toHaveTextContent('[1]系统架构图')
+    expect(screen.getAllByRole('button', { name: '查看图片来源 [1]' })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '查看来源 [1]' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '[1]' })).not.toBeInTheDocument()
+    await user.click(trigger)
+    expect(onCitation).toHaveBeenCalledWith(imageCitation, trigger)
   })
 
   it('links citation buttons to the source dialog and expands only the selected citation', () => {

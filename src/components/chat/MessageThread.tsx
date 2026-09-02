@@ -1,11 +1,12 @@
 import { ThumbsDown, ThumbsUp } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type {
   AnswerStatus,
   FeedbackRating,
+  FeedbackReasonType,
   ProductAnswerProgress,
   ProductCitation,
   ProductMessage,
@@ -24,7 +25,13 @@ interface MessageThreadProps {
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled?: boolean
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onProgressPlaybackComplete?: () => void
+  onFeedback?: (
+    messageId: string,
+    rating: FeedbackRating | null,
+    reasonType?: FeedbackReasonType,
+    reasonText?: string,
+  ) => void
 }
 
 const statusLabels: Record<AnswerStatus, string> = {
@@ -33,6 +40,19 @@ const statusLabels: Record<AnswerStatus, string> = {
   CONFLICTING: '资料存在冲突',
 }
 
+function citationImageSrc(citation?: ProductCitation) {
+  if (citation?.mediaType !== 'IMAGE') return undefined
+  return citation.previewUrl || citation.imageUrl || undefined
+}
+
+const feedbackReasons: { value: FeedbackReasonType; label: string }[] = [
+  { value: 'CONTENT_ERROR', label: '内容错误' },
+  { value: 'OUTDATED', label: '内容过时' },
+  { value: 'MISSING_SOURCE', label: '资料缺失' },
+  { value: 'CITATION_ERROR', label: '引用错误' },
+  { value: 'OTHER', label: '其他' },
+]
+
 interface MarkdownNode {
   type: string
   value?: string
@@ -40,32 +60,40 @@ interface MarkdownNode {
   children?: MarkdownNode[]
 }
 
-function remarkCitationLinks() {
-  return (tree: MarkdownNode) => {
-    const visit = (node: MarkdownNode) => {
-      if (!node.children || ['link', 'linkReference', 'code', 'inlineCode'].includes(node.type)) return
-      const children: MarkdownNode[] = []
-      for (const child of node.children) {
-        if (child.type !== 'text' || !child.value) {
-          visit(child)
-          children.push(child)
-          continue
+function createRemarkCitationLinks(citations: ProductCitation[]) {
+  return function remarkCitationLinks() {
+    return (tree: MarkdownNode) => {
+      const placedImageCitations = new Set<number>()
+      const visit = (node: MarkdownNode) => {
+        if (!node.children || ['link', 'linkReference', 'code', 'inlineCode'].includes(node.type)) return
+        const children: MarkdownNode[] = []
+        for (const child of node.children) {
+          if (child.type !== 'text' || !child.value) {
+            visit(child)
+            children.push(child)
+            continue
+          }
+          for (const part of child.value.split(/(\[\d+\])/g)) {
+            if (!part) continue
+            const match = /^\[(\d+)\]$/.exec(part)
+            const citationIndex = match ? Number(match[1]) - 1 : -1
+            const placeImage = match
+              && citationImageSrc(citations[citationIndex])
+              && !placedImageCitations.has(citationIndex)
+            if (placeImage) placedImageCitations.add(citationIndex)
+            children.push(match
+              ? {
+                  type: 'link',
+                  url: `#citation${placeImage ? '-image' : ''}-${match[1]}`,
+                  children: [{ type: 'text', value: part }],
+                }
+              : { type: 'text', value: part })
+          }
         }
-        for (const part of child.value.split(/(\[\d+\])/g)) {
-          if (!part) continue
-          const match = /^\[(\d+)\]$/.exec(part)
-          children.push(match
-            ? {
-                type: 'link',
-                url: `#citation-${match[1]}`,
-                children: [{ type: 'text', value: part }],
-              }
-            : { type: 'text', value: part })
-        }
+        node.children = children
       }
-      node.children = children
+      visit(tree)
     }
-    visit(tree)
   }
 }
 
@@ -83,21 +111,42 @@ function AssistantMarkdown({
   return (
     <div className="assistant-markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkCitationLinks]}
+        remarkPlugins={[remarkGfm, createRemarkCitationLinks(citations)]}
         skipHtml
         components={{
           a: ({ href, children }) => {
-            const match = /^#citation-(\d+)$/.exec(href ?? '')
+            const match = /^#citation(-image)?-(\d+)$/.exec(href ?? '')
             if (!match) {
               return <a href={href} target="_blank" rel="noreferrer">{children}</a>
             }
-            const citation = match ? citations[Number(match[1]) - 1] : undefined
+            const citationNumber = match[2]
+            const citation = citations[Number(citationNumber) - 1]
             if (!citation) return <>{children}</>
+            const imageSrc = citationImageSrc(citation)
+            if (match[1] && imageSrc) {
+              return (
+                <button
+                  type="button"
+                  className="inline-image-citation"
+                  aria-label={`查看图片来源 [${citationNumber}]`}
+                  aria-controls="source-drawer"
+                  aria-haspopup="dialog"
+                  aria-expanded={citation.id === expandedCitationId}
+                  onClick={(event) => onCitation(citation, event.currentTarget)}
+                >
+                  <img src={imageSrc} alt={citation.imageAlt || citation.title} loading="lazy" />
+                  <span className="inline-image-citation-caption">
+                    <span className="inline-image-citation-index">[{citationNumber}]</span>
+                    <span>{citation.imageAlt || citation.title}</span>
+                  </span>
+                </button>
+              )
+            }
             return (
               <button
                 type="button"
                 className="inline-citation"
-                aria-label={`查看来源 [${match![1]}]`}
+                aria-label={`查看来源 [${citationNumber}]`}
                 aria-controls="source-drawer"
                 aria-haspopup="dialog"
                 aria-expanded={citation.id === expandedCitationId}
@@ -121,7 +170,7 @@ interface MessageBubbleProps {
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onFeedback?: MessageThreadProps['onFeedback']
 }
 
 function MessageBubble({
@@ -132,6 +181,26 @@ function MessageBubble({
   feedbackDisabled,
   onFeedback,
 }: MessageBubbleProps) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [reasonType, setReasonType] = useState<FeedbackReasonType>(
+    message.feedbackReasonType ?? 'CONTENT_ERROR',
+  )
+  const [reasonText, setReasonText] = useState(message.feedbackReasonText ?? '')
+
+  function handleDislike() {
+    if (message.feedbackRating === 'DISLIKE') {
+      setFeedbackOpen(false)
+      onFeedback?.(message.id, null)
+      return
+    }
+    setFeedbackOpen(true)
+  }
+
+  function submitDislike() {
+    onFeedback?.(message.id, 'DISLIKE', reasonType, reasonText.trim() || undefined)
+    setFeedbackOpen(false)
+  }
+
   return (
     <article className={`message-bubble message-${message.role.toLowerCase()}`}>
       <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
@@ -150,9 +219,9 @@ function MessageBubble({
       ) : <p>{message.content}</p>}
       {message.role === 'ASSISTANT' ? (
         <div className="message-footer">
-          {message.citations.length ? (
+          {message.citations.some((citation) => !citationImageSrc(citation)) ? (
             <div className="message-citations" aria-label="回答引用">
-              {message.citations.map((citation, index) => (
+              {message.citations.map((citation, index) => citationImageSrc(citation) ? null : (
                 <button
                   type="button"
                   className="citation-button"
@@ -187,11 +256,41 @@ function MessageBubble({
               aria-pressed={message.feedbackRating === 'DISLIKE'}
               title="点踩这条回答"
               disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
-              onClick={() => onFeedback?.(message.id, message.feedbackRating === 'DISLIKE' ? null : 'DISLIKE')}
+              onClick={handleDislike}
             >
               <ThumbsDown aria-hidden="true" size={15} strokeWidth={1.8} />
             </button>
           </div>
+          {feedbackOpen ? (
+            <div className="feedback-reason-panel" role="dialog" aria-label="选择不满意原因">
+              <div className="feedback-reason-options" role="radiogroup" aria-label="不满意原因">
+                {feedbackReasons.map((reason) => (
+                  <label key={reason.value} className={reasonType === reason.value ? 'is-selected' : ''}>
+                    <input
+                      type="radio"
+                      name={`feedback-reason-${message.id}`}
+                      value={reason.value}
+                      checked={reasonType === reason.value}
+                      onChange={() => setReasonType(reason.value)}
+                    />
+                    <span>{reason.label}</span>
+                  </label>
+                ))}
+              </div>
+              <textarea
+                value={reasonText}
+                maxLength={500}
+                rows={2}
+                placeholder="补充说明（选填）"
+                aria-label="补充说明"
+                onChange={(event) => setReasonText(event.target.value)}
+              />
+              <div className="feedback-reason-actions">
+                <button type="button" onClick={() => setFeedbackOpen(false)}>取消</button>
+                <button type="button" className="is-primary" onClick={submitDislike}>提交反馈</button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>
@@ -213,7 +312,7 @@ function MessagePairBlock({
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
-  onFeedback?: (messageId: string, rating: FeedbackRating | null) => void
+  onFeedback?: MessageThreadProps['onFeedback']
 }) {
   return (
     <div
@@ -238,11 +337,15 @@ export function MessageThread({
   onCitation,
   feedbackPendingIds,
   feedbackDisabled = false,
+  onProgressPlaybackComplete,
   onFeedback,
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
   const pairs = groupMessagePairs(messages)
+  const handleProgressPlaybackComplete = useCallback(() => {
+    onProgressPlaybackComplete?.()
+  }, [onProgressPlaybackComplete])
 
   useEffect(() => {
     const end = endRef.current
@@ -277,7 +380,13 @@ export function MessageThread({
               </div>
               <AssistantMarkdown content={streamedAnswer} citations={[]} onCitation={onCitation} />
             </article>
-          ) : <ThinkingIndicator progress={answerProgress} progressTrail={answerProgressTrail} />}
+          ) : (
+            <ThinkingIndicator
+              progress={answerProgress}
+              progressTrail={answerProgressTrail}
+              onPlaybackComplete={handleProgressPlaybackComplete}
+            />
+          )}
         </>
       ) : null}
       <div ref={endRef} aria-hidden="true" />

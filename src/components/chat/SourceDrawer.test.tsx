@@ -41,6 +41,27 @@ describe('SourceDrawer', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('shows the full image and its description for image evidence', () => {
+    render(<SourceDrawer
+      citation={{
+        ...citation,
+        mediaType: 'IMAGE',
+        imageUrl: '/minio/public/docs/architecture.png',
+        previewUrl: '/minio/public/docs/previews/architecture.webp',
+        imageAlt: '系统架构图',
+      }}
+      modal={false}
+      onClose={vi.fn()}
+    />)
+
+    expect(screen.getByRole('img', { name: '系统架构图' })).toHaveAttribute(
+      'src',
+      '/minio/public/docs/architecture.png',
+    )
+    expect(screen.getByText('系统架构图')).toBeInTheDocument()
+    expect(screen.getByText('第 4 页')).toBeInTheDocument()
+  })
+
   it('moves focus inside, contains Tab navigation, and closes with Escape', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
