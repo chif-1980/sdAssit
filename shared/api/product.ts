@@ -4,6 +4,7 @@ export type FeedbackRating = 'LIKE' | 'DISLIKE'
 export type FeedbackReasonType = 'CONTENT_ERROR' | 'OUTDATED' | 'MISSING_SOURCE' | 'CITATION_ERROR' | 'OTHER'
 export type AnswerMode = 'CONCISE' | 'DETAILED'
 export type ProductAnswerStage = 'UNDERSTANDING' | 'RETRIEVING' | 'VERIFYING' | 'COMPOSING'
+export type ProductSkillId = 'MATERIAL_SEARCH' | 'SOLUTION_DRAFT' | 'MEETING_ANALYSIS'
 
 export interface ProductAnswerProgress {
   stage: ProductAnswerStage
@@ -55,15 +56,32 @@ export interface ProductCitation {
   imageAlt?: string | null
 }
 
+export interface ProductMaterial {
+  id: string
+  title: string
+  type: string
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  updatedAt: string
+  summary: string
+  status: 'APPROVED' | 'PUBLISHED'
+  approvalStatus: 'APPROVED'
+  publicationStatus: 'PUBLISHED'
+  citation: ProductCitation
+}
+
 export interface ProductMessage {
   id: string
   role: 'USER' | 'ASSISTANT'
   content: string
+  skillId?: ProductSkillId
   answerStatus: AnswerStatus | null
   feedbackRating?: FeedbackRating | null
   feedbackReasonType?: FeedbackReasonType | null
   feedbackReasonText?: string | null
   citations: ProductCitation[]
+  materials?: ProductMaterial[]
   attachments?: ProductAttachment[]
   createdAt: string
 }

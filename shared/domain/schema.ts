@@ -222,6 +222,9 @@ const messageSchema = z.object({
   conversationId: z.string(),
   role: z.enum(['USER', 'ASSISTANT']),
   text: z.string(),
+  skillId: z.enum(['MATERIAL_SEARCH', 'SOLUTION_DRAFT', 'MEETING_ANALYSIS']).optional(),
+  answerStatus: z.enum(['SUPPORTED', 'INSUFFICIENT', 'CONFLICTING']).optional(),
+  materialIds: z.array(z.string()).optional(),
   citations: z.array(citationSchema),
   createdAt: isoSchema,
   feedback: z.object({
@@ -230,6 +233,17 @@ const messageSchema = z.object({
     text: z.string().optional(),
     createdAt: isoSchema,
   }).strict().optional(),
+}).strict()
+
+const distributionTaskSchema = z.object({
+  id: z.string(),
+  materialId: z.string(),
+  requesterId: z.string(),
+  channel: z.enum(['WECHAT', 'FEISHU', 'DINGTALK']),
+  mode: z.literal('DEVICE_SHARE'),
+  status: z.enum(['READY', 'DISPATCHED', 'FAILED', 'CANCELLED']),
+  createdAt: isoSchema,
+  completedAt: isoSchema.optional(),
 }).strict()
 
 export const platformSnapshotSchema = z.object({
@@ -255,6 +269,7 @@ export const platformSnapshotSchema = z.object({
     content: z.string(),
     mimeType: z.string(),
   }).strict()),
+  distributionTasks: z.array(distributionTaskSchema).optional(),
 }).strict()
 
 export function parseSnapshot(input: unknown): PlatformSnapshot {

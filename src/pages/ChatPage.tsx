@@ -2,6 +2,10 @@ import { Archive, ArchiveRestore, ArrowDown, ArrowUpRight, PanelLeft, Plus, Refr
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
+  MaterialDistributionResponse,
+  MaterialShareChannel,
+} from '../../shared/api/materials.js'
+import type {
   AnswerMode,
   FeedbackRating,
   FeedbackReasonType,
@@ -9,13 +13,17 @@ import type {
   ProductAttachment,
   ProductCitation,
   ProductConversation,
+  ProductMaterial,
   ProductMessage,
 } from '../../shared/api/product.js'
 import { ApiError, api, streamApi } from '../api/client'
 import { ChatComposer } from '../components/chat/ChatComposer'
-import type { ComposerAttachment } from '../components/chat/ChatComposer'
+import type { ComposerAttachment, ComposerMention } from '../components/chat/ChatComposer'
+import { businessTasks, composerMentions, inferBusinessTask, type BusinessTask } from '../components/chat/businessTasks'
 import { ConversationOutline } from '../components/chat/ConversationOutline'
 import { MessageThread } from '../components/chat/MessageThread'
+import { MaterialDistributionDialog } from '../components/chat/MaterialDistributionDialog'
+import { canShareMaterialFiles, openShareApplication, shareMaterialViaDevice, type ShareApplicationOpenResult } from '../components/chat/materialSharing'
 import { messagePairAnchorId } from '../components/chat/messagePairs'
 import { SourceDrawer } from '../components/chat/SourceDrawer'
 import { attachmentError as getAttachmentError } from '../components/chat/fileAttachments'
@@ -65,6 +73,9 @@ function hasCompleteProgressTrail(progressTrail: readonly ProductAnswerProgress[
 }
 
 function attachmentUploadMessage(error: unknown) {
+  if (error instanceof ApiError && error.code === 'ATTACHMENTS_NOT_AVAILABLE') {
+    return '当前阶段暂不支持附件处理'
+  }
   if (error instanceof ApiError && (error.status === 404 || error.code === 'NOT_FOUND')) {
     return '附件解析服务暂不可用，请稍后重试'
   }
@@ -72,6 +83,40 @@ function attachmentUploadMessage(error: unknown) {
     return error.message
   }
   return '附件上传失败，请重试'
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+    || Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
+}
+
+function triggerBlobDownload(blob: Blob, fileName: string) {
+  if (typeof URL.createObjectURL !== 'function') return false
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = fileName || '资料'
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(href), 0)
+  return true
+}
+
+function formatMaterialSize(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '未知大小'
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function businessTaskFromMessages(items: ProductMessage[]): BusinessTask {
+  const skillMessage = [...items].reverse().find((item) => item.role === 'ASSISTANT' && item.skillId)
+  if (skillMessage?.skillId) return skillMessage.skillId
+  // Conversations created before skill metadata was added can still restore
+  // the material-search context from their persisted result cards.
+  if ([...items].reverse().some((item) => item.role === 'ASSISTANT' && item.materials?.length)) return 'MATERIAL_SEARCH'
+  return 'QA'
 }
 
 export function ChatPage() {
@@ -99,8 +144,14 @@ export function ChatPage() {
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
+  const [businessTask, setBusinessTask] = useState<BusinessTask>('QA')
+  const [businessTaskExplicit, setBusinessTaskExplicit] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
+  const [distributionMaterial, setDistributionMaterial] = useState<ProductMaterial>()
+  const [distributionBusy, setDistributionBusy] = useState(false)
+  const [distributionFeedback, setDistributionFeedback] = useState<string>()
+  const [toastText, setToastText] = useState<string>()
   const contextVersionRef = useRef(0)
   const citationVersionRef = useRef(0)
   const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
@@ -112,6 +163,8 @@ export function ChatPage() {
   const conversationSidebarRef = useRef<HTMLElement>(null)
   const conversationTriggerRef = useRef<HTMLButtonElement>(null)
   const conversationCloseRef = useRef<HTMLButtonElement>(null)
+  const toastTimerRef = useRef<number>()
+  const sendAbortControllerRef = useRef<AbortController>()
 
   const loadWorkspace = useCallback(async () => {
     const version = ++contextVersionRef.current
@@ -129,6 +182,8 @@ export function ChatPage() {
         if (contextVersionRef.current !== version) return
         setConversation(detail.conversation)
         setMessages(detail.messages)
+        setBusinessTask(businessTaskFromMessages(detail.messages))
+        setBusinessTaskExplicit(false)
       } else {
         setConversation(undefined)
         setMessages([])
@@ -144,8 +199,11 @@ export function ChatPage() {
   useEffect(() => {
     void loadWorkspace()
     return () => {
+      sendAbortControllerRef.current?.abort()
+      sendAbortControllerRef.current = undefined
       contextVersionRef.current += 1
       citationVersionRef.current += 1
+      if (toastTimerRef.current !== undefined) window.clearTimeout(toastTimerRef.current)
     }
   }, [loadWorkspace])
 
@@ -317,6 +375,8 @@ export function ChatPage() {
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(false)
+    setBusinessTask('QA')
+    setBusinessTaskExplicit(false)
     setDraft('')
     setAttachments([])
     setAttachmentError(undefined)
@@ -344,6 +404,8 @@ export function ChatPage() {
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(item.status === 'ARCHIVED')
+    setBusinessTask('QA')
+    setBusinessTaskExplicit(false)
     setSelectedCitation(undefined)
     setAttachments([])
     setAttachmentError(undefined)
@@ -356,6 +418,8 @@ export function ChatPage() {
       if (contextVersionRef.current !== version) return
       setConversation(detail.conversation)
       setMessages(detail.messages)
+      setBusinessTask(businessTaskFromMessages(detail.messages))
+      setBusinessTaskExplicit(false)
     } catch {
       if (contextVersionRef.current !== version) return
       setErrorText('会话加载失败，请重试')
@@ -367,9 +431,17 @@ export function ChatPage() {
   async function send() {
     const content = draft.trim()
     if (!content || mutationLocked || archived) return
+    const resolvedBusinessTask = businessTaskExplicit ? businessTask : inferBusinessTask(content)
+    const requestedSkillId = resolvedBusinessTask === 'QA' ? undefined : resolvedBusinessTask
+    setBusinessTask(resolvedBusinessTask)
+    setBusinessTaskExplicit(false)
     const mode = answerMode
     const version = contextVersionRef.current
+    const abortController = new AbortController()
+    sendAbortControllerRef.current = abortController
+    let attachmentUploadFailed = false
     setSending(true)
+    setDraft('')
     setPendingQuestion(content)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
@@ -387,6 +459,7 @@ export function ChatPage() {
         const created = await api<{ conversation: ProductConversation }>('/api/chat/conversations', {
           method: 'POST',
           body: JSON.stringify({}),
+          signal: abortController.signal,
         })
         if (contextVersionRef.current !== version) return
         target = created.conversation
@@ -402,11 +475,12 @@ export function ChatPage() {
             formData.append('file', attachment.file, attachment.file.name)
             const uploaded = await api<{ attachment: ProductAttachment }>(
               `/api/chat/conversations/${target.id}/attachments`,
-              { method: 'POST', body: formData },
+              { method: 'POST', body: formData, signal: abortController.signal },
             )
             attachmentIds.push(uploaded.attachment.id)
           }
         } catch (error) {
+          attachmentUploadFailed = true
           const message = attachmentUploadMessage(error)
           setAttachments((current) => current.map((attachment) => ({
             ...attachment,
@@ -418,14 +492,18 @@ export function ChatPage() {
         }
       }
 
-      const messageBody = attachmentIds.length
-        ? JSON.stringify({ content, mode, attachmentIds })
-        : JSON.stringify({ content, mode })
+      const messageBody = JSON.stringify({
+        content,
+        mode,
+        ...(requestedSkillId ? { skillId: requestedSkillId } : {}),
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+      })
       const result = await streamApi<SendResponse, ProductAnswerProgress>(
         `/api/chat/conversations/${target.id}/messages/stream`,
         {
           method: 'POST',
           body: messageBody,
+          signal: abortController.signal,
         },
         {
           onProgress: (progress) => {
@@ -448,7 +526,7 @@ export function ChatPage() {
         pendingAnswerRef.current = result
         setPendingAnswer(result)
       } else applyAnswer(result)
-    } catch {
+    } catch (error) {
       if (contextVersionRef.current !== version) return
       setPendingQuestion(undefined)
       setAnswerProgress(undefined)
@@ -458,10 +536,39 @@ export function ChatPage() {
       streamedAnswerRef.current = ''
       pendingAnswerRef.current = undefined
       setPendingAnswer(undefined)
-      setErrorText('发送失败，请重试')
+      // Upload errors already have a specific inline message next to the
+      // attachment. Avoid replacing it with a generic send failure banner.
+      if (!isAbortError(error)) {
+        setDraft(content)
+        if (!attachmentUploadFailed) setErrorText('发送失败，请重试')
+      }
     } finally {
+      if (sendAbortControllerRef.current === abortController) {
+        sendAbortControllerRef.current = undefined
+      }
       if (contextVersionRef.current === version) setSending(false)
     }
+  }
+
+  function stopSending() {
+    if (!sending) return
+    sendAbortControllerRef.current?.abort()
+    sendAbortControllerRef.current = undefined
+    contextVersionRef.current += 1
+    setSending(false)
+    setPendingQuestion(undefined)
+    setAnswerProgress(undefined)
+    setAnswerProgressTrail([])
+    answerProgressTrailRef.current = []
+    setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    pendingAnswerRef.current = undefined
+    setPendingAnswer(undefined)
+    setAttachments((current) => current.map((attachment) => (
+      attachment.status === 'UPLOADING' ? { ...attachment, status: 'PENDING' } : attachment
+    )))
+    setAttachmentError(undefined)
+    setErrorText(undefined)
   }
 
   function addAttachments(files: File[]) {
@@ -610,6 +717,112 @@ export function ChatPage() {
     setSelectedCitation(undefined)
   }
 
+  const showToast = useCallback((message: string) => {
+    if (toastTimerRef.current !== undefined) window.clearTimeout(toastTimerRef.current)
+    setToastText(message)
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastText(undefined)
+      toastTimerRef.current = undefined
+    }, 3200)
+  }, [])
+
+  async function fetchMaterialBlob(material: ProductMaterial, downloadPath?: string) {
+    const response = await fetch(downloadPath ?? `/api/chat/materials/${encodeURIComponent(material.id)}/download`, {
+      credentials: 'include',
+    })
+    if (!response.ok) throw new Error('MATERIAL_DOWNLOAD_FAILED')
+    return response.blob()
+  }
+
+  async function downloadMaterial(material: ProductMaterial) {
+    setErrorText(undefined)
+    try {
+      const blob = await fetchMaterialBlob(material)
+      if (!triggerBlobDownload(blob, material.fileName)) throw new Error('BROWSER_DOWNLOAD_UNAVAILABLE')
+      showToast(`已下载「${material.fileName}」`)
+    } catch {
+      setErrorText('资料下载失败，请重试')
+    }
+  }
+
+  function openMaterialPreview(material: ProductMaterial, trigger: HTMLButtonElement) {
+    void openCitation(material.citation, trigger)
+  }
+
+  function openMaterialDistribution(material: ProductMaterial) {
+    setDistributionMaterial(material)
+    setDistributionFeedback(undefined)
+    setErrorText(undefined)
+  }
+
+  function closeMaterialDistribution() {
+    if (distributionBusy) return
+    setDistributionMaterial(undefined)
+    setDistributionFeedback(undefined)
+  }
+
+  async function distributeMaterial(channel: MaterialShareChannel) {
+    const material = distributionMaterial
+    if (!material || distributionBusy) return
+    // Launch the desktop protocol while the click still has user activation.
+    // The network request and file preparation below are asynchronous and may
+    // otherwise cause browsers to reject a later custom-protocol navigation.
+    const earlyWechatOpen: ShareApplicationOpenResult | undefined = channel === 'WECHAT' && !canShareMaterialFiles(undefined, material.mimeType)
+      ? openShareApplication('WECHAT')
+      : undefined
+    setDistributionBusy(true)
+    setDistributionFeedback(undefined)
+    setErrorText(undefined)
+    try {
+      const response = await api<MaterialDistributionResponse>(
+        `/api/chat/materials/${encodeURIComponent(material.id)}/distributions`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ channel }),
+        },
+      )
+      const blob = await fetchMaterialBlob(material, response.downloadUrl)
+      const file = new File([blob], material.fileName, { type: blob.type || material.mimeType })
+      const result = await shareMaterialViaDevice({
+        title: material.title,
+        fileName: material.fileName,
+        size: formatMaterialSize(material.sizeBytes),
+        summary: response.text,
+        sourcePath: material.citation.path,
+        shareText: response.text,
+      }, channel, undefined, file)
+      if (result === 'SHARED') {
+        setDistributionFeedback(`已打开${channel === 'FEISHU' ? '飞书' : '微信'}系统分享面板，请选择联系人发送`)
+        showToast('已打开手机分享面板')
+      } else if (result === 'CANCELLED') {
+        setDistributionFeedback('已取消分享，资料未发送')
+      } else {
+        if (!triggerBlobDownload(blob, material.fileName)) throw new Error('BROWSER_DOWNLOAD_UNAVAILABLE')
+        if (channel === 'WECHAT') {
+          const openResult = earlyWechatOpen === 'OPENED' ? earlyWechatOpen : openShareApplication('WECHAT')
+          if (openResult === 'OPENED') {
+            setDistributionFeedback('资料已下载，并已尝试打开微信。请在微信中选择联系人并发送刚下载的文件。')
+            showToast(`已下载「${material.fileName}」，正在打开微信`)
+          } else {
+            setDistributionFeedback('资料已下载，但浏览器无法自动打开微信，请手动打开微信发送。')
+            showToast(`已下载「${material.fileName}」`)
+          }
+        } else {
+          setDistributionFeedback('设备不支持直接分享，已下载资料，请使用系统分享')
+          showToast(`已下载「${material.fileName}」，可用系统分享`)
+        }
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'CHANNEL_NOT_AVAILABLE') {
+        setDistributionFeedback('钉钉暂未接入，请选择微信或飞书')
+      } else {
+        setErrorText('分发准备失败，请重试')
+      }
+    } finally {
+      setDistributionBusy(false)
+    }
+  }
+
   function activatePair(pairId: string) {
     const target = document.getElementById(messagePairAnchorId(pairId))
     if (!target) return
@@ -619,8 +832,45 @@ export function ChatPage() {
   }
 
   function selectExampleQuestion(question: string) {
+    setBusinessTask('QA')
+    setBusinessTaskExplicit(false)
     setAnswerMode('CONCISE')
     setDraft(question)
+  }
+
+  function selectBusinessTask(task: Exclude<BusinessTask, 'QA'>, mentionValue?: string) {
+    const definition = businessTasks.find((item) => item.id === task)
+    if (!definition) return
+    setBusinessTask(task)
+    setBusinessTaskExplicit(true)
+    setAnswerMode('CONCISE')
+    setDraft((current) => {
+      // Keep the user's text intact and replace only the mention token that
+      // opened the menu. The selected skill stays visible at the start of the
+      // request so users can continue typing their own requirement after it.
+      const value = mentionValue ?? `@${definition.label}`
+      const replaced = current.replace(
+        /(^|\s)@[^\s@]*$/u,
+        (_match, prefix: string) => `${prefix}${value} `,
+      )
+      return replaced === current ? `${current}${current ? ' ' : ''}${value} ` : replaced
+    })
+  }
+
+  function selectMention(mention: ComposerMention) {
+    const task = businessTasks.find((item) => item.label === mention.label)
+    if (task) selectBusinessTask(task.id, mention.value)
+  }
+
+  function changeDraft(nextDraft: string) {
+    setDraft(nextDraft)
+    if (!businessTaskExplicit || businessTask === 'QA') return
+    const task = businessTasks.find((item) => item.id === businessTask)
+    const mention = composerMentions.find((item) => item.label === task?.label)
+    if (mention && !nextDraft.includes(mention.value)) {
+      setBusinessTask('QA')
+      setBusinessTaskExplicit(false)
+    }
   }
 
   const sourceBackgroundInert = Boolean(selectedCitation && sourceDrawerModal)
@@ -705,6 +955,11 @@ export function ChatPage() {
               </button>
               <div className="chat-conversation-title">
                 <strong>{conversation?.title ?? '新对话'}</strong>
+                {businessTask !== 'QA' ? (
+                  <span className="chat-task-chip">
+                    {businessTasks.find((item) => item.id === businessTask)?.label}
+                  </span>
+                ) : null}
                 {archived ? <span className="archive-label">已归档</span> : null}
               </div>
               {conversation ? (
@@ -748,14 +1003,18 @@ export function ChatPage() {
                     onFeedback={(messageId, rating, reasonType, reasonText) => (
                       void updateFeedback(messageId, rating, reasonType, reasonText)
                     )}
+                    onMaterialPreview={openMaterialPreview}
+                    onMaterialDownload={(material) => void downloadMaterial(material)}
+                    onMaterialDistribute={openMaterialDistribution}
                   />
                 ) : (
                   <div className="chat-empty">
                     <div className="chat-empty-copy">
                       <h2>开始一段新对话</h2>
-                      <p>输入问题，查找企业正式资料中的答案。</p>
+                      <p>直接提问即可；需要时可在输入框中选择资料、方案或会议技能。</p>
                     </div>
-                    <div className="chat-recommendations">
+                    <div className="chat-empty-prompts" aria-label="对话提示">
+                      <p className="chat-skill-summary">技能会根据你的自然语言自动匹配，也可以通过输入框中的快捷菜单手动调用。</p>
                       <p className="chat-recommendations-label">示例问题</p>
                       <div className="chat-recommendations-list">
                         {exampleQuestions.map((question) => (
@@ -812,19 +1071,31 @@ export function ChatPage() {
                 value={draft}
                 mode={answerMode}
                 disabled={mutationLocked || archived}
-                onChange={setDraft}
+                onChange={changeDraft}
                 onModeChange={setAnswerMode}
                 attachments={attachments}
                 attachmentError={attachmentError}
                 onFiles={addAttachments}
                 onRemoveAttachment={removeAttachment}
+                mentions={composerMentions}
+                onMentionSelect={selectMention}
+                sending={sending}
+                onStop={stopSending}
                 onSubmit={() => void send()}
               />
             </div>
+            {toastText ? <div className="chat-toast" role="status">{toastText}</div> : null}
           </main>
 
           <SourceDrawer citation={selectedCitation} modal={sourceDrawerModal} onClose={closeCitation} />
         </div>
+        <MaterialDistributionDialog
+          material={distributionMaterial}
+          busy={distributionBusy}
+          feedback={distributionFeedback}
+          onSelectChannel={(channel) => void distributeMaterial(channel)}
+          onClose={closeMaterialDistribution}
+        />
         <button
           type="button"
           className={`conversation-backdrop${conversationListOpen ? ' is-open' : ''}`}

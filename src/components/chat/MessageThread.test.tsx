@@ -31,6 +31,52 @@ afterEach(() => {
 })
 
 describe('MessageThread', () => {
+  it('renders material cards only for assistant messages and routes card actions', async () => {
+    const user = userEvent.setup()
+    const material = {
+      id: 'AST-1',
+      title: '产品说明 v3.2.pdf',
+      type: '产品说明',
+      fileName: '产品说明 v3.2.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+      updatedAt: '2026-08-28T12:00:00.000Z',
+      summary: '产品定位和部署要求。',
+      status: 'PUBLISHED' as const,
+      approvalStatus: 'APPROVED' as const,
+      publicationStatus: 'PUBLISHED' as const,
+      citation,
+    }
+    const onPreview = vi.fn()
+    const onDownload = vi.fn()
+    const onDistribute = vi.fn()
+    const { rerender } = render(<MessageThread
+      messages={[{
+        ...firstMessage,
+        id: 'MSG-MATERIAL',
+        role: 'ASSISTANT',
+        content: '为你找到以下资料。',
+        answerStatus: 'SUPPORTED',
+        materials: [material],
+      }]}
+      onCitation={vi.fn()}
+      onMaterialPreview={onPreview}
+      onMaterialDownload={onDownload}
+      onMaterialDistribute={onDistribute}
+    />)
+
+    expect(screen.getByRole('region', { name: '资料检索结果' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看摘要' }))
+    await user.click(screen.getByRole('button', { name: '下载' }))
+    await user.click(screen.getByRole('button', { name: '分发' }))
+    expect(onPreview).toHaveBeenCalledWith(material, expect.any(HTMLButtonElement))
+    expect(onDownload).toHaveBeenCalledWith(material)
+    expect(onDistribute).toHaveBeenCalledWith(material)
+
+    rerender(<MessageThread messages={[{ ...firstMessage, role: 'ASSISTANT', content: '普通回答', answerStatus: 'SUPPORTED' }]} onCitation={vi.fn()} />)
+    expect(screen.queryByRole('region', { name: '资料检索结果' })).not.toBeInTheDocument()
+  })
+
   it('scrolls the latest message into view after messages change', () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
@@ -137,6 +183,37 @@ describe('MessageThread', () => {
 
     expect(screen.getByText('暂无足够可靠资料')).toBeInTheDocument()
     expect(screen.queryByText('不应展示的原始正文')).not.toBeInTheDocument()
+  })
+
+  it('keeps the rollout message visible for a planned skill', () => {
+    render(<MessageThread
+      messages={[{
+        ...firstMessage,
+        role: 'ASSISTANT',
+        content: '「做方案 / 汇报」将在第 2 阶段开放。',
+        skillId: 'SOLUTION_DRAFT',
+        answerStatus: 'INSUFFICIENT',
+      }]}
+      onCitation={vi.fn()}
+    />)
+
+    expect(screen.getByText('「做方案 / 汇报」将在第 2 阶段开放。')).toBeInTheDocument()
+    expect(screen.getByText('第 2 阶段开放')).toBeInTheDocument()
+  })
+
+  it('keeps a material search result message visible when no material matches', () => {
+    render(<MessageThread
+      messages={[{
+        ...firstMessage,
+        role: 'ASSISTANT',
+        content: '没有找到符合条件且已审核、已发布的资料。',
+        skillId: 'MATERIAL_SEARCH',
+        answerStatus: 'INSUFFICIENT',
+      }]}
+      onCitation={vi.fn()}
+    />)
+
+    expect(screen.getByText('没有找到符合条件且已审核、已发布的资料。')).toBeInTheDocument()
   })
 
   it('passes the citation and trigger button to the selection handler', async () => {

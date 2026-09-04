@@ -5,6 +5,7 @@ import type {
   Citation,
   Conversation,
   ConversationMessage,
+  ConversationSkillId,
   Knowledge,
   PlatformSnapshot,
 } from '../../shared/domain/models.js'
@@ -23,6 +24,9 @@ export interface AddMessageInput {
   text: string
   scope?: ConversationScope
   sessionAssetIds?: string[]
+  materialIds?: string[]
+  skillId?: ConversationSkillId
+  answerOverride?: AnswerPayload
 }
 
 export interface AnswerPayload {
@@ -274,7 +278,7 @@ export class ConversationService {
       const sessionAssetIds = input.sessionAssetIds ?? target.sessionAssetIds
       if (sessionAssetIds.some((assetId) => !draft.assets.some((asset) => asset.id === assetId
         && asset.ownerId === draft.session.userId && asset.isSessionAsset))) throw new Error('ASSET_NOT_FOUND')
-      const answer = buildAnswer(draft, { ...target, scope, sessionAssetIds }, text, scope)
+      const answer = input.answerOverride ?? buildAnswer(draft, { ...target, scope, sessionAssetIds }, text, scope)
       const timestamp = now()
       target.scope = scope
       if (input.sessionAssetIds) {
@@ -293,10 +297,18 @@ export class ConversationService {
       }
       const assistantMessage: ConversationMessage = {
         id: messageId(), conversationId: id, role: 'ASSISTANT', text: answer.text,
+        ...(input.skillId ? { skillId: input.skillId } : {}),
+        answerStatus: answer.confidence,
+        ...(input.materialIds?.length ? { materialIds: [...new Set(input.materialIds)] } : {}),
         citations: answer.citations, createdAt: now(),
       }
       draft.messages.push(userMessage, assistantMessage)
-      return { conversation: structuredClone(target), message: structuredClone(assistantMessage), answer }
+      return {
+        conversation: structuredClone(target),
+        userMessage: structuredClone(userMessage),
+        message: structuredClone(assistantMessage),
+        answer,
+      }
     })
   }
 

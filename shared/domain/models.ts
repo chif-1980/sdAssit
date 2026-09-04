@@ -235,14 +235,30 @@ export interface MessageFeedback {
   createdAt: string
 }
 
+export type ConversationSkillId = 'MATERIAL_SEARCH' | 'SOLUTION_DRAFT' | 'MEETING_ANALYSIS'
+
 export interface ConversationMessage {
   id: string
   conversationId: string
   role: MessageRole
   text: string
+  skillId?: ConversationSkillId
+  answerStatus?: 'SUPPORTED' | 'INSUFFICIENT' | 'CONFLICTING'
+  materialIds?: string[]
   citations: Citation[]
   createdAt: string
   feedback?: MessageFeedback
+}
+
+export interface DistributionTask {
+  id: string
+  materialId: string
+  requesterId: string
+  channel: 'WECHAT' | 'FEISHU' | 'DINGTALK'
+  mode: 'DEVICE_SHARE'
+  status: 'READY' | 'DISPATCHED' | 'FAILED' | 'CANCELLED'
+  createdAt: string
+  completedAt?: string
 }
 
 export interface PlatformSnapshot {
@@ -258,4 +274,5 @@ export interface PlatformSnapshot {
   conversations: Conversation[]
   messages: ConversationMessage[]
   assetInputs: Record<string, { content: string; mimeType: string }>
+  distributionTasks?: DistributionTask[]
 }

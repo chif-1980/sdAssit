@@ -11,7 +11,10 @@ import type {
   ProductCitation,
   ProductMessage,
 } from '../../../shared/api/product.js'
+import type { ProductMaterial } from '../../../shared/api/product.js'
+import { MaterialResultList } from './MaterialResultList'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
 
 interface MessageThreadProps {
@@ -32,6 +35,9 @@ interface MessageThreadProps {
     reasonType?: FeedbackReasonType,
     reasonText?: string,
   ) => void
+  onMaterialPreview?: (material: ProductMaterial, trigger: HTMLButtonElement) => void
+  onMaterialDownload?: (material: ProductMaterial) => void
+  onMaterialDistribute?: (material: ProductMaterial) => void
 }
 
 const statusLabels: Record<AnswerStatus, string> = {
@@ -171,6 +177,9 @@ interface MessageBubbleProps {
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
   onFeedback?: MessageThreadProps['onFeedback']
+  onMaterialPreview?: MessageThreadProps['onMaterialPreview']
+  onMaterialDownload?: MessageThreadProps['onMaterialDownload']
+  onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
 }
 
 function MessageBubble({
@@ -180,6 +189,9 @@ function MessageBubble({
   feedbackPendingIds,
   feedbackDisabled,
   onFeedback,
+  onMaterialPreview,
+  onMaterialDownload,
+  onMaterialDistribute,
 }: MessageBubbleProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [reasonType, setReasonType] = useState<FeedbackReasonType>(
@@ -201,9 +213,18 @@ function MessageBubble({
     setFeedbackOpen(false)
   }
 
+  const skill = message.skillId ? taskDefinition(message.skillId) : undefined
+
   return (
     <article className={`message-bubble message-${message.role.toLowerCase()}`}>
       <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
+      {skill ? (
+        <div className={`message-skill-call${skill.availability === 'PLANNED' ? ' is-planned' : ''}`} role="status">
+          <span>已调用技能</span>
+          <strong>{skill.label}</strong>
+          {skill.availability === 'PLANNED' ? <small>第 {skill.stage} 阶段开放</small> : null}
+        </div>
+      ) : null}
       {message.answerStatus ? (
         <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
           {statusLabels[message.answerStatus]}
@@ -211,7 +232,13 @@ function MessageBubble({
       ) : null}
       {message.role === 'ASSISTANT' ? (
         <AssistantMarkdown
-          content={message.answerStatus === 'INSUFFICIENT' ? '暂无足够可靠资料' : message.content}
+          // Planned skills use INSUFFICIENT as their honest status, but their
+          // response is still actionable (it explains the rollout boundary).
+          // Only ordinary knowledge answers should replace the raw text with
+          // the generic evidence-shortage message.
+          content={message.answerStatus === 'INSUFFICIENT' && !skill
+            ? '暂无足够可靠资料'
+            : message.content}
           citations={message.citations}
           expandedCitationId={expandedCitationId}
           onCitation={onCitation}
@@ -293,6 +320,14 @@ function MessageBubble({
           ) : null}
         </div>
       ) : null}
+      {message.role === 'ASSISTANT' && message.materials?.length ? (
+        <MaterialResultList
+          materials={message.materials}
+          onPreview={(material, trigger) => onMaterialPreview?.(material, trigger)}
+          onDownload={(material) => onMaterialDownload?.(material)}
+          onDistribute={(material) => onMaterialDistribute?.(material)}
+        />
+      ) : null}
     </article>
   )
 }
@@ -305,6 +340,9 @@ function MessagePairBlock({
   feedbackPendingIds,
   feedbackDisabled,
   onFeedback,
+  onMaterialPreview,
+  onMaterialDownload,
+  onMaterialDistribute,
 }: {
   pair: MessagePair
   highlighted: boolean
@@ -313,6 +351,9 @@ function MessagePairBlock({
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled: boolean
   onFeedback?: MessageThreadProps['onFeedback']
+  onMaterialPreview?: MessageThreadProps['onMaterialPreview']
+  onMaterialDownload?: MessageThreadProps['onMaterialDownload']
+  onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
 }) {
   return (
     <div
@@ -320,8 +361,8 @@ function MessagePairBlock({
       data-message-pair={pair.id}
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
-      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} /> : null}
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} /> : null}
     </div>
   )
 }
@@ -339,6 +380,9 @@ export function MessageThread({
   feedbackDisabled = false,
   onProgressPlaybackComplete,
   onFeedback,
+  onMaterialPreview,
+  onMaterialDownload,
+  onMaterialDistribute,
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
@@ -364,6 +408,9 @@ export function MessageThread({
           feedbackPendingIds={feedbackPendingIds}
           feedbackDisabled={feedbackDisabled}
           onFeedback={onFeedback}
+          onMaterialPreview={onMaterialPreview}
+          onMaterialDownload={onMaterialDownload}
+          onMaterialDistribute={onMaterialDistribute}
         />
       ))}
       {pendingQuestion ? (

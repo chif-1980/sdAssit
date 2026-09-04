@@ -6,6 +6,7 @@ import { ReviewService } from './application/reviewService.js'
 import { registerAssetRoutes } from './routes/assetRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
 import { registerKnowledgeRoutes } from './routes/knowledgeRoutes.js'
+import { registerProductChatRoutes } from './routes/productChatRoutes.js'
 import { registerReviewRoutes } from './routes/reviewRoutes.js'
 import { registerSessionRoutes } from './routes/sessionRoutes.js'
 
@@ -19,6 +20,8 @@ const badRequestCodes = new Set([
   'DECISION_COMMENT_REQUIRED',
   'ASSIGNEE_NOT_FOUND',
   'INVALID_APPLICABILITY_SCOPE',
+  'ATTACHMENTS_NOT_AVAILABLE',
+  'CHANNEL_NOT_AVAILABLE',
 ])
 
 function classifyError(error: unknown) {
@@ -42,6 +45,7 @@ function classifyError(error: unknown) {
   if (code === 'NOT_FOUND' || code.endsWith('_NOT_FOUND')) return { code, status: 404 }
   if (code === 'REVIEW_ALREADY_RESOLVED') return { code, status: 409 }
   if (code === 'CONVERSATION_ARCHIVED' || code === 'ASSET_ALREADY_PROMOTED') return { code, status: 409 }
+  if (code === 'SOURCE_NOT_AVAILABLE') return { code, status: 404 }
   if (code === 'CONFLICT' || code.endsWith('_CONFLICT')) return { code, status: 409 }
   if (badRequestCodes.has(code)) return { code, status: 400 }
   return { code: 'INTERNAL_ERROR', status: 500 }
@@ -58,6 +62,7 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
 
   registerAssetRoutes(app, repository)
   registerConversationRoutes(app, repository)
+  registerProductChatRoutes(app, repository)
   registerReviewRoutes(app, reviewService)
   registerKnowledgeRoutes(app, reviewService)
   registerSessionRoutes(app, repository)

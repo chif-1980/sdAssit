@@ -97,6 +97,16 @@ export async function streamApi<TComplete, TProgress>(
   const decoder = new TextDecoder()
   let buffer = ''
   let complete: TComplete | undefined
+  const cancelReader = () => {
+    void reader.cancel().catch(() => undefined)
+  }
+  if (init.signal) {
+    if (init.signal.aborted) {
+      cancelReader()
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+    init.signal.addEventListener('abort', cancelReader, { once: true })
+  }
 
   const handleBlock = (block: string) => {
     const parsed = parseSseEvent(block)
@@ -124,21 +134,28 @@ export async function streamApi<TComplete, TProgress>(
     }
   }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    let separator = buffer.match(/\r\n\r\n|\n\n|\r\r/)
-    while (separator?.index !== undefined) {
-      const index = separator.index
-      handleBlock(buffer.slice(0, index))
-      buffer = buffer.slice(index + separator[0].length)
-      separator = buffer.match(/\r\n\r\n|\n\n|\r\r/)
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (init.signal?.aborted) {
+        throw new DOMException('The operation was aborted.', 'AbortError')
+      }
+      buffer += decoder.decode(value, { stream: !done })
+      let separator = buffer.match(/\r\n\r\n|\n\n|\r\r/)
+      while (separator?.index !== undefined) {
+        const index = separator.index
+        handleBlock(buffer.slice(0, index))
+        buffer = buffer.slice(index + separator[0].length)
+        separator = buffer.match(/\r\n\r\n|\n\n|\r\r/)
+      }
+      if (done) break
     }
-    if (done) break
+    if (buffer.trim()) handleBlock(buffer)
+    if (complete === undefined) {
+      throw new ApiError('STREAM_INCOMPLETE', '回答连接意外中断，请重试', response.status)
+    }
+    return complete
+  } finally {
+    init.signal?.removeEventListener('abort', cancelReader)
   }
-  if (buffer.trim()) handleBlock(buffer)
-  if (complete === undefined) {
-    throw new ApiError('STREAM_INCOMPLETE', '回答连接意外中断，请重试', response.status)
-  }
-  return complete
 }
