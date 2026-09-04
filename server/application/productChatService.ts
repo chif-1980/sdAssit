@@ -11,7 +11,7 @@ import type {
 import type { ProductSkillCatalogResponse, ProductSkillDefinition, ProductSkillId } from '../../shared/api/skills.js'
 import type { Asset, Citation, ConversationMessage, DistributionTask, PlatformSnapshot } from '../../shared/domain/models.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
-import { ConversationService, type AddMessageInput } from './conversationService.js'
+import { ConversationService, imageCitationFromText, type AddMessageInput } from './conversationService.js'
 import type { PlatformRepository } from './ports.js'
 
 const skillCatalog: ProductSkillDefinition[] = [
@@ -20,7 +20,11 @@ const skillCatalog: ProductSkillDefinition[] = [
     label: '查资料',
     description: '找产品说明、宣传手册和解决方案',
     prompt: '请帮我找一份产品说明、宣传手册和解决方案。',
-    triggerKeywords: ['资料', '产品说明', '宣传手册', '宣传册', '解决方案', '下载', '分发', '原文'],
+    triggerKeywords: [
+      '资料', '文档', '文件', '产品说明', '宣传手册', '宣传册', '解决方案', '白皮书',
+      '查一下', '查找', '检索', '搜索', '寻找', '找一下', '找一份', '相关文档',
+      '下载', '分发', '原文',
+    ],
     availability: 'AVAILABLE',
     stage: 1,
   },
@@ -106,9 +110,22 @@ function citationId(citation: Citation) {
   return encodeCitationId(citation.knowledgeId, citation.assetId, citation.locator)
 }
 
+function citationImage(citation: Pick<Citation, 'mediaType' | 'imageUrl' | 'previewUrl' | 'imageAlt' | 'excerpt'>) {
+  if (citation.mediaType === 'IMAGE' && citation.imageUrl) {
+    return {
+      mediaType: 'IMAGE' as const,
+      imageUrl: citation.imageUrl,
+      previewUrl: citation.previewUrl ?? citation.imageUrl,
+      ...(citation.imageAlt ? { imageAlt: citation.imageAlt } : {}),
+    }
+  }
+  return imageCitationFromText(citation.excerpt)
+}
+
 function toProductCitation(citation: Citation, snapshot: PlatformSnapshot): ProductCitation {
   const asset = snapshot.assets.find((item) => item.id === citation.assetId)
   const knowledge = snapshot.knowledge.find((item) => item.id === citation.knowledgeId)
+  const image = citationImage(citation)
   return {
     id: citationId(citation),
     kind: 'ENTERPRISE_EVIDENCE',
@@ -117,6 +134,7 @@ function toProductCitation(citation: Citation, snapshot: PlatformSnapshot): Prod
     locator: citation.locator,
     excerpt: citation.excerpt,
     versionAt: knowledge?.updatedAt ?? asset?.updatedAt ?? null,
+    ...(image ?? {}),
   }
 }
 
@@ -222,6 +240,9 @@ function materialForAsset(snapshot: PlatformSnapshot, assetId: string): ProductM
     excerpt: primaryKnowledge?.primaryAssetId === asset.id
       ? primaryKnowledge.content
       : sourceSection?.excerpt ?? primaryKnowledge?.content ?? asset.summary ?? '',
+    ...imageCitationFromText(primaryKnowledge?.primaryAssetId === asset.id
+      ? primaryKnowledge.content
+      : sourceSection?.excerpt ?? primaryKnowledge?.content ?? asset.summary ?? ''),
   }
   const input = snapshot.assetInputs[asset.id]
   return {
@@ -259,6 +280,7 @@ function materialSearchAnswer(materials: ProductMaterial[]): AddMessageInput['an
       assetOwnerId: undefined,
       locator: key.locator,
       excerpt: material.citation.excerpt,
+      ...(citationImage(material.citation) ?? {}),
     } satisfies Citation]
   })
 

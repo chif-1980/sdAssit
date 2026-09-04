@@ -154,26 +154,110 @@ describe('ChatPage product workspace', () => {
     const productHeading = await screen.findByRole('heading', { level: 1, name: '企业知识助手' })
     expect(productHeading).toBeInTheDocument()
     expect(productHeading.closest('.assistant-brand')?.querySelector('img')).toHaveAttribute('src', '/quickdone-mark.webp')
-    expect(screen.getByRole('heading', { level: 2, name: '开始一段新对话' })).toBeInTheDocument()
-    expect(screen.getByText('示例问题')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /产品标准部署|部署模式|实施方案/u })).toHaveLength(3)
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
+    expect(screen.getByText('统一对话入口 · 企业知识助手')).toBeInTheDocument()
+    expect(screen.getByText('默认能力 · 直接问答')).toBeInTheDocument()
+    expect(screen.getByText('需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。')).toBeInTheDocument()
+    expect(screen.queryByText(/像原来一样直接提问/u)).not.toBeInTheDocument()
+    expect(document.querySelector('.prototype-skill-strip')?.nextElementSibling).toHaveClass('prototype-skill-hint')
+    expect(screen.getByRole('button', { name: '选择查资料' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '选择做方案 / 汇报' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '选择分析会议' })).toBeInTheDocument()
+    expect(screen.getByText('可以这样问')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '投标一体机定价体系' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '语音智控的技术架构' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByText('资料原文只存放在飞书知识库，助手不会复制到其他位置')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
-    expect(document.body).not.toHaveTextContent(/上传资料|回答范围|Factory|Knowledge Factory|Yuxi|模型|Agent|智能体|Skill|知识库|@/iu)
+    expect(document.body).not.toHaveTextContent(/上传资料|回答范围|Factory|Knowledge Factory|Yuxi|模型|Agent|智能体|Skill/iu)
   })
 
-  it('fills the composer with an example question and returns to concise mode', async () => {
+  it('selects a skill directly from the new conversation guide', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
-    await user.click(screen.getByRole('button', { name: '产品标准部署需要哪些前置条件？' }))
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
 
-    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('产品标准部署需要哪些前置条件？')
-    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('@查资料 ')
+    expect(document.querySelector('.composer-skill-token')).toHaveTextContent('@查资料')
+  })
+
+  it('does not add a duplicate skill when the same skill is selected again', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    await user.click(screen.getByRole('button', { name: '选择查资料' }))
+
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    expect(textbox).toHaveValue('@查资料 ')
+  })
+
+  it('replaces the selected skill when switching skills and preserves the request', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '找产品说明')
+    await user.click(screen.getByRole('button', { name: '选择做方案 / 汇报' }))
+
+    expect(textbox).toHaveValue('@做方案 找产品说明')
+    expect(textbox).not.toHaveValue(expect.stringContaining('@查资料'))
+  })
+
+  it('cleans up an old skill and an in-progress skill search when switching skills', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '找产品说明 @做')
+    await user.click(screen.getByRole('option', { name: /@做方案/u }))
+
+    expect(textbox).toHaveValue('@做方案 找产品说明 ')
+    expect(textbox).not.toHaveValue(expect.stringContaining('@查资料'))
+  })
+
+  it('filters historical conversations from the sidebar search', async () => {
+    const user = userEvent.setup()
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await screen.findByText('原有回答')
+    const search = screen.getByRole('searchbox', { name: '搜索历史会话' })
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '项目 B' })).toBeInTheDocument()
+
+    await user.type(search, '项目 B')
+
+    expect(screen.queryByRole('button', { name: '项目 A' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '项目 B' })).toBeInTheDocument()
+    expect(screen.queryByText('未找到匹配的会话')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '清除会话搜索' }))
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+  })
+
+  it('fills the composer with an example question and keeps detailed mode implicit', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await user.click(screen.getByRole('button', { name: '投标一体机定价体系' }))
+
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('投标一体机定价体系')
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
   })
 
   it('keeps the selected skill marker so the user can type the requirement after it', async () => {
@@ -181,7 +265,7 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' })
     await user.type(textbox, '@查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
@@ -198,7 +282,7 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' })
     await user.type(textbox, '请帮我 @查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
@@ -211,17 +295,17 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' }) as HTMLTextAreaElement
     await user.type(textbox, '@查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
-    expect(screen.getByText('查资料')).toBeInTheDocument()
+    expect(document.querySelector('.composer-skill-token')).toHaveTextContent('@查资料')
 
     textbox.setSelectionRange('@查资料 '.length, '@查资料 '.length)
     fireEvent.keyDown(textbox, { key: 'Backspace' })
 
     expect(textbox).toHaveValue('')
-    expect(screen.queryByText('查资料')).not.toBeInTheDocument()
+    expect(document.querySelector('.composer-skill-token')).toBeNull()
   })
 
   it('sends the selected skill id together with the user-entered requirement', async () => {
@@ -266,7 +350,7 @@ describe('ChatPage product workspace', () => {
         method: 'POST',
         body: JSON.stringify({
           content: '@查资料 找产品说明',
-          mode: 'CONCISE',
+          mode: 'DETAILED',
           skillId: 'MATERIAL_SEARCH',
         }),
       }),
@@ -294,7 +378,7 @@ describe('ChatPage product workspace', () => {
       await pendingWorkspace
     })
 
-    expect(screen.getByText('开始一段新对话')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/chat/conversations/CVS-A', expect.anything())
   })
 
@@ -311,7 +395,7 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
     expect(screen.queryByText('原有回答')).not.toBeInTheDocument()
-    expect(screen.getByText('开始一段新对话')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
   })
 
   it('restores material cards in an existing chat without changing the ordinary conversation flow', async () => {
@@ -327,7 +411,6 @@ describe('ChatPage product workspace', () => {
     expect(await screen.findByRole('region', { name: '资料检索结果' })).toBeInTheDocument()
     expect(screen.getByText('产品说明 v3.2.pdf')).toBeInTheDocument()
     expect(screen.getByText('已审核 · 已发布')).toBeInTheDocument()
-    expect(screen.getByText('查资料')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
   })
@@ -422,7 +505,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('dialog', { name: '选择发送到的应用' })).toHaveTextContent('资料已下载，并已尝试打开微信')
   })
 
-  it('resets the answer mode when starting a new conversation', async () => {
+  it('keeps answer mode controls hidden when starting a new conversation', async () => {
     const user = userEvent.setup()
     mockFetch((path) => {
       if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
@@ -432,18 +515,16 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
-    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
   })
 
   it('manages focus and keyboard dismissal for the conversation drawer', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByText('开始一段新对话')
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
     const trigger = screen.getByRole('button', { name: '打开对话列表' })
 
     expect(trigger).toHaveAttribute('aria-controls', 'conversation-sidebar')
@@ -452,9 +533,10 @@ describe('ChatPage product workspace', () => {
 
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
     const close = within(screen.getByLabelText('对话列表')).getByRole('button', { name: '关闭对话列表' })
+    const search = screen.getByRole('searchbox', { name: '搜索历史会话' })
     await waitFor(() => expect(close).toHaveFocus())
     await user.tab({ shift: true })
-    expect(screen.getByRole('button', { name: /已归档/ })).toHaveFocus()
+    expect(search).toHaveFocus()
     await user.tab()
     expect(close).toHaveFocus()
     await user.keyboard('{Escape}')
@@ -494,7 +576,7 @@ describe('ChatPage product workspace', () => {
     }))
     expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ content: '上线条件是什么？', mode: 'CONCISE' }),
+      body: JSON.stringify({ content: '上线条件是什么？', mode: 'DETAILED' }),
     }))
   })
 
@@ -515,7 +597,6 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
     await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
@@ -567,7 +648,7 @@ describe('ChatPage product workspace', () => {
       method: 'POST',
       body: JSON.stringify({
         content: '请结合方案回答',
-        mode: 'CONCISE',
+        mode: 'DETAILED',
         attachmentIds: ['ATT-1'],
       }),
     }))
@@ -822,8 +903,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('button', { name: '归档当前对话' })).toBeDisabled()
     const stop = screen.getByRole('button', { name: '停止生成' })
     expect(stop).toBeEnabled()
-    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
     expect(textbox).toHaveValue('')
     expect(document.querySelector('.message-pending-question')).toHaveTextContent('发送期间保留')
     expect(screen.getByRole('status', { name: '正在整理答案' })).toBeInTheDocument()
@@ -1141,7 +1221,7 @@ describe('ChatPage product workspace', () => {
 
     expect(appCss).toMatch(/\.chat-layout\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\)/s)
     expect(appCss).toMatch(/\.chat-layout\.source-open\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\) 320px/s)
-    expect(appCss).toMatch(/\.chat-main\s*\{[^}]*grid-template-rows:\s*56px minmax\(0, 1fr\) auto/s)
+    expect(appCss).toMatch(/\.chat-main\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto/s)
     expect(appCss).toMatch(/\.chat-message-area\s*\{[^}]*position:\s*relative;[^}]*min-height:\s*0;/s)
     expect(appCss).toMatch(/\.chat-message-scroll\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s)
     expect(appCss).toMatch(/\.chat-scroll-to-bottom\s*\{[^}]*bottom:\s*16px;/s)
@@ -1165,7 +1245,7 @@ describe('ChatPage product workspace', () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByText('开始一段新对话')
+    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
     const messageScroll = document.querySelector('.chat-message-scroll') as HTMLDivElement
     const scrollTo = vi.fn()
     Object.defineProperty(messageScroll, 'scrollHeight', { configurable: true, value: 1200 })

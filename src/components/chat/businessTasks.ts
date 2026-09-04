@@ -17,7 +17,11 @@ export const skillRegistry: BusinessTaskDefinition[] = [
     description: '找产品说明、宣传手册和解决方案',
     prompt: '请帮我找一份产品说明、宣传手册和解决方案。',
     icon: BookOpen,
-    triggerKeywords: ['资料', '产品说明', '宣传手册', '宣传册', '解决方案', '下载', '分发', '原文'],
+    triggerKeywords: [
+      '资料', '文档', '文件', '产品说明', '宣传手册', '宣传册', '解决方案', '白皮书',
+      '查一下', '查找', '检索', '搜索', '寻找', '找一下', '找一份', '相关文档',
+      '下载', '分发', '原文',
+    ],
     availability: 'AVAILABLE',
     stage: 1,
   },

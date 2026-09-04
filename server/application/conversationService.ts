@@ -66,6 +66,39 @@ function tokenize(value: string) {
   return [...new Set(normalized.match(/[\p{Script=Han}]|[a-z0-9]+/giu) ?? [])]
 }
 
+const markdownImagePattern = /!\[(?<alt>[^\]]*)\]\((?<url>[^\s)]+)(?:\s+["'](?<preview>[^"']+)["'])?\)/u
+
+function publicImageUrl(value: string | undefined) {
+  if (!value || /\s/u.test(value) || /[\p{C}]/u.test(value)) return undefined
+  if (!value.startsWith('/minio/public/')) return undefined
+
+  // Keep path traversal out of the same-origin object-storage route. Query
+  // strings and fragments are valid object URLs, so only inspect the path.
+  const path = value.split(/[?#]/u, 1)[0]
+  if (path.split('/').includes('..')) return undefined
+  return value
+}
+
+/**
+ * Keep image evidence limited to the application's public object-storage path.
+ * This mirrors the production citation contract and avoids turning arbitrary
+ * source text into a third-party image request in the browser.
+ */
+export function imageCitationFromText(text: string) {
+  const match = markdownImagePattern.exec(text)
+  const groups = match?.groups
+  const imageUrl = publicImageUrl(groups?.url)
+  if (!imageUrl || !groups) return undefined
+  const alt = groups.alt?.replace(/\s+/gu, ' ').trim() || undefined
+  const previewUrl = publicImageUrl(groups.preview) ?? imageUrl
+  return {
+    mediaType: 'IMAGE' as const,
+    imageUrl,
+    previewUrl,
+    ...(alt ? { imageAlt: alt } : {}),
+  }
+}
+
 function scoreEvidence(question: string, evidence: Evidence) {
   const tokens = tokenize(question)
   if (!tokens.length) return 0
@@ -126,6 +159,7 @@ function evidenceForKnowledge(knowledge: Knowledge, snapshot: PlatformSnapshot):
       assetOwnerId: asset.ownerId,
       locator: knowledge.sourceLocator,
       excerpt: knowledge.content,
+      ...imageCitationFromText(knowledge.content),
     },
     logicalFactKey: knowledge.logicalFactKey ?? `${knowledge.category}:${knowledge.title}:${knowledge.content}`,
     applicability: knowledge.applicability,
@@ -145,6 +179,7 @@ function evidenceForAsset(asset: Asset): Evidence[] {
       assetOwnerId: asset.ownerId,
       locator: section.locator,
       excerpt: section.excerpt,
+      ...imageCitationFromText(section.excerpt),
     },
   }))
 }

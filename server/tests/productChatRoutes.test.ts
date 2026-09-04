@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Asset, Knowledge, PlatformSnapshot } from '../../shared/domain/models.js'
 import { JsonRepository } from '../adapters/jsonRepository.js'
 import { buildApp } from '../app.js'
+import { imageCitationFromText } from '../application/conversationService.js'
 import { seedSnapshot } from '../seed.js'
 
 const directories: string[] = []
@@ -73,6 +74,17 @@ afterEach(async () => {
 })
 
 describe('Product chat compatibility API', () => {
+  it('accepts only safe same-origin public image references', () => {
+    expect(imageCitationFromText('![架构](/minio/public/docs/architecture.png)')).toMatchObject({
+      mediaType: 'IMAGE',
+      imageUrl: '/minio/public/docs/architecture.png',
+      previewUrl: '/minio/public/docs/architecture.png',
+    })
+    expect(imageCitationFromText('![架构](/minio/public/docs/../private.png)')).toBeUndefined()
+    expect(imageCitationFromText('![架构](https://example.test/architecture.png)')).toBeUndefined()
+    expect(imageCitationFromText('![架构](/minio/public/docs/architecture.png\n)')).toBeUndefined()
+  })
+
   it('exposes the shared skill catalog and maps conversations to product DTOs', async () => {
     const { app } = await fixture()
     const skills = await app.inject({ method: 'GET', url: '/api/chat/skills' })
@@ -109,6 +121,54 @@ describe('Product chat compatibility API', () => {
     expect(response.body).toContain('4 张 A800')
     expect(response.body).toContain('"answerStatus":"SUPPORTED"')
     expect(response.body).not.toContain('待索引资料')
+  })
+
+  it('preserves image citation metadata for answers and material-search results', async () => {
+    const imageContent = '智能外呼系统架构图：![系统架构图](/minio/public/docs/architecture.png "/minio/public/docs/previews/architecture.webp")。'
+    const seed = seedSnapshot()
+    seed.assets.push(enterpriseAsset({
+      title: '智能外呼系统架构图.md',
+      summary: imageContent,
+    }))
+    seed.assetInputs['AST-PRODUCT'] = { content: imageContent, mimeType: 'text/markdown' }
+    seed.knowledge.push(enterpriseKnowledge({
+      title: '智能外呼系统架构图',
+      content: imageContent,
+    }))
+    const { app } = await fixture(seed)
+    const created = await app.inject({ method: 'POST', url: '/api/chat/conversations', payload: {} })
+
+    const answer = await app.inject({
+      method: 'POST',
+      url: `/api/chat/conversations/${created.json().conversation.id}/messages`,
+      payload: { content: '智能外呼系统架构图' },
+    })
+    expect(answer.statusCode).toBe(201)
+    expect(answer.json().assistantMessage.citations[0]).toMatchObject({
+      mediaType: 'IMAGE',
+      imageUrl: '/minio/public/docs/architecture.png',
+      previewUrl: '/minio/public/docs/previews/architecture.webp',
+      imageAlt: '系统架构图',
+    })
+
+    const materialSearch = await app.inject({
+      method: 'POST',
+      url: `/api/chat/conversations/${created.json().conversation.id}/messages`,
+      payload: { content: '@查资料 智能外呼系统架构图', skillId: 'MATERIAL_SEARCH' },
+    })
+    expect(materialSearch.statusCode).toBe(201)
+    expect(materialSearch.json().assistantMessage.citations[0]).toMatchObject({
+      mediaType: 'IMAGE',
+      imageUrl: '/minio/public/docs/architecture.png',
+      previewUrl: '/minio/public/docs/previews/architecture.webp',
+      imageAlt: '系统架构图',
+    })
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/chat/conversations/${created.json().conversation.id}`,
+    })
+    expect(detail.json().messages.at(-1).citations[0]).toMatchObject({ mediaType: 'IMAGE' })
   })
 
   it('keeps pre-stream archive errors as normal HTTP responses', async () => {
@@ -207,6 +267,19 @@ describe('Product chat compatibility API', () => {
 
     const detail = await app.inject({ method: 'GET', url: `/api/chat/conversations/${created.json().conversation.id}` })
     expect(detail.json().messages.at(-1).materials).toHaveLength(3)
+  })
+
+  it('infers material search for a natural-language document lookup request', async () => {
+    const { app } = await fixture()
+    const created = await app.inject({ method: 'POST', url: '/api/chat/conversations', payload: {} })
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/chat/conversations/${created.json().conversation.id}/messages`,
+      payload: { content: '帮我查一下投标一体机相关文档' },
+    })
+
+    expect(sent.statusCode).toBe(201)
+    expect(sent.json().assistantMessage.skillId).toBe('MATERIAL_SEARCH')
   })
 
   it('records explicit skill calls and keeps later-phase skills honest about availability', async () => {

@@ -14,4 +14,8 @@ describe('business skill inference', () => {
   it('detects meeting notes intent without requiring a customer', () => {
     expect(inferBusinessTask('请分析内部产品讨论纪要并列出待办')).toBe('MEETING_ANALYSIS')
   })
+
+  it('detects natural-language document lookup requests', () => {
+    expect(inferBusinessTask('帮我查一下投标一体机相关文档')).toBe('MATERIAL_SEARCH')
+  })
 })

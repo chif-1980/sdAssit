@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowDown, ArrowUpRight, PanelLeft, Plus, RefreshCw, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowDown, BookOpen, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -50,9 +50,8 @@ interface FeedbackResponse {
 const MAX_COMPOSER_ATTACHMENTS = 5
 
 const exampleQuestions = [
-  '产品标准部署需要哪些前置条件？',
-  '请对比不同部署模式的适用场景和限制。',
-  '如何根据正式资料制定一份实施方案？',
+  '投标一体机定价体系',
+  '语音智控的技术架构',
 ] as const
 
 function sortConversations(conversations: ProductConversation[]) {
@@ -119,6 +118,68 @@ function businessTaskFromMessages(items: ProductMessage[]): BusinessTask {
   return 'QA'
 }
 
+function knownSkillTokenSpans(value: string, mentions: readonly ComposerMention[]) {
+  const values = mentions
+    .map((mention) => mention.value)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+  const spans: { start: number; end: number }[] = []
+
+  for (let index = 0; index < value.length;) {
+    if (index > 0 && !/\s/u.test(value[index - 1] ?? '')) {
+      index += 1
+      continue
+    }
+    const matched = values.find((mention) => (
+      value.startsWith(mention, index)
+      && (index + mention.length === value.length || /\s/u.test(value[index + mention.length] ?? ''))
+    ))
+    if (!matched) {
+      index += 1
+      continue
+    }
+    spans.push({ start: index, end: index + matched.length })
+    index += matched.length
+  }
+  return spans
+}
+
+function replaceSelectedSkill(
+  current: string,
+  nextValue: string,
+  mentions: readonly ComposerMention[],
+) {
+  const spans = knownSkillTokenSpans(current, mentions)
+  const trailingMention = /(^|\s)@[^\s@]*$/u.exec(current)
+  if (trailingMention) {
+    const start = trailingMention.index + trailingMention[1].length
+    const isAlreadyKnown = spans.some((span) => start >= span.start && current.length <= span.end)
+    if (!isAlreadyKnown) spans.push({ start, end: current.length })
+  }
+  spans.sort((left, right) => left.start - right.start)
+  if (spans.length) {
+    let output = ''
+    let cursor = 0
+    let insertionIndex = 0
+    spans.forEach((span, index) => {
+      output += current.slice(cursor, span.start)
+      if (index === 0) insertionIndex = output.length
+      const trailingWhitespace = current[span.end] === ' ' ? 1 : 0
+      cursor = span.end + trailingWhitespace
+    })
+    output += current.slice(cursor)
+    return `${output.slice(0, insertionIndex)}${nextValue} ${output.slice(insertionIndex)}`
+  }
+
+  // If the menu was opened while the user was typing an incomplete @ token,
+  // replace that token in place and leave the rest of the request untouched.
+  const replaced = current.replace(
+    /(^|\s)@[^\s@]*$/u,
+    (_match, prefix: string) => `${prefix}${nextValue} `,
+  )
+  return replaced === current ? `${current}${current ? ' ' : ''}${nextValue} ` : replaced
+}
+
 export function ChatPage() {
   const [conversations, setConversations] = useState<ProductConversation[]>([])
   const [conversation, setConversation] = useState<ProductConversation>()
@@ -126,7 +187,7 @@ export function ChatPage() {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string>()
-  const [answerMode, setAnswerMode] = useState<AnswerMode>('CONCISE')
+  const [answerMode, setAnswerMode] = useState<AnswerMode>('DETAILED')
   const [pendingQuestion, setPendingQuestion] = useState<string>()
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
   const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
@@ -144,6 +205,7 @@ export function ChatPage() {
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
+  const [conversationSearch, setConversationSearch] = useState('')
   const [businessTask, setBusinessTask] = useState<BusinessTask>('QA')
   const [businessTaskExplicit, setBusinessTaskExplicit] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
@@ -265,11 +327,9 @@ export function ChatPage() {
         return
       }
       const threshold = element.getBoundingClientRect().top + Math.min(180, element.clientHeight * 0.28)
-      const current = anchors.reduce((closest, anchor) => {
-        const closestDistance = Math.abs(closest.getBoundingClientRect().top - threshold)
-        const anchorDistance = Math.abs(anchor.getBoundingClientRect().top - threshold)
-        return anchorDistance < closestDistance ? anchor : closest
-      })
+      const current = anchors.reduce((candidate, anchor) => (
+        anchor.getBoundingClientRect().top <= threshold ? anchor : candidate
+      ), anchors[0])
       setActivePairId(current.dataset.messagePair)
     }
 
@@ -305,6 +365,11 @@ export function ChatPage() {
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const archivedConversations = visibleConversations.filter((item) => item.status === 'ARCHIVED')
   const listedConversations = visibleConversations.filter((item) => item.status === (showArchived ? 'ARCHIVED' : 'ACTIVE'))
+  const filteredConversations = useMemo(() => {
+    const query = conversationSearch.trim().toLocaleLowerCase()
+    if (!query) return listedConversations
+    return listedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
+  }, [conversationSearch, listedConversations])
   const switchLocked = sending || Boolean(pendingAnswer) || archiving || restoring
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
@@ -344,7 +409,9 @@ export function ChatPage() {
       return
     }
     if (event.key !== 'Tab') return
-    const focusable = Array.from(conversationSidebarRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])
+    const focusable = Array.from(conversationSidebarRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]',
+    ) ?? [])
     const first = focusable[0]
     const last = focusable.at(-1)
     if (!first || !last) return
@@ -363,7 +430,7 @@ export function ChatPage() {
     citationVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
-    setAnswerMode('CONCISE')
+    setAnswerMode('DETAILED')
     setPendingQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
@@ -375,6 +442,7 @@ export function ChatPage() {
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(false)
+    setConversationSearch('')
     setBusinessTask('QA')
     setBusinessTaskExplicit(false)
     setDraft('')
@@ -834,7 +902,7 @@ export function ChatPage() {
   function selectExampleQuestion(question: string) {
     setBusinessTask('QA')
     setBusinessTaskExplicit(false)
-    setAnswerMode('CONCISE')
+    setAnswerMode('DETAILED')
     setDraft(question)
   }
 
@@ -843,17 +911,10 @@ export function ChatPage() {
     if (!definition) return
     setBusinessTask(task)
     setBusinessTaskExplicit(true)
-    setAnswerMode('CONCISE')
+    setAnswerMode('DETAILED')
     setDraft((current) => {
-      // Keep the user's text intact and replace only the mention token that
-      // opened the menu. The selected skill stays visible at the start of the
-      // request so users can continue typing their own requirement after it.
       const value = mentionValue ?? `@${definition.label}`
-      const replaced = current.replace(
-        /(^|\s)@[^\s@]*$/u,
-        (_match, prefix: string) => `${prefix}${value} `,
-      )
-      return replaced === current ? `${current}${current ? ' ' : ''}${value} ` : replaced
+      return replaceSelectedSkill(current, value, composerMentions)
     })
   }
 
@@ -875,6 +936,7 @@ export function ChatPage() {
 
   const sourceBackgroundInert = Boolean(selectedCitation && sourceDrawerModal)
   const sourceBackgroundProps = sourceBackgroundInert ? { inert: '' } : {}
+  const showEmptyState = !loadingWorkspace && !loadingConversation && !messages.length && !pendingQuestion
 
   return (
     <ProductShell headerInert={sourceBackgroundInert}>
@@ -917,9 +979,30 @@ export function ChatPage() {
                 <span>已归档</span>
                 <span className="archived-conversations-count">{archivedConversations.length}</span>
               </button>
+              <div className="conversation-search">
+                <Search aria-hidden="true" size={15} />
+                <input
+                  type="search"
+                  value={conversationSearch}
+                  aria-label="搜索历史会话"
+                  placeholder="搜索会话"
+                  onChange={(event) => setConversationSearch(event.target.value)}
+                />
+                {conversationSearch ? (
+                  <button
+                    type="button"
+                    className="conversation-search-clear"
+                    aria-label="清除会话搜索"
+                    title="清除搜索"
+                    onClick={() => setConversationSearch('')}
+                  >
+                    <X aria-hidden="true" size={14} />
+                  </button>
+                ) : null}
+              </div>
             </div>
-            <ul>
-              {listedConversations.map((item) => (
+            <ul className="conversation-list">
+              {filteredConversations.map((item) => (
                 <li key={item.id}>
                   <button
                     type="button"
@@ -932,14 +1015,16 @@ export function ChatPage() {
                   </button>
                 </li>
               ))}
-              {!listedConversations.length ? (
-                <li className="conversation-list-empty">{showArchived ? '暂无已归档会话' : '暂无进行中会话'}</li>
+              {!filteredConversations.length ? (
+                <li className="conversation-list-empty">
+                  {conversationSearch.trim() ? '未找到匹配的会话' : showArchived ? '暂无已归档会话' : '暂无进行中会话'}
+                </li>
               ) : null}
             </ul>
           </aside>
 
-          <main className="chat-main" {...sourceBackgroundProps}>
-            <header className="chat-conversation-header">
+          <main className={`chat-main${showEmptyState ? ' chat-main-empty' : ''}`} {...sourceBackgroundProps}>
+            <div className="chat-utility-actions">
               <button
                 ref={conversationTriggerRef}
                 type="button"
@@ -953,19 +1038,11 @@ export function ChatPage() {
               >
                 <PanelLeft aria-hidden="true" size={18} />
               </button>
-              <div className="chat-conversation-title">
-                <strong>{conversation?.title ?? '新对话'}</strong>
-                {businessTask !== 'QA' ? (
-                  <span className="chat-task-chip">
-                    {businessTasks.find((item) => item.id === businessTask)?.label}
-                  </span>
-                ) : null}
-                {archived ? <span className="archive-label">已归档</span> : null}
-              </div>
+              {archived ? <span className="archive-label chat-archive-label">已归档</span> : null}
               {conversation ? (
                 <button
                   type="button"
-                  className="icon-button"
+                  className="icon-button chat-archive-button"
                   aria-label={archived ? '恢复当前会话' : '归档当前对话'}
                   title={archived ? '恢复当前会话' : '归档当前对话'}
                   disabled={mutationLocked}
@@ -974,7 +1051,7 @@ export function ChatPage() {
                   {archived ? <ArchiveRestore aria-hidden="true" size={17} /> : <Archive aria-hidden="true" size={17} />}
                 </button>
               ) : null}
-            </header>
+            </div>
 
             <ConversationOutline
               messages={messages}
@@ -984,7 +1061,7 @@ export function ChatPage() {
             />
 
             <div className="chat-message-area">
-              <div ref={messageScrollRef} className="chat-message-scroll">
+              <div ref={messageScrollRef} className={`chat-message-scroll${showEmptyState ? ' chat-message-scroll-empty' : ''}`}>
                 {loadingWorkspace || loadingConversation ? (
                   <div className="chat-loading" role="status"><span className="spinner" />正在加载</div>
                 ) : messages.length || pendingQuestion ? (
@@ -1008,28 +1085,43 @@ export function ChatPage() {
                     onMaterialDistribute={openMaterialDistribution}
                   />
                 ) : (
-                  <div className="chat-empty">
-                    <div className="chat-empty-copy">
-                      <h2>开始一段新对话</h2>
-                      <p>直接提问即可；需要时可在输入框中选择资料、方案或会议技能。</p>
+                  <div className="chat-empty prototype-home" aria-label="新对话引导">
+                    <div className="prototype-hero">
+                      <span className="prototype-eyebrow">统一对话入口 · 企业知识助手</span>
+                      <h2>让每一次售前准备，<em>都从一个对话开始。</em></h2>
                     </div>
-                    <div className="chat-empty-prompts" aria-label="对话提示">
-                      <p className="chat-skill-summary">技能会根据你的自然语言自动匹配，也可以通过输入框中的快捷菜单手动调用。</p>
-                      <p className="chat-recommendations-label">示例问题</p>
-                      <div className="chat-recommendations-list">
-                        {exampleQuestions.map((question) => (
+                    <div className="prototype-default-skill">
+                      <span className="prototype-default-skill-icon"><MessageCircle aria-hidden="true" size={17} /></span>
+                      <span><strong>默认能力 · 直接问答</strong><small>基于已审核、已发布且你有权限访问的企业资料，回答并保留引用。</small></span>
+                    </div>
+                    <div className="prototype-skill-strip" aria-label="可调用技能">
+                      <span className="prototype-skill-strip-label">可调用技能</span>
+                      {businessTasks.map((task) => {
+                        const mention = composerMentions.find((item) => item.label === task.label)
+                        const Icon = task.icon
+                        return (
                           <button
-                            key={question}
+                            key={task.id}
                             type="button"
-                            className="chat-recommendation"
-                            onClick={() => selectExampleQuestion(question)}
+                            className="prototype-skill-chip"
+                            title={task.availability === 'PLANNED' ? `${task.description} · 第 ${task.stage} 阶段开放` : task.description}
+                            aria-label={`选择${task.label}`}
+                            onClick={() => selectBusinessTask(task.id, mention?.value)}
                           >
-                            <span>{question}</span>
-                            <ArrowUpRight aria-hidden="true" size={15} />
+                            <Icon aria-hidden="true" size={15} />
+                            <span>@{task.label}</span>
                           </button>
-                        ))}
-                      </div>
+                        )
+                      })}
                     </div>
+                    <p className="prototype-skill-hint">需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。</p>
+                    <div className="prototype-example-prompts" aria-label="示例问题">
+                      <span>可以这样问</span>
+                      {exampleQuestions.map((question) => (
+                        <button key={question} type="button" onClick={() => selectExampleQuestion(question)}>{question}</button>
+                      ))}
+                    </div>
+                    <div className="prototype-home-note"><BookOpen aria-hidden="true" size={15} /><span>资料原文只存放在飞书知识库，助手不会复制到其他位置</span></div>
                   </div>
                 )}
               </div>
@@ -1079,6 +1171,7 @@ export function ChatPage() {
                 onRemoveAttachment={removeAttachment}
                 mentions={composerMentions}
                 onMentionSelect={selectMention}
+                showModeSwitch={false}
                 sending={sending}
                 onStop={stopSending}
                 onSubmit={() => void send()}

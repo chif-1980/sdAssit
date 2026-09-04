@@ -226,6 +226,10 @@ export interface Citation {
   assetOwnerId?: string
   locator: string
   excerpt: string
+  mediaType?: 'IMAGE' | null
+  imageUrl?: string | null
+  previewUrl?: string | null
+  imageAlt?: string | null
 }
 
 export interface MessageFeedback {

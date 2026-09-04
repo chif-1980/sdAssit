@@ -215,6 +215,10 @@ const citationSchema = z.object({
   assetOwnerId: z.string().optional(),
   locator: z.string(),
   excerpt: z.string(),
+  mediaType: z.literal('IMAGE').nullable().optional(),
+  imageUrl: z.string().nullable().optional(),
+  previewUrl: z.string().nullable().optional(),
+  imageAlt: z.string().nullable().optional(),
 }).strict()
 
 const messageSchema = z.object({

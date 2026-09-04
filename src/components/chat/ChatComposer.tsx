@@ -27,6 +27,7 @@ interface ChatComposerProps {
   onStop?: () => void
   mentions?: ComposerMention[]
   onMentionSelect?: (mention: ComposerMention) => void
+  showModeSwitch?: boolean
   placeholder?: string
 }
 
@@ -105,6 +106,7 @@ export function ChatComposer({
   onStop = () => undefined,
   mentions = [],
   onMentionSelect = () => undefined,
+  showModeSwitch = true,
   placeholder = '输入你的问题',
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -277,22 +279,24 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-        <div className="answer-mode-switch" role="group" aria-label="回答方式">
-          {modes.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              className={mode === item.value ? 'is-active' : ''}
-              aria-label={`${item.label}模式`}
-              aria-pressed={mode === item.value}
-              title={item.title}
-              disabled={disabled}
-              onClick={() => onModeChange(item.value)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        {showModeSwitch ? (
+          <div className="answer-mode-switch" role="group" aria-label="回答方式">
+            {modes.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={mode === item.value ? 'is-active' : ''}
+                aria-label={`${item.label}模式`}
+                aria-pressed={mode === item.value}
+                title={item.title}
+                disabled={disabled}
+                onClick={() => onModeChange(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <button
         type={sending ? 'button' : 'submit'}
