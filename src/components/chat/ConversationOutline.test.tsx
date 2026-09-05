@@ -27,11 +27,15 @@ describe('ConversationOutline', () => {
   it('shows a compact outline only for longer conversations and previews the hovered pair', () => {
     const onActivate = vi.fn()
     const onHighlight = vi.fn()
-    render(<ConversationOutline messages={messages} activePairId="Q-1" onActivate={onActivate} onHighlight={onHighlight} />)
+    const view = render(<ConversationOutline messages={messages} activePairId="Q-1" onActivate={onActivate} onHighlight={onHighlight} />)
 
     const markers = screen.getAllByRole('button', { name: /定位到第/ })
     expect(markers).toHaveLength(3)
     expect(markers[0]).toHaveAttribute('aria-current', 'location')
+    expect(screen.getByText('第 1 / 3 组问答')).toBeInTheDocument()
+
+    view.rerender(<ConversationOutline messages={messages} activePairId="Q-3" onActivate={onActivate} onHighlight={onHighlight} />)
+    expect(screen.getByText('第 3 / 3 组问答')).toBeInTheDocument()
 
     fireEvent.mouseEnter(markers[1])
     expect(screen.getByText('第二组问题')).toBeInTheDocument()

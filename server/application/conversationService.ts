@@ -5,6 +5,7 @@ import type {
   Citation,
   Conversation,
   ConversationMessage,
+  ConversationSkillId,
   Knowledge,
   PlatformSnapshot,
 } from '../../shared/domain/models.js'
@@ -23,6 +24,10 @@ export interface AddMessageInput {
   text: string
   scope?: ConversationScope
   sessionAssetIds?: string[]
+  materialIds?: string[]
+  skillId?: ConversationSkillId
+  solutionDraftId?: string
+  answerOverride?: AnswerPayload
 }
 
 export interface AnswerPayload {
@@ -60,6 +65,39 @@ function assertConversationOwner(snapshot: PlatformSnapshot, conversation: Conve
 function tokenize(value: string) {
   const normalized = value.normalize('NFKC').toLocaleLowerCase()
   return [...new Set(normalized.match(/[\p{Script=Han}]|[a-z0-9]+/giu) ?? [])]
+}
+
+const markdownImagePattern = /!\[(?<alt>[^\]]*)\]\((?<url>[^\s)]+)(?:\s+["'](?<preview>[^"']+)["'])?\)/u
+
+function publicImageUrl(value: string | undefined) {
+  if (!value || /\s/u.test(value) || /[\p{C}]/u.test(value)) return undefined
+  if (!value.startsWith('/minio/public/')) return undefined
+
+  // Keep path traversal out of the same-origin object-storage route. Query
+  // strings and fragments are valid object URLs, so only inspect the path.
+  const path = value.split(/[?#]/u, 1)[0]
+  if (path.split('/').includes('..')) return undefined
+  return value
+}
+
+/**
+ * Keep image evidence limited to the application's public object-storage path.
+ * This mirrors the production citation contract and avoids turning arbitrary
+ * source text into a third-party image request in the browser.
+ */
+export function imageCitationFromText(text: string) {
+  const match = markdownImagePattern.exec(text)
+  const groups = match?.groups
+  const imageUrl = publicImageUrl(groups?.url)
+  if (!imageUrl || !groups) return undefined
+  const alt = groups.alt?.replace(/\s+/gu, ' ').trim() || undefined
+  const previewUrl = publicImageUrl(groups.preview) ?? imageUrl
+  return {
+    mediaType: 'IMAGE' as const,
+    imageUrl,
+    previewUrl,
+    ...(alt ? { imageAlt: alt } : {}),
+  }
 }
 
 function scoreEvidence(question: string, evidence: Evidence) {
@@ -122,6 +160,7 @@ function evidenceForKnowledge(knowledge: Knowledge, snapshot: PlatformSnapshot):
       assetOwnerId: asset.ownerId,
       locator: knowledge.sourceLocator,
       excerpt: knowledge.content,
+      ...imageCitationFromText(knowledge.content),
     },
     logicalFactKey: knowledge.logicalFactKey ?? `${knowledge.category}:${knowledge.title}:${knowledge.content}`,
     applicability: knowledge.applicability,
@@ -141,6 +180,7 @@ function evidenceForAsset(asset: Asset): Evidence[] {
       assetOwnerId: asset.ownerId,
       locator: section.locator,
       excerpt: section.excerpt,
+      ...imageCitationFromText(section.excerpt),
     },
   }))
 }
@@ -204,6 +244,13 @@ function buildAnswer(snapshot: PlatformSnapshot, conversation: Conversation, que
   }
 }
 
+export const FALLBACK_CONVERSATION_TITLE = '未命名会话'
+
+export function displayConversationTitle(title: unknown) {
+  const value = typeof title === 'string' ? title.trim() : ''
+  return value || FALLBACK_CONVERSATION_TITLE
+}
+
 function conversationTitle(text: string) {
   const value = text.trim().replace(/\s+/gu, ' ')
   return value ? value.slice(0, 40) : '新对话'
@@ -216,6 +263,7 @@ export class ConversationService {
     const snapshot = await this.repository.read()
     return snapshot.conversations
       .filter((conversation) => conversation.userId === snapshot.session.userId)
+      .map((conversation) => ({ ...conversation, title: displayConversationTitle(conversation.title) }))
       .sort((left, right) => right.lastActiveAt.localeCompare(left.lastActiveAt))
   }
 
@@ -257,7 +305,7 @@ export class ConversationService {
     const sessionAssetIds = new Set(conversation.sessionAssetIds)
     const sessionAssets = snapshot.assets.filter((asset) => sessionAssetIds.has(asset.id)
       && asset.ownerId === conversation.userId && asset.isSessionAsset)
-    return { conversation, messages, sessionAssets }
+    return { conversation: { ...conversation, title: displayConversationTitle(conversation.title) }, messages, sessionAssets }
   }
 
   async addMessage(id: string, input: AddMessageInput) {
@@ -274,7 +322,7 @@ export class ConversationService {
       const sessionAssetIds = input.sessionAssetIds ?? target.sessionAssetIds
       if (sessionAssetIds.some((assetId) => !draft.assets.some((asset) => asset.id === assetId
         && asset.ownerId === draft.session.userId && asset.isSessionAsset))) throw new Error('ASSET_NOT_FOUND')
-      const answer = buildAnswer(draft, { ...target, scope, sessionAssetIds }, text, scope)
+      const answer = input.answerOverride ?? buildAnswer(draft, { ...target, scope, sessionAssetIds }, text, scope)
       const timestamp = now()
       target.scope = scope
       if (input.sessionAssetIds) {
@@ -293,10 +341,19 @@ export class ConversationService {
       }
       const assistantMessage: ConversationMessage = {
         id: messageId(), conversationId: id, role: 'ASSISTANT', text: answer.text,
+        ...(input.skillId ? { skillId: input.skillId } : {}),
+        answerStatus: answer.confidence,
+        ...(input.materialIds?.length ? { materialIds: [...new Set(input.materialIds)] } : {}),
+        ...(input.solutionDraftId ? { solutionDraftId: input.solutionDraftId } : {}),
         citations: answer.citations, createdAt: now(),
       }
       draft.messages.push(userMessage, assistantMessage)
-      return { conversation: structuredClone(target), message: structuredClone(assistantMessage), answer }
+      return {
+        conversation: structuredClone({ ...target, title: displayConversationTitle(target.title) }),
+        userMessage: structuredClone(userMessage),
+        message: structuredClone(assistantMessage),
+        answer,
+      }
     })
   }
 

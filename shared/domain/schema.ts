@@ -215,6 +215,166 @@ const citationSchema = z.object({
   assetOwnerId: z.string().optional(),
   locator: z.string(),
   excerpt: z.string(),
+  mediaType: z.literal('IMAGE').nullable().optional(),
+  imageUrl: z.string().nullable().optional(),
+  previewUrl: z.string().nullable().optional(),
+  imageAlt: z.string().nullable().optional(),
+}).strict()
+
+const draftCitationSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  locator: z.string(),
+  excerpt: z.string(),
+  sourceUrl: z.string().optional(),
+}).strict()
+
+const draftSectionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  contentMarkdown: z.string(),
+  requirementIds: z.array(z.string()),
+  citationIds: z.array(z.string()),
+}).strict()
+
+const draftRequirementSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  source: z.string().optional(),
+}).strict()
+
+const clarificationQuestionSchema = z.object({
+  id: z.string(),
+  question: z.string().min(1),
+  type: z.enum(['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT']),
+  options: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    description: z.string().optional(),
+  }).strict()),
+  required: z.boolean(),
+  allowSkip: z.boolean(),
+  position: z.number().int().positive(),
+  total: z.number().int().positive(),
+}).strict()
+
+const capabilityIndexSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  deliveryStatus: z.string(),
+  sourceKnowledgeIds: z.array(z.string()),
+  citationIds: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+  updatedAt: isoSchema,
+}).strict()
+
+const capabilityMatchSchema = z.object({
+  requirementId: z.string().default(''),
+  capabilityId: z.string().default(''),
+  capabilityName: z.string().default(''),
+  deliveryStatus: z.string().default('UNKNOWN'),
+  matchType: z.string().default('UNKNOWN'),
+  matchScore: z.number().min(0).max(1).default(0),
+  confidence: z.number().min(0).max(1).default(0),
+  citationIds: z.array(z.string()).default([]),
+  limitations: z.array(z.string()).default([]),
+  reviewRequired: z.boolean().default(true),
+}).strict()
+
+const draftEvidenceSchema = z.object({
+  id: z.string(),
+  sourceType: z.string(),
+  title: z.string(),
+  locator: z.string(),
+  excerpt: z.string(),
+  confidence: z.number().min(0).max(1),
+  citationId: z.string().optional(),
+}).strict()
+
+const confidenceSummarySchema = z.object({
+  enterpriseCoverage: z.number().min(0).max(1),
+  evidenceCoverage: z.number().min(0).max(1),
+  industryReferenceRatio: z.number().min(0).max(1),
+  innovationRatio: z.number().min(0).max(1),
+  notes: z.array(z.string()),
+}).strict()
+
+const solutionReviewSchema = z.object({
+  status: z.string(),
+  pendingItems: z.array(z.string()),
+  requiredRoles: z.array(z.string()),
+  decisions: z.array(z.record(z.string(), z.unknown())),
+}).strict()
+
+const solutionDraftSchema = z.object({
+  id: z.string(),
+  conversationId: z.string(),
+  sourceRunId: z.string().optional(),
+  currentVersion: z.number().int().positive(),
+  status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'CONFIRMED', 'SUPERSEDED']),
+  baseVersionId: z.string().optional(),
+  versionSource: z.string().optional(),
+  confirmedAt: isoSchema.optional(),
+  title: z.string(),
+  customer: z.string().optional(),
+  customerContext: z.string(),
+  executiveSummary: z.string(),
+  requirements: z.array(draftRequirementSchema),
+  sections: z.array(draftSectionSchema),
+  assumptions: z.array(z.string()),
+  openQuestions: z.array(z.string()),
+  clarificationQuestions: z.array(clarificationQuestionSchema).optional(),
+  risks: z.array(z.string()),
+  conflicts: z.array(z.object({
+    claim: z.string(),
+    alternatives: z.array(z.object({
+      statement: z.string(),
+      applicability: z.record(z.string(), z.string()),
+      citationIds: z.array(z.string()),
+    }).strict()),
+    applicability: z.string(),
+    citationIds: z.array(z.string()),
+    status: z.enum(['UNRESOLVED', 'SCOPED']),
+  }).strict()),
+  evidenceGaps: z.array(z.string()),
+  citations: z.array(draftCitationSchema),
+  capabilityMatches: z.array(capabilityMatchSchema).default([]),
+  architecture: z.record(z.string(), z.unknown()).default({}),
+  evidence: z.array(draftEvidenceSchema).default([]),
+  confidenceSummary: confidenceSummarySchema.optional(),
+  review: solutionReviewSchema.optional(),
+  executionTrace: z.object({
+    status: z.string(),
+    startedAt: isoSchema.nullable().optional(),
+    finishedAt: isoSchema.nullable().optional(),
+    elapsedMs: z.number().nonnegative(),
+    steps: z.array(z.object({
+      stage: z.string(),
+      label: z.string(),
+      message: z.string(),
+      status: z.string(),
+      startedAt: isoSchema.nullable().optional(),
+      finishedAt: isoSchema.nullable().optional(),
+      elapsedMs: z.number().nonnegative(),
+    }).strict()),
+  }).optional(),
+  quality: z.object({
+    status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'CONFIRMED', 'SUPERSEDED']),
+    evidenceCoverage: z.number().min(0).max(1),
+    missingSections: z.array(z.string()),
+    invalidCitations: z.array(z.string()),
+    notes: z.array(z.string()),
+  }).strict(),
+  createdAt: isoSchema,
+  updatedAt: isoSchema,
+  versions: z.array(z.object({
+    version: z.number().int().positive(),
+    payload: z.record(z.string(), z.unknown()),
+    createdAt: isoSchema,
+    source: z.string().optional(),
+    baseVersionId: z.string().optional(),
+  }).strict()).optional(),
 }).strict()
 
 const messageSchema = z.object({
@@ -222,6 +382,10 @@ const messageSchema = z.object({
   conversationId: z.string(),
   role: z.enum(['USER', 'ASSISTANT']),
   text: z.string(),
+  skillId: z.enum(['MATERIAL_SEARCH', 'SOLUTION_DRAFT', 'MEETING_ANALYSIS']).optional(),
+  answerStatus: z.enum(['SUPPORTED', 'INSUFFICIENT', 'CONFLICTING']).optional(),
+  materialIds: z.array(z.string()).optional(),
+  solutionDraftId: z.string().optional(),
   citations: z.array(citationSchema),
   createdAt: isoSchema,
   feedback: z.object({
@@ -230,6 +394,17 @@ const messageSchema = z.object({
     text: z.string().optional(),
     createdAt: isoSchema,
   }).strict().optional(),
+}).strict()
+
+const distributionTaskSchema = z.object({
+  id: z.string(),
+  materialId: z.string(),
+  requesterId: z.string(),
+  channel: z.enum(['WECHAT', 'FEISHU', 'DINGTALK']),
+  mode: z.literal('DEVICE_SHARE'),
+  status: z.enum(['READY', 'DISPATCHED', 'FAILED', 'CANCELLED']),
+  createdAt: isoSchema,
+  completedAt: isoSchema.optional(),
 }).strict()
 
 export const platformSnapshotSchema = z.object({
@@ -254,7 +429,11 @@ export const platformSnapshotSchema = z.object({
   assetInputs: z.record(z.string(), z.object({
     content: z.string(),
     mimeType: z.string(),
+    contentBase64: z.string().optional(),
   }).strict()),
+  distributionTasks: z.array(distributionTaskSchema).optional(),
+  solutionDrafts: z.array(solutionDraftSchema).optional(),
+  capabilityIndex: z.array(capabilityIndexSchema).optional(),
 }).strict()
 
 export function parseSnapshot(input: unknown): PlatformSnapshot {

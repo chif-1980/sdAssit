@@ -7,6 +7,7 @@ const prefixes = {
   review: 'RVW',
   relation: 'REL',
   conversation: 'CVS',
+  distribution: 'DST',
 } as const
 
 export type IdKind = keyof typeof prefixes

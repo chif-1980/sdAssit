@@ -16,5 +16,6 @@ export function seedSnapshot(): PlatformSnapshot {
     conversations: [],
     messages: [],
     assetInputs: {},
+    distributionTasks: [],
   }
 }

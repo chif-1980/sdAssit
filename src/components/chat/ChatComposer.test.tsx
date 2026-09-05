@@ -3,25 +3,35 @@ import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ComposerAttachment } from './ChatComposer'
+import type { ComposerAttachment, ComposerMention } from './ChatComposer'
 import { ChatComposer } from './ChatComposer'
 
 function ComposerHarness({
   disabled = false,
+  initialValue = '',
+  sending = false,
   onSubmit = vi.fn(),
   onFiles = vi.fn(),
   onRemoveAttachment = vi.fn(),
   attachments = [],
   attachmentError,
+  mentions = [],
+  onMentionSelect = vi.fn(),
+  onStop = vi.fn(),
 }: {
   disabled?: boolean
+  initialValue?: string
+  sending?: boolean
   onSubmit?: () => void
   onFiles?: (files: File[]) => void
   onRemoveAttachment?: (id: string) => void
   attachments?: ComposerAttachment[]
   attachmentError?: string
+  mentions?: ComposerMention[]
+  onMentionSelect?: (mention: ComposerMention) => void
+  onStop?: () => void
 }) {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(initialValue)
   const [mode, setMode] = useState<'CONCISE' | 'DETAILED'>('CONCISE')
   return (
     <ChatComposer
@@ -34,7 +44,11 @@ function ComposerHarness({
       onModeChange={setMode}
       onFiles={onFiles}
       onRemoveAttachment={onRemoveAttachment}
+      mentions={mentions}
+      onMentionSelect={onMentionSelect}
       onSubmit={onSubmit}
+      sending={sending}
+      onStop={onStop}
     />
   )
 }
@@ -73,6 +87,52 @@ describe('ChatComposer', () => {
     await user.type(textbox, '项目上线需要什么条件？{Enter}')
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers skill mentions and forwards the selected skill', async () => {
+    const user = userEvent.setup()
+    const onMentionSelect = vi.fn()
+    const mention: ComposerMention = {
+      value: '@查资料',
+      label: '查资料',
+      description: '找产品说明、宣传手册和解决方案',
+    }
+    render(<ComposerHarness mentions={[mention]} onMentionSelect={onMentionSelect} />)
+
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '@查')
+    const option = screen.getByRole('option', { name: /@查资料/u })
+    expect(option).toHaveTextContent('找产品说明')
+    await user.click(option)
+
+    expect(onMentionSelect).toHaveBeenCalledWith(mention)
+    expect(screen.queryByRole('option', { name: /@查资料/u })).not.toBeInTheDocument()
+  })
+
+  it('renders a selected skill as a distinct token', () => {
+    const mention: ComposerMention = {
+      value: '@查资料',
+      label: '查资料',
+      description: '找产品说明、宣传手册和解决方案',
+    }
+    render(<ComposerHarness initialValue="@查资料 找产品说明" mentions={[mention]} />)
+
+    expect(document.querySelector('.composer-skill-token')).toHaveTextContent('@查资料')
+  })
+
+  it('deletes the complete skill token with one backspace', () => {
+    const mention: ComposerMention = {
+      value: '@查资料',
+      label: '查资料',
+      description: '找产品说明、宣传手册和解决方案',
+    }
+    render(<ComposerHarness initialValue="@查资料 找产品说明" mentions={[mention]} />)
+
+    const textbox = screen.getByRole('textbox', { name: '问题' }) as HTMLTextAreaElement
+    textbox.focus()
+    textbox.setSelectionRange('@查资料 '.length, '@查资料 '.length)
+    fireEvent.keyDown(textbox, { key: 'Backspace' })
+
+    expect(textbox).toHaveValue('找产品说明')
   })
 
   it('inserts a newline with Shift+Enter without submitting', async () => {
@@ -117,6 +177,17 @@ describe('ChatComposer', () => {
 
     expect(textbox).toHaveValue('')
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('switches the send action to a stop action while sending', async () => {
+    const onStop = vi.fn()
+    render(<ComposerHarness initialValue="正在处理的问题" disabled sending onStop={onStop} />)
+
+    expect(screen.queryByRole('button', { name: '发送问题' })).not.toBeInTheDocument()
+    const stop = screen.getByRole('button', { name: '停止生成' })
+    expect(stop).toBeEnabled()
+    await userEvent.setup().click(stop)
+    expect(onStop).toHaveBeenCalledTimes(1)
   })
 
   it('opens the file picker and forwards selected files', async () => {

@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProductCitation, ProductConversation, ProductMessage } from '../../shared/api/product.js'
+import type { ProductCitation, ProductConversation, ProductMaterial, ProductMessage } from '../../shared/api/product.js'
 import { ChatPage } from './ChatPage'
 
 const logout = vi.fn(async () => undefined)
@@ -52,6 +52,21 @@ const citation: ProductCitation = {
   locator: '第 1 页',
   excerpt: '列表摘要',
   versionAt: null,
+}
+
+const material: ProductMaterial = {
+  id: 'AST-MATERIAL',
+  title: '产品说明 v3.2.pdf',
+  type: '产品说明',
+  fileName: '产品说明 v3.2.pdf',
+  mimeType: 'application/pdf',
+  sizeBytes: 2400,
+  updatedAt: '2026-08-28T12:00:00.000Z',
+  summary: '覆盖产品定位和部署要求。',
+  status: 'PUBLISHED',
+  approvalStatus: 'APPROVED',
+  publicationStatus: 'PUBLISHED',
+  citation,
 }
 
 function jsonResponse(body: unknown, status = 200) {
@@ -124,6 +139,9 @@ function stubMatchMedia(matches: boolean) {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  const browserNavigator = navigator as unknown as { share?: unknown; canShare?: unknown }
+  delete browserNavigator.share
+  delete browserNavigator.canShare
   logout.mockClear()
 })
 
@@ -136,26 +154,222 @@ describe('ChatPage product workspace', () => {
     const productHeading = await screen.findByRole('heading', { level: 1, name: '企业知识助手' })
     expect(productHeading).toBeInTheDocument()
     expect(productHeading.closest('.assistant-brand')?.querySelector('img')).toHaveAttribute('src', '/quickdone-mark.webp')
-    expect(screen.getByRole('heading', { level: 2, name: '开始一段新对话' })).toBeInTheDocument()
-    expect(screen.getByText('示例问题')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /产品标准部署|部署模式|实施方案/u })).toHaveLength(3)
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
+    expect(screen.getByText('统一对话入口 · 企业知识助手')).toBeInTheDocument()
+    expect(screen.getByText('默认能力 · 直接问答')).toBeInTheDocument()
+    expect(screen.getByText('需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。')).toBeInTheDocument()
+    expect(screen.queryByText(/像原来一样直接提问/u)).not.toBeInTheDocument()
+    expect(document.querySelector('.prototype-skill-strip')?.nextElementSibling).toHaveClass('prototype-skill-hint')
+    expect(screen.getByRole('button', { name: '选择查资料' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '选择做方案 / 汇报' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '选择分析会议' })).toBeInTheDocument()
+    expect(screen.getByText('可以这样问')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '投标一体机定价体系' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '语音智控的技术架构' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByText('资料原文只存放在飞书知识库，助手不会复制到其他位置')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
-    expect(document.body).not.toHaveTextContent(/上传资料|回答范围|Factory|Knowledge Factory|Yuxi|模型|Agent|智能体|Skill|知识库|@/iu)
+    expect(document.body).not.toHaveTextContent(/上传资料|回答范围|Factory|Knowledge Factory|Yuxi|模型|Agent|智能体|Skill/iu)
   })
 
-  it('fills the composer with an example question and returns to concise mode', async () => {
+  it('selects a skill directly from the new conversation guide', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '开始一段新对话' })
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
-    await user.click(screen.getByRole('button', { name: '产品标准部署需要哪些前置条件？' }))
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
 
-    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('产品标准部署需要哪些前置条件？')
-    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('@查资料 ')
+    expect(document.querySelector('.composer-skill-token')).toHaveTextContent('@查资料')
+  })
+
+  it('does not add a duplicate skill when the same skill is selected again', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    await user.click(screen.getByRole('button', { name: '选择查资料' }))
+
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    expect(textbox).toHaveValue('@查资料 ')
+  })
+
+  it('replaces the selected skill when switching skills and preserves the request', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '找产品说明')
+    await user.click(screen.getByRole('button', { name: '选择做方案 / 汇报' }))
+
+    expect(textbox).toHaveValue('@做方案 找产品说明')
+    expect(textbox).not.toHaveValue(expect.stringContaining('@查资料'))
+  })
+
+  it('cleans up an old skill and an in-progress skill search when switching skills', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '选择查资料' }))
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '找产品说明 @做')
+    await user.click(screen.getByRole('option', { name: /@做方案/u }))
+
+    expect(textbox).toHaveValue('@做方案 找产品说明 ')
+    expect(textbox).not.toHaveValue(expect.stringContaining('@查资料'))
+  })
+
+  it('filters historical conversations from the sidebar search', async () => {
+    const user = userEvent.setup()
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await screen.findByText('原有回答')
+    const search = screen.getByRole('searchbox', { name: '搜索历史会话' })
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '项目 B' })).toBeInTheDocument()
+
+    await user.type(search, '项目 B')
+
+    expect(screen.queryByRole('button', { name: '项目 A' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '项目 B' })).toBeInTheDocument()
+    expect(screen.queryByText('未找到匹配的会话')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '清除会话搜索' }))
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+  })
+
+  it('shows a fallback label when a historical conversation has no title', async () => {
+    const unnamedConversation: ProductConversation = {
+      ...conversationA,
+      id: 'CVS-EMPTY-TITLE',
+      title: '  ',
+      updatedAt: '2026-08-12T02:00:00.000Z',
+    }
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [unnamedConversation] })
+      if (path === '/api/chat/conversations/CVS-EMPTY-TITLE') return jsonResponse(detail(unnamedConversation))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await screen.findByText('原有回答')
+    expect(screen.getByRole('button', { name: '未命名会话' })).toBeInTheDocument()
+  })
+
+  it('fills the composer with an example question and keeps detailed mode implicit', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
+    await user.click(screen.getByRole('button', { name: '投标一体机定价体系' }))
+
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('投标一体机定价体系')
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the selected skill marker so the user can type the requirement after it', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '@查')
+    await user.click(screen.getByRole('option', { name: /@查资料/u }))
+
+    expect(textbox).toHaveValue('@查资料 ')
+    expect(textbox).not.toHaveValue('请帮我找一份产品说明、宣传手册和解决方案。')
+
+    await user.type(textbox, '找产品说明')
+    expect(textbox).toHaveValue('@查资料 找产品说明')
+  })
+
+  it('replaces only the trailing mention and preserves text before it', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+    await user.type(textbox, '请帮我 @查')
+    await user.click(screen.getByRole('option', { name: /@查资料/u }))
+
+    expect(textbox).toHaveValue('请帮我 @查资料 ')
+  })
+
+  it('removes a selected skill atomically and clears its active state', async () => {
+    const user = userEvent.setup()
+    emptyWorkspaceFetch()
+    render(<ChatPage />)
+
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
+    const textbox = screen.getByRole('textbox', { name: '问题' }) as HTMLTextAreaElement
+    await user.type(textbox, '@查')
+    await user.click(screen.getByRole('option', { name: /@查资料/u }))
+    expect(document.querySelector('.composer-skill-token')).toHaveTextContent('@查资料')
+
+    textbox.setSelectionRange('@查资料 '.length, '@查资料 '.length)
+    fireEvent.keyDown(textbox, { key: 'Backspace' })
+
+    expect(textbox).toHaveValue('')
+    expect(document.querySelector('.composer-skill-token')).toBeNull()
+  })
+
+  it('sends the selected skill id together with the user-entered requirement', async () => {
+    const user = userEvent.setup()
+    const createdConversation = { ...conversationA, messageCount: 0 }
+    const userMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-SKILL-U',
+      role: 'USER',
+      content: '@查资料 找产品说明',
+      answerStatus: null,
+    }
+    const assistantMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-SKILL-A',
+      content: '已找到相关资料。',
+    }
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations' && !init?.method) return jsonResponse({ conversations: [] })
+      if (path === '/api/chat/conversations' && init?.method === 'POST') return jsonResponse({ conversation: createdConversation })
+      if (path === `/api/chat/conversations/${createdConversation.id}/messages/stream` && init?.method === 'POST') {
+        return sseResponse({
+          conversation: { ...createdConversation, messageCount: 2 },
+          userMessage,
+          assistantMessage,
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    const textbox = await screen.findByRole('textbox', { name: '问题' })
+    await user.type(textbox, '@查')
+    await user.click(screen.getByRole('option', { name: /@查资料/u }))
+    await user.type(textbox, '找产品说明')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    expect(await screen.findByText('已找到相关资料。')).toBeInTheDocument()
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === `/api/chat/conversations/${createdConversation.id}/messages/stream` && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '@查资料 找产品说明',
+      mode: 'DETAILED',
+      skillId: 'MATERIAL_SEARCH',
+    })
   })
 
   it('blocks mutations during initial loading and ignores the response after starting a new conversation', async () => {
@@ -179,7 +393,7 @@ describe('ChatPage product workspace', () => {
       await pendingWorkspace
     })
 
-    expect(screen.getByText('开始一段新对话')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/chat/conversations/CVS-A', expect.anything())
   })
 
@@ -196,10 +410,117 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
     expect(screen.queryByText('原有回答')).not.toBeInTheDocument()
-    expect(screen.getByText('开始一段新对话')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
   })
 
-  it('resets the answer mode when starting a new conversation', async () => {
+  it('restores material cards in an existing chat without changing the ordinary conversation flow', async () => {
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse(detail(conversationA, [{ ...priorMessage, materials: [material] }]))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByRole('region', { name: '资料检索结果' })).toBeInTheDocument()
+    expect(screen.getByText('产品说明 v3.2.pdf')).toBeInTheDocument()
+    expect(screen.getByText('已审核 · 已发布')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
+  })
+
+  it('downloads a material from the chat card and shows a success message', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn(() => 'blob:material')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+    const fetchMock = mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA, [{ ...priorMessage, materials: [material] }]))
+      if (path === '/api/chat/materials/AST-MATERIAL/download') return new Response(new Blob(['资料正文'], { type: 'application/pdf' }))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '下载' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('已下载「产品说明 v3.2.pdf」')
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/materials/AST-MATERIAL/download', expect.objectContaining({ credentials: 'include' }))
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+  })
+
+  it('prepares a Feishu distribution and uses the mobile share sheet when available', async () => {
+    const user = userEvent.setup()
+    const share = vi.fn<(data: ShareData) => Promise<void>>(async () => undefined)
+    Object.defineProperty(navigator, 'share', { configurable: true, value: share })
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true })
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA, [{ ...priorMessage, materials: [material] }]))
+      if (path === '/api/chat/materials/AST-MATERIAL/distributions' && init?.method === 'POST') {
+        return jsonResponse({
+          distribution: { id: 'DST-1', materialId: 'AST-MATERIAL', requesterId: 'USR-1', channel: 'FEISHU', mode: 'DEVICE_SHARE', status: 'READY', createdAt: '2026-08-28T12:00:00.000Z' },
+          title: material.title,
+          text: '产品说明 v3.2.pdf\n来源：飞书知识库',
+          downloadUrl: '/api/chat/materials/AST-MATERIAL/download',
+          requiresUserConfirmation: true,
+        })
+      }
+      if (path === '/api/chat/materials/AST-MATERIAL/download') return new Response(new Blob(['资料正文'], { type: 'application/pdf' }))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '分发' }))
+    expect(screen.getByRole('dialog', { name: '选择发送到的应用' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /飞书/u }))
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/materials/AST-MATERIAL/distributions', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ channel: 'FEISHU' }),
+    }))
+    expect(share.mock.calls[0]?.[0]).toMatchObject({
+      text: '产品说明 v3.2.pdf\n来源：飞书知识库',
+      files: [expect.any(File)],
+    })
+    expect(screen.getByRole('dialog', { name: '选择发送到的应用' })).toHaveTextContent('已打开飞书系统分享面板')
+  })
+
+  it('downloads the material and attempts to open WeChat when the device share sheet is unavailable', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn(() => 'blob:material')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+    const open = vi.fn(() => ({ closed: false }) as unknown as Window)
+    Object.defineProperty(window, 'open', { configurable: true, value: open })
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA, [{ ...priorMessage, materials: [material] }]))
+      if (path === '/api/chat/materials/AST-MATERIAL/distributions' && init?.method === 'POST') {
+        return jsonResponse({
+          distribution: { id: 'DST-2', materialId: 'AST-MATERIAL', requesterId: 'USR-1', channel: 'WECHAT', mode: 'DEVICE_SHARE', status: 'READY', createdAt: '2026-08-28T12:00:00.000Z' },
+          title: material.title,
+          text: '产品说明 v3.2.pdf\n来源：飞书知识库',
+          downloadUrl: '/api/chat/materials/AST-MATERIAL/download',
+          requiresUserConfirmation: true,
+        })
+      }
+      if (path === '/api/chat/materials/AST-MATERIAL/download') return new Response(new Blob(['资料正文'], { type: 'application/pdf' }))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '分发' }))
+    await user.click(screen.getByRole('button', { name: /微信/u }))
+
+    await waitFor(() => expect(open).toHaveBeenCalledWith('weixin://', '_self'))
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/materials/AST-MATERIAL/download', expect.objectContaining({ credentials: 'include' }))
+    expect(screen.getByRole('dialog', { name: '选择发送到的应用' })).toHaveTextContent('资料已下载，并已尝试打开微信')
+  })
+
+  it('keeps answer mode controls hidden when starting a new conversation', async () => {
     const user = userEvent.setup()
     mockFetch((path) => {
       if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
@@ -209,18 +530,16 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
-    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
   })
 
   it('manages focus and keyboard dismissal for the conversation drawer', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByText('开始一段新对话')
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const trigger = screen.getByRole('button', { name: '打开对话列表' })
 
     expect(trigger).toHaveAttribute('aria-controls', 'conversation-sidebar')
@@ -229,9 +548,10 @@ describe('ChatPage product workspace', () => {
 
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
     const close = within(screen.getByLabelText('对话列表')).getByRole('button', { name: '关闭对话列表' })
+    const search = screen.getByRole('searchbox', { name: '搜索历史会话' })
     await waitFor(() => expect(close).toHaveFocus())
     await user.tab({ shift: true })
-    expect(screen.getByRole('button', { name: /已归档/ })).toHaveFocus()
+    expect(search).toHaveFocus()
     await user.tab()
     expect(close).toHaveFocus()
     await user.keyboard('{Escape}')
@@ -269,10 +589,13 @@ describe('ChatPage product workspace', () => {
       method: 'POST',
       body: JSON.stringify({}),
     }))
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ content: '上线条件是什么？', mode: 'CONCISE' }),
-    }))
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '上线条件是什么？',
+      mode: 'DETAILED',
+    })
   })
 
   it('sends the selected detailed answer mode', async () => {
@@ -292,17 +615,18 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
     await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/api/chat/conversations/CVS-A/messages/stream',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ content: '给出完整实施说明', mode: 'DETAILED' }),
-      }),
-    ))
+    await waitFor(() => {
+      const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+        path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+      ))
+      expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+        content: '给出完整实施说明',
+        mode: 'DETAILED',
+      })
+    })
   })
 
   it('uploads selected files before sending the question and includes their ids', async () => {
@@ -340,10 +664,14 @@ describe('ChatPage product workspace', () => {
     expect(uploadCall).toBeDefined()
     expect(uploadCall?.[1]?.body).toBeInstanceOf(FormData)
     expect((uploadCall?.[1]?.body as FormData).get('file')).toBeInstanceOf(File)
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ content: '请结合方案回答', mode: 'CONCISE', attachmentIds: ['ATT-1'] }),
-    }))
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '请结合方案回答',
+      mode: 'DETAILED',
+      attachmentIds: ['ATT-1'],
+    })
   })
 
   it('keeps an attachment and explains the failure when upload is rejected', async () => {
@@ -406,6 +734,7 @@ describe('ChatPage product workspace', () => {
         'event: progress\ndata: {"stage":"UNDERSTANDING","message":"正在结合当前对话理解问题"}\n\n'
         + 'event: progress\ndata: {"stage":"RETRIEVING","message":"正在检索已审核发布的资料"}\n\n'
         + 'event: progress\ndata: {"stage":"VERIFYING","message":"正在核对原文与适用条件"}\n\n'
+        + 'event: progress\ndata: {"stage":"RETRIEVING","message":"核验后正在补充检索资料"}\n\n'
         + 'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n'
         + 'event: delta\ndata: {"content":"## 结论\\n\\n支持"}\n\n',
       ))
@@ -414,6 +743,10 @@ describe('ChatPage product workspace', () => {
     expect(await screen.findByRole('heading', { level: 2, name: '结论' })).toBeInTheDocument()
     expect(screen.getByText('支持')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('正在生成')
+    await user.click(screen.getByRole('button', { name: '查看执行过程' }))
+    expect([...document.querySelectorAll('.message-streaming .thinking-step strong')].map((item) => item.textContent)).toEqual([
+      '理解问题', '检索资料', '核对依据', '检索资料', '组织答案',
+    ])
     expect(within(document.querySelector('.message-streaming') as HTMLElement)
       .queryByRole('button', { name: '点赞这条回答' })).not.toBeInTheDocument()
 
@@ -438,9 +771,8 @@ describe('ChatPage product workspace', () => {
     expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)
   })
 
-  it('plays all production progress events before replacing them with the final answer', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  it('applies the final answer immediately after production progress completes', async () => {
+    const user = userEvent.setup()
     const userMessage: ProductMessage = {
       ...priorMessage,
       id: 'MSG-PROGRESS-U',
@@ -471,15 +803,6 @@ describe('ChatPage product workspace', () => {
     await user.type(screen.getByRole('textbox', { name: '问题' }), '什么是智能客服？')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
-    expect(screen.getByText('理解问题').closest('li')).toHaveClass('is-current')
-    expect(screen.queryByText('智能客服是企业服务方案。')).not.toBeInTheDocument()
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('检索资料').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('核对依据').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('组织答案').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
     expect(await screen.findByText('智能客服是企业服务方案。')).toBeInTheDocument()
   })
 
@@ -573,7 +896,7 @@ describe('ChatPage product workspace', () => {
     expect(await screen.findByText('重试成功')).toBeInTheDocument()
   })
 
-  it('locks conversation actions during send without clearing the draft', async () => {
+  it('locks conversation actions during send and clears the draft', async () => {
     const user = userEvent.setup()
     let resolveSend!: (response: Response) => void
     const pendingSend = new Promise<Response>((resolve) => { resolveSend = resolve })
@@ -593,13 +916,15 @@ describe('ChatPage product workspace', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '新对话' })).toBeDisabled())
     expect(screen.getByRole('button', { name: '项目 B' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '归档当前对话' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
-    expect(textbox).toHaveValue('发送期间保留')
+    const stop = screen.getByRole('button', { name: '停止生成' })
+    expect(stop).toBeEnabled()
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(textbox).toHaveValue('')
     expect(document.querySelector('.message-pending-question')).toHaveTextContent('发送期间保留')
-    expect(screen.getByRole('status', { name: '正在整理答案' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '查看处理详情' })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '执行过程' })).toBeInTheDocument()
+    // Until the first backend progress event arrives, the compact indicator
+    // only says it is preparing; no fictitious execution step is shown.
+    expect(screen.queryByRole('button', { name: '查看执行过程' })).not.toBeInTheDocument()
 
     await act(async () => {
       resolveSend(sseResponse({
@@ -609,9 +934,50 @@ describe('ChatPage product workspace', () => {
       }))
       await pendingSend
     })
-    expect(screen.queryByRole('status', { name: '正在整理答案' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: '执行过程' })).not.toBeInTheDocument()
     expect(document.querySelector('.message-user:not(.message-pending-question)')).toHaveTextContent('发送期间保留')
     expect(screen.getByText('已回答')).toBeInTheDocument()
+  })
+
+  it('stops an in-flight request without showing a send error', async () => {
+    const user = userEvent.setup()
+    let resolveSend!: (response: Response) => void
+    let requestSignal!: AbortSignal
+    const pendingSend = new Promise<Response>((resolve) => { resolveSend = resolve })
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/messages/stream') {
+        requestSignal = init?.signal as AbortSignal
+        return pendingSend
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+    const textbox = screen.getByRole('textbox', { name: '问题' })
+
+    await user.type(textbox, '需要中止的问题')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '停止生成' })).toBeEnabled())
+    expect(textbox).toHaveValue('')
+
+    await user.click(screen.getByRole('button', { name: '停止生成' }))
+
+    expect(requestSignal.aborted).toBe(true)
+    expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: '执行过程' })).not.toBeInTheDocument()
+
+    await act(async () => {
+      resolveSend(sseResponse({
+        conversation: conversationA,
+        userMessage: { ...priorMessage, id: 'MSG-CANCEL-U', role: 'USER', content: '需要中止的问题', answerStatus: null },
+        assistantMessage: { ...priorMessage, id: 'MSG-CANCEL-A', content: '不应显示' },
+      }))
+      await pendingSend
+    })
+    expect(screen.queryByText('不应显示')).not.toBeInTheDocument()
   })
 
   it('finishes initial loading when switching away from a pending first detail', async () => {
@@ -872,7 +1238,7 @@ describe('ChatPage product workspace', () => {
 
     expect(appCss).toMatch(/\.chat-layout\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\)/s)
     expect(appCss).toMatch(/\.chat-layout\.source-open\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\) 320px/s)
-    expect(appCss).toMatch(/\.chat-main\s*\{[^}]*grid-template-rows:\s*56px minmax\(0, 1fr\) auto/s)
+    expect(appCss).toMatch(/\.chat-main\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto/s)
     expect(appCss).toMatch(/\.chat-message-area\s*\{[^}]*position:\s*relative;[^}]*min-height:\s*0;/s)
     expect(appCss).toMatch(/\.chat-message-scroll\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden/s)
     expect(appCss).toMatch(/\.chat-scroll-to-bottom\s*\{[^}]*bottom:\s*16px;/s)
@@ -896,7 +1262,7 @@ describe('ChatPage product workspace', () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByText('开始一段新对话')
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const messageScroll = document.querySelector('.chat-message-scroll') as HTMLDivElement
     const scrollTo = vi.fn()
     Object.defineProperty(messageScroll, 'scrollHeight', { configurable: true, value: 1200 })
