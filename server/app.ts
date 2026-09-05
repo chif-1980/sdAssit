@@ -23,6 +23,8 @@ const badRequestCodes = new Set([
   'ATTACHMENTS_NOT_AVAILABLE',
   'ATTACHMENT_TOO_LARGE',
   'CHANNEL_NOT_AVAILABLE',
+  'QUESTION_NOT_CURRENT',
+  'RUN_NOT_WAITING_FOR_INPUT',
 ])
 
 function classifyError(error: unknown) {
@@ -56,6 +58,7 @@ function classifyError(error: unknown) {
   if (code === 'NOT_FOUND' || code.endsWith('_NOT_FOUND')) return { code, status: 404 }
   if (code === 'REVIEW_ALREADY_RESOLVED') return { code, status: 409 }
   if (code === 'CONVERSATION_ARCHIVED' || code === 'ASSET_ALREADY_PROMOTED') return { code, status: 409 }
+  if (code === 'SOLUTION_DRAFT_NOT_READY') return { code, status: 409 }
   if (code === 'SOURCE_NOT_AVAILABLE') return { code, status: 404 }
   if (code === 'CONFLICT' || code.endsWith('_CONFLICT')) return { code, status: 409 }
   if (badRequestCodes.has(code)) return { code, status: 400 }

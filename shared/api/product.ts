@@ -1,5 +1,7 @@
 import type {
+  CapabilityIndexEntry,
   CapabilityMatch,
+  ClarificationQuestion,
   ConfidenceSummary,
   ConflictItem,
   DraftCitation,
@@ -58,6 +60,13 @@ export interface SolutionExecutionTrace {
 export interface ProductAgentInterrupt {
   runId?: string
   question: string
+  questionId?: string
+  type?: ClarificationQuestion['type']
+  options?: ClarificationQuestion['options']
+  required?: boolean
+  allowSkip?: boolean
+  position?: number
+  total?: number
   status: 'INTERRUPTED'
 }
 
@@ -141,6 +150,9 @@ export interface SolutionDraft {
   id: string
   conversationId: string
   sourceRunId?: string
+  baseVersionId?: string
+  versionSource?: 'AI' | 'HUMAN_EDIT' | 'CONFIRMED' | string
+  confirmedAt?: string
   currentVersion: number
   status: SolutionDraftStatus
   title: string
@@ -150,6 +162,7 @@ export interface SolutionDraft {
   sections: DraftSection[]
   assumptions: string[]
   openQuestions: string[]
+  clarificationQuestions?: ClarificationQuestion[]
   risks: string[]
   conflicts: ConflictItem[]
   evidenceGaps: string[]
@@ -164,6 +177,7 @@ export interface SolutionDraft {
   executionTrace?: SolutionExecutionTrace
   createdAt: string
   updatedAt: string
+  versions?: Array<{ version: number; payload: Record<string, unknown>; createdAt: string; source?: 'AI' | 'HUMAN_EDIT' | 'CONFIRMED' | string; baseVersionId?: string }>
 }
 
 export interface SolutionDraftEditRequest {
@@ -184,4 +198,14 @@ export interface SolutionDraftEditRequest {
   evidence?: DraftEvidenceItem[]
   confidenceSummary?: ConfidenceSummary
   review?: SolutionReviewState
+  clarificationQuestions?: ClarificationQuestion[]
+}
+
+export interface SolutionDraftConfirmResponse {
+  draft: SolutionDraft
+  confirmed: boolean
+}
+
+export interface ProductCapabilityIndexResponse {
+  capabilities: CapabilityIndexEntry[]
 }

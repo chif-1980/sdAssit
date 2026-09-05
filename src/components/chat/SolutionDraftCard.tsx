@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, CircleAlert, Clock3, Save } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CircleAlert, Clock3, FileCheck2, Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -9,6 +9,7 @@ import { mermaidMarkdownComponents } from './MermaidBlock'
 interface SolutionDraftCardProps {
   draft: SolutionDraft
   onSave?: (patch: SolutionDraftEditRequest) => Promise<void>
+  onConfirm?: () => Promise<void>
 }
 
 const statusLabels: Record<SolutionDraft['status'], string> = {
@@ -16,6 +17,7 @@ const statusLabels: Record<SolutionDraft['status'], string> = {
   READY: '待确认',
   NEEDS_REVIEW: '需要复核',
   BLOCKED: '证据不足，暂不可确认',
+  CONFIRMED: '已确认正式方案',
   SUPERSEDED: '已有新版本',
 }
 
@@ -102,7 +104,7 @@ function architectureView(draft: SolutionDraft) {
   return section ? { overview: section.contentMarkdown, layers: [] } : undefined
 }
 
-export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
+export function SolutionDraftCard({ draft, onSave, onConfirm }: SolutionDraftCardProps) {
   const fallbackSummary = draft.quality?.notes?.[0]
     || draft.evidenceGaps?.[0]
     || (draft.sourceRunId ? `方案结果未形成结构化草稿，请重试。运行编号：${draft.sourceRunId}` : '方案结果未形成结构化草稿，请重试。')
@@ -110,6 +112,7 @@ export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
   const [summary, setSummary] = useState(initialSummary)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   useEffect(() => setSummary(draft.executiveSummary?.trim() || fallbackSummary), [draft.executiveSummary, draft.currentVersion, fallbackSummary])
 
   async function save() {
@@ -124,7 +127,17 @@ export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
     }
   }
 
-  const StatusIcon = draft.status === 'READY' ? CheckCircle2 : draft.status === 'BLOCKED' ? CircleAlert : AlertTriangle
+  async function confirm() {
+    if (!onConfirm || draft.status === 'BLOCKED' || draft.status === 'CONFIRMED') return
+    setConfirming(true)
+    try {
+      await onConfirm()
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  const StatusIcon = draft.status === 'READY' || draft.status === 'CONFIRMED' ? CheckCircle2 : draft.status === 'BLOCKED' ? CircleAlert : AlertTriangle
   const architecture = architectureView(draft)
   const blockedWithoutContent = draft.status === 'BLOCKED' && !draft.sections.length && !draft.executiveSummary?.trim()
   const blockedReason = draft.quality?.notes?.[0] || draft.evidenceGaps?.[0] || 'Agent 未返回完整结构化方案。'
@@ -242,11 +255,17 @@ export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
       {draft.review?.status === 'REQUIRED' && draft.review.pendingItems.length ? (
         <div className="solution-draft-callout solution-draft-review"><strong>人工审核节点</strong><span>{draft.review.requiredRoles.length ? `请由${draft.review.requiredRoles.join('、')}确认` : '请完成方案复核'}</span>{draft.review.pendingItems.map((item) => <p key={item}>{item}</p>)}</div>
       ) : null}
+      {draft.clarificationQuestions?.length ? (
+        <div className="solution-draft-callout solution-draft-review"><strong>待确认问题</strong>{draft.clarificationQuestions.map((question) => <p key={question.id}>{question.position}. {question.question}</p>)}</div>
+      ) : null}
       {draft.evidence?.length ? (
         <div className="solution-draft-evidence"><strong>依据与来源</strong>{draft.evidence.map((item) => <span key={item.id}><em>{evidenceLabels[item.sourceType.toUpperCase()] ?? item.sourceType}</em>{item.title || '未命名来源'}{item.locator ? ` · ${item.locator}` : ''} · 置信度 {percent(item.confidence)}</span>)}</div>
       ) : null}
       {draft.citations.length ? <div className="solution-draft-citations"><strong>证据</strong>{draft.citations.map((citation, index) => <span key={citation.id}>[{index + 1}] {citation.title} · {citation.locator}</span>)}</div> : null}
-      {onSave ? <button type="button" className="solution-draft-save" disabled={saving || summary === (draft.executiveSummary?.trim() || fallbackSummary)} onClick={() => void save()}><Save aria-hidden="true" size={14} />{saved ? '已保存' : saving ? '保存中…' : '保存草稿'}</button> : null}
+      <div className="solution-draft-actions">
+        {onSave ? <button type="button" className="solution-draft-save" disabled={saving || summary === (draft.executiveSummary?.trim() || fallbackSummary)} onClick={() => void save()}><Save aria-hidden="true" size={14} />{saved ? '已保存' : saving ? '保存中…' : '保存草稿'}</button> : null}
+        {onConfirm && draft.status !== 'BLOCKED' && draft.status !== 'CONFIRMED' ? <button type="button" className="solution-draft-confirm" disabled={confirming} onClick={() => void confirm()}><FileCheck2 aria-hidden="true" size={14} />{confirming ? '确认中…' : '确认并生成正式方案'}</button> : null}
+      </div>
     </section>
   )
 }

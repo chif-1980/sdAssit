@@ -243,6 +243,32 @@ const draftRequirementSchema = z.object({
   source: z.string().optional(),
 }).strict()
 
+const clarificationQuestionSchema = z.object({
+  id: z.string(),
+  question: z.string().min(1),
+  type: z.enum(['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT']),
+  options: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    description: z.string().optional(),
+  }).strict()),
+  required: z.boolean(),
+  allowSkip: z.boolean(),
+  position: z.number().int().positive(),
+  total: z.number().int().positive(),
+}).strict()
+
+const capabilityIndexSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  deliveryStatus: z.string(),
+  sourceKnowledgeIds: z.array(z.string()),
+  citationIds: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+  updatedAt: isoSchema,
+}).strict()
+
 const capabilityMatchSchema = z.object({
   requirementId: z.string().default(''),
   capabilityId: z.string().default(''),
@@ -286,7 +312,10 @@ const solutionDraftSchema = z.object({
   conversationId: z.string(),
   sourceRunId: z.string().optional(),
   currentVersion: z.number().int().positive(),
-  status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'SUPERSEDED']),
+  status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'CONFIRMED', 'SUPERSEDED']),
+  baseVersionId: z.string().optional(),
+  versionSource: z.string().optional(),
+  confirmedAt: isoSchema.optional(),
   title: z.string(),
   customer: z.string().optional(),
   customerContext: z.string(),
@@ -295,6 +324,7 @@ const solutionDraftSchema = z.object({
   sections: z.array(draftSectionSchema),
   assumptions: z.array(z.string()),
   openQuestions: z.array(z.string()),
+  clarificationQuestions: z.array(clarificationQuestionSchema).optional(),
   risks: z.array(z.string()),
   conflicts: z.array(z.object({
     claim: z.string(),
@@ -330,7 +360,7 @@ const solutionDraftSchema = z.object({
     }).strict()),
   }).optional(),
   quality: z.object({
-    status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'SUPERSEDED']),
+    status: z.enum(['GENERATING', 'READY', 'NEEDS_REVIEW', 'BLOCKED', 'CONFIRMED', 'SUPERSEDED']),
     evidenceCoverage: z.number().min(0).max(1),
     missingSections: z.array(z.string()),
     invalidCitations: z.array(z.string()),
@@ -342,6 +372,8 @@ const solutionDraftSchema = z.object({
     version: z.number().int().positive(),
     payload: z.record(z.string(), z.unknown()),
     createdAt: isoSchema,
+    source: z.string().optional(),
+    baseVersionId: z.string().optional(),
   }).strict()).optional(),
 }).strict()
 
@@ -401,6 +433,7 @@ export const platformSnapshotSchema = z.object({
   }).strict()),
   distributionTasks: z.array(distributionTaskSchema).optional(),
   solutionDrafts: z.array(solutionDraftSchema).optional(),
+  capabilityIndex: z.array(capabilityIndexSchema).optional(),
 }).strict()
 
 export function parseSnapshot(input: unknown): PlatformSnapshot {

@@ -9,6 +9,7 @@ export interface YuxiAgentRunInput {
   productAttachmentIds?: string[]
   userUid?: string
   credentials?: YuxiRequestCredentials
+  interactive?: boolean
 }
 
 export interface YuxiRequestCredentials {
@@ -28,6 +29,7 @@ export interface YuxiAgentRun {
   inputContent?: string
   inputMetadata?: Record<string, unknown>
   agentSlug?: string
+  interrupt?: Record<string, unknown>
 }
 
 export class YuxiAgentClientError extends Error {
@@ -65,6 +67,7 @@ function parseRun(value: unknown): YuxiAgentRun {
       ? (run.inputMetadata ?? run.input_metadata) as Record<string, unknown>
       : undefined,
     agentSlug: typeof (run.agentSlug ?? run.agent_slug) === 'string' ? String(run.agentSlug ?? run.agent_slug) : undefined,
+    interrupt: (run.interrupt && typeof run.interrupt === 'object') ? run.interrupt as Record<string, unknown> : undefined,
   }
 }
 
@@ -145,6 +148,9 @@ export class YuxiAgentClient {
           product_conversation_id: input.threadId.replace(/^product-/u, ''),
           skill_id: 'SOLUTION_DRAFT',
           request_source: 'enterprise_assistant',
+          interactive_solution: input.interactive !== false,
+          expected_output_schema: 'SolutionDraftPayload',
+          capability_match_required: true,
           ...(input.userUid ? { product_user_uid: input.userUid } : {}),
           ...(input.productAttachmentIds?.length ? { product_attachment_ids: input.productAttachmentIds } : {}),
         },
@@ -213,6 +219,10 @@ export class YuxiAgentClient {
     requestId?: string,
     credentials: YuxiRequestCredentials = {},
   ) {
+    // Yuxi's product resume contract intentionally accepts only the
+    // LangGraph resume value and an idempotency key. Product-only fields
+    // (questionId/action) are handled by the local adapter; forwarding them
+    // to Yuxi would be rejected by its strict Pydantic DTO.
     const body = { answer, ...(requestId ? { requestId } : {}) }
     return parseRun(await this.json(
       `/api/chat/runs/${encodeURIComponent(runId)}/resume`,

@@ -8,6 +8,7 @@ import type {
   FeedbackRating,
   FeedbackReasonType,
   ProductAnswerProgress,
+  ProductAgentInterrupt,
   ProductCitation,
   ProductMessage,
   SolutionDraftEditRequest,
@@ -19,11 +20,12 @@ import { ThinkingIndicator } from './ThinkingIndicator'
 import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
 import { SolutionDraftCard } from './SolutionDraftCard'
+import { ClarificationCard } from './ClarificationCard'
 
 interface MessageThreadProps {
   messages: ProductMessage[]
   pendingQuestion?: string
-  agentInterruptQuestion?: string
+  agentInterruptQuestion?: ProductAgentInterrupt | string
   answerProgress?: ProductAnswerProgress
   answerProgressTrail?: readonly ProductAnswerProgress[]
   streamedAnswer?: string
@@ -42,6 +44,9 @@ interface MessageThreadProps {
   onMaterialDownload?: (material: ProductMaterial) => void
   onMaterialDistribute?: (material: ProductMaterial) => void
   onDraftSave?: (draftId: string, patch: SolutionDraftEditRequest) => Promise<void>
+  onDraftConfirm?: (draftId: string) => Promise<void>
+  onInterruptAnswer?: (answer: string | string[], action: 'answer' | 'skip') => void
+  interruptDisabled?: boolean
 }
 
 const statusLabels: Record<AnswerStatus, string> = {
@@ -186,6 +191,7 @@ interface MessageBubbleProps {
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
   onDraftSave?: MessageThreadProps['onDraftSave']
+  onDraftConfirm?: MessageThreadProps['onDraftConfirm']
 }
 
 function MessageBubble({
@@ -199,6 +205,7 @@ function MessageBubble({
   onMaterialDownload,
   onMaterialDistribute,
   onDraftSave,
+  onDraftConfirm,
 }: MessageBubbleProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [reasonType, setReasonType] = useState<FeedbackReasonType>(
@@ -278,7 +285,11 @@ function MessageBubble({
         />
       ) : null}
       {message.role === 'ASSISTANT' && message.solutionDraft ? (
-        <SolutionDraftCard draft={message.solutionDraft} onSave={onDraftSave ? (patch) => onDraftSave(message.solutionDraft!.id, patch) : undefined} />
+        <SolutionDraftCard
+          draft={message.solutionDraft}
+          onSave={onDraftSave ? (patch) => onDraftSave(message.solutionDraft!.id, patch) : undefined}
+          onConfirm={onDraftConfirm ? () => onDraftConfirm(message.solutionDraft!.id) : undefined}
+        />
       ) : null}
       {message.role === 'ASSISTANT' ? (
         <div className="message-footer">
@@ -354,6 +365,7 @@ function MessagePairBlock({
   onMaterialDownload,
   onMaterialDistribute,
   onDraftSave,
+  onDraftConfirm,
 }: {
   pair: MessagePair
   highlighted: boolean
@@ -366,6 +378,7 @@ function MessagePairBlock({
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
   onDraftSave?: MessageThreadProps['onDraftSave']
+  onDraftConfirm?: MessageThreadProps['onDraftConfirm']
 }) {
   return (
     <div
@@ -373,8 +386,8 @@ function MessagePairBlock({
       data-message-pair={pair.id}
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
-      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} /> : null}
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} /> : null}
     </div>
   )
 }
@@ -396,6 +409,9 @@ export function MessageThread({
   onMaterialDownload,
   onMaterialDistribute,
   onDraftSave,
+  onDraftConfirm,
+  onInterruptAnswer,
+  interruptDisabled = false,
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
@@ -422,6 +438,7 @@ export function MessageThread({
           onMaterialDownload={onMaterialDownload}
           onMaterialDistribute={onMaterialDistribute}
           onDraftSave={onDraftSave}
+          onDraftConfirm={onDraftConfirm}
         />
       ))}
       {pendingQuestion ? (
@@ -433,8 +450,11 @@ export function MessageThread({
           {agentInterruptQuestion ? (
             <article className="message-bubble message-assistant message-agent-interrupt" role="status">
               <div className="message-role">助手</div>
-              <p>为了继续生成方案，请补充：</p>
-              <p>{agentInterruptQuestion}</p>
+              {typeof agentInterruptQuestion === 'string' ? (
+                <><p>为了继续生成方案，请补充：</p><p>{agentInterruptQuestion}</p></>
+              ) : (
+                <ClarificationCard interrupt={agentInterruptQuestion} disabled={interruptDisabled} onSubmit={onInterruptAnswer} />
+              )}
             </article>
           ) : (
             <article className={`message-bubble message-assistant message-pending${streamedAnswer ? ' message-streaming' : ''}`}>

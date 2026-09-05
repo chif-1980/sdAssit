@@ -255,7 +255,32 @@ export interface ConversationMessage {
   feedback?: MessageFeedback
 }
 
-export type SolutionDraftStatus = 'GENERATING' | 'READY' | 'NEEDS_REVIEW' | 'BLOCKED' | 'SUPERSEDED'
+export type SolutionDraftStatus = 'GENERATING' | 'READY' | 'NEEDS_REVIEW' | 'BLOCKED' | 'CONFIRMED' | 'SUPERSEDED'
+
+export type ClarificationQuestionType = 'SINGLE_CHOICE' | 'MULTIPLE_CHOICE' | 'TEXT'
+
+export interface ClarificationQuestionOption {
+  id: string
+  label: string
+  description?: string
+}
+
+export interface ClarificationQuestion {
+  id: string
+  question: string
+  type: ClarificationQuestionType
+  options: ClarificationQuestionOption[]
+  required: boolean
+  allowSkip: boolean
+  position: number
+  total: number
+}
+
+export interface SolutionQuestionAnswer {
+  questionId: string
+  value?: string | string[]
+  action: 'answer' | 'skip'
+}
 
 export interface DraftCitation {
   id: string
@@ -348,6 +373,9 @@ export interface SolutionDraft {
   id: string
   conversationId: string
   sourceRunId?: string
+  baseVersionId?: string
+  versionSource?: 'AI' | 'HUMAN_EDIT' | 'CONFIRMED' | string
+  confirmedAt?: string
   currentVersion: number
   status: SolutionDraftStatus
   title: string
@@ -357,6 +385,7 @@ export interface SolutionDraft {
   sections: DraftSection[]
   assumptions: string[]
   openQuestions: string[]
+  clarificationQuestions?: ClarificationQuestion[]
   risks: string[]
   conflicts: ConflictItem[]
   evidenceGaps: string[]
@@ -385,7 +414,18 @@ export interface SolutionDraft {
   }
   createdAt: string
   updatedAt: string
-  versions?: Array<{ version: number; payload: Record<string, unknown>; createdAt: string }>
+  versions?: Array<{ version: number; payload: Record<string, unknown>; createdAt: string; source?: 'AI' | 'HUMAN_EDIT' | 'CONFIRMED' | string; baseVersionId?: string }>
+}
+
+export interface CapabilityIndexEntry {
+  id: string
+  name: string
+  description: string
+  deliveryStatus: CapabilityDeliveryStatus | string
+  sourceKnowledgeIds: string[]
+  citationIds: string[]
+  confidence: number
+  updatedAt: string
 }
 
 export interface DistributionTask {
@@ -414,4 +454,5 @@ export interface PlatformSnapshot {
   assetInputs: Record<string, { content: string; mimeType: string; contentBase64?: string }>
   distributionTasks?: DistributionTask[]
   solutionDrafts?: SolutionDraft[]
+  capabilityIndex?: CapabilityIndexEntry[]
 }

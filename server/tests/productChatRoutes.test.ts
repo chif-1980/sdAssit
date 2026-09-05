@@ -12,6 +12,7 @@ import { createAgentSolutionDraft } from '../application/solutionDraftService.js
 import {
   buildSolutionResumeContent,
   createSolutionStreamState,
+  normalizeYuxiInterrupt,
   solutionSafeStreamDelta,
   splitSolutionStreamText,
 } from '../routes/productChatRoutes.js'
@@ -103,6 +104,37 @@ describe('Product chat compatibility API', () => {
     expect(buildSolutionResumeContent('设计投标方案', ['  ', '客户是轨交集团'])).toBe(
       '设计投标方案\n\n补充信息：\n客户是轨交集团',
     )
+  })
+
+  it('normalizes interrupt envelopes from LangGraph adapters', () => {
+    expect(normalizeYuxiInterrupt({ payload: { chunk: { questions: [{
+      question_id: 'DEPLOYMENT',
+      prompt: '采用哪种部署方式？',
+      type: 'single_choice',
+      options: ['私有化', { value: 'CLOUD', text: '公有云', description: '由云平台承载' }],
+      allow_skip: false,
+      position: 2,
+      total_questions: 4,
+    }] } } })).toMatchObject({
+      questionId: 'DEPLOYMENT',
+      question: '采用哪种部署方式？',
+      type: 'SINGLE_CHOICE',
+      options: [{ id: '私有化', label: '私有化' }, { id: 'CLOUD', label: '公有云', description: '由云平台承载' }],
+      required: true,
+      allowSkip: false,
+      position: 2,
+      total: 4,
+    })
+    expect(normalizeYuxiInterrupt({ payload: { message: '普通进度消息' } })).toBeUndefined()
+    expect(normalizeYuxiInterrupt({ interrupt: { value: {
+      question_id: 'SCOPE',
+      text: '请确认交付范围',
+      type: 'text',
+    } } })).toMatchObject({
+      questionId: 'SCOPE',
+      question: '请确认交付范围',
+      type: 'TEXT',
+    })
   })
 
   it('accepts only safe same-origin public image references', () => {
@@ -361,6 +393,82 @@ describe('Product chat compatibility API', () => {
       },
     })
     expect(sent.json().assistantMessage.content).toContain('草稿状态：BLOCKED')
+  })
+
+  it('pauses a local solution run for confirmation, resumes idempotently and persists its trace', async () => {
+    const seed = seedSnapshot()
+    seed.assets.push(enterpriseAsset())
+    seed.knowledge.push(enterpriseKnowledge())
+    const { app } = await fixture(seed)
+    const created = await app.inject({ method: 'POST', url: '/api/chat/conversations', payload: {} })
+    const conversationId = created.json().conversation.id as string
+    const initial = await app.inject({
+      method: 'POST',
+      url: `/api/chat/conversations/${conversationId}/messages/stream`,
+      payload: { content: '@做方案 产品部署方案', skillId: 'SOLUTION_DRAFT', requestId: 'interactive-run-1' },
+    })
+    expect(initial.statusCode).toBe(200)
+    expect(initial.body).toContain('event: interrupt')
+    const runId = initial.body.match(/"runId":"([^"]+)"/)?.[1]
+    expect(runId).toBe('local-interactive-run-1')
+    expect(initial.body).toContain('"questionId":"CUSTOMER_TYPE"')
+
+    const wrongQuestion = await app.inject({
+      method: 'POST',
+      url: `/api/chat/runs/${runId}/resume`,
+      payload: { answer: '企业客户', questionId: 'WRONG', requestId: 'resume-wrong' },
+    })
+    expect(wrongQuestion.statusCode).toBe(400)
+    expect(wrongQuestion.json().error.code).toBe('QUESTION_NOT_CURRENT')
+
+    const resumed = await app.inject({
+      method: 'POST',
+      url: `/api/chat/runs/${runId}/resume`,
+      payload: { answer: '企业客户', questionId: 'CUSTOMER_TYPE', requestId: 'resume-1' },
+    })
+    expect(resumed.statusCode).toBe(201)
+    expect(resumed.json().run.streamUrl).toContain('afterSeq=')
+    const resumedEvents = await app.inject({ method: 'GET', url: resumed.json().run.streamUrl })
+    expect(resumedEvents.statusCode).toBe(200)
+    expect(resumedEvents.body).toContain('event: draft')
+    expect(resumedEvents.body).toContain('event: complete')
+
+    const duplicateResume = await app.inject({
+      method: 'POST',
+      url: `/api/chat/runs/${runId}/resume`,
+      payload: { answer: '企业客户', questionId: 'CUSTOMER_TYPE', requestId: 'resume-1' },
+    })
+    expect(duplicateResume.statusCode).toBe(201)
+    expect(duplicateResume.json().run.runId).toBe(runId)
+
+    const detail = await app.inject({ method: 'GET', url: `/api/chat/conversations/${conversationId}` })
+    const assistant = detail.json().messages.at(-1)
+    expect(assistant.solutionDraft.executionTrace.steps.map((step: { stage: string }) => step.stage)).toEqual([
+      'REQUIREMENTS_ANALYSIS', 'WAITING_FOR_INPUT', 'CAPABILITY_MATCHING', 'ARCHITECTURE_DESIGN', 'QUALITY_REVIEW',
+    ])
+
+    const confirmed = await app.inject({
+      method: 'POST',
+      url: `/api/chat/solution-drafts/${assistant.solutionDraft.id}/confirm`,
+      payload: {},
+    })
+    expect(confirmed.statusCode).toBe(200)
+    expect(confirmed.json().draft.status).toBe('CONFIRMED')
+  })
+
+  it('exposes only governed indexed capabilities', async () => {
+    const seed = seedSnapshot()
+    seed.knowledge.push(
+      enterpriseKnowledge({ id: 'KNW-ACTIVE', title: '已登记能力', category: 'PRODUCT_CAPABILITY' }),
+      enterpriseKnowledge({ id: 'KNW-PENDING', title: '待索引能力', category: 'PRODUCT_CAPABILITY', indexStatus: 'PENDING' }),
+      enterpriseKnowledge({ id: 'KNW-DISABLED', title: '未启用能力', category: 'PRODUCT_CAPABILITY', aiEnabled: false }),
+    )
+    const { app } = await fixture(seed)
+    const result = await app.inject({ method: 'GET', url: '/api/chat/capability-index' })
+    expect(result.statusCode).toBe(200)
+    expect(result.json().capabilities.map((item: { id: string }) => item.id)).toContain('capability:已登记能力')
+    expect(result.json().capabilities.map((item: { id: string }) => item.id)).not.toContain('capability:待索引能力')
+    expect(result.json().capabilities.map((item: { id: string }) => item.id)).not.toContain('capability:未启用能力')
   })
 
   it('normalizes the snake_case payload emitted by the Yuxi solution skill', async () => {

@@ -2,6 +2,8 @@ import { ulid } from 'ulid'
 
 import type {
   CapabilityMatch,
+  CapabilityIndexEntry,
+  ClarificationQuestion,
   ConfidenceSummary,
   DraftCitation,
   DraftEvidenceItem,
@@ -28,6 +30,71 @@ export class SolutionDraftExtractionError extends Error {
   ) {
     super(message)
     this.name = 'SolutionDraftExtractionError'
+  }
+}
+
+/** Build a permission-filtered capability index from governed enterprise knowledge.
+ *
+ * The repository is the source of truth in the local product. Only active,
+ * indexed and AI-enabled knowledge participates, so an unapproved document
+ * can never be presented as an enterprise capability.
+ */
+export function buildCapabilityIndex(snapshot: PlatformSnapshot): CapabilityIndexEntry[] {
+  const grouped = new Map<string, CapabilityIndexEntry>()
+  for (const knowledge of snapshot.knowledge) {
+    if (knowledge.status !== 'ACTIVE' || !knowledge.aiEnabled || knowledge.indexStatus !== 'INDEXED') continue
+    const id = knowledge.logicalFactKey ?? `capability:${knowledge.title.trim().toLocaleLowerCase()}`
+    const existing = grouped.get(id)
+    const citation = citationId(knowledge.id, knowledge.primaryAssetId, knowledge.sourceLocator)
+    const deliveryStatus = knowledge.category === 'PRODUCT_CAPABILITY' || knowledge.category === 'PRODUCT_PARAMETER'
+      ? 'PRODUCTIZED'
+      : knowledge.category === 'PROJECT'
+        ? 'DELIVERED'
+        : 'UNKNOWN'
+    if (existing) {
+      existing.sourceKnowledgeIds.push(knowledge.id)
+      existing.citationIds.push(citation)
+      existing.confidence = Math.max(existing.confidence, knowledge.authority === 'L0' ? 0.55 : 0.85)
+      if (knowledge.updatedAt > existing.updatedAt) existing.updatedAt = knowledge.updatedAt
+      continue
+    }
+    grouped.set(id, {
+      id,
+      name: knowledge.title,
+      description: knowledge.content.slice(0, 500),
+      deliveryStatus,
+      sourceKnowledgeIds: [knowledge.id],
+      citationIds: [citation],
+      confidence: knowledge.authority === 'L0' ? 0.55 : 0.85,
+      updatedAt: knowledge.updatedAt,
+    })
+  }
+  return [...grouped.values()].sort((left, right) => right.confidence - left.confidence || right.updatedAt.localeCompare(left.updatedAt))
+}
+
+export function clarificationQuestionForRequest(request: string): ClarificationQuestion {
+  const normalized = request.trim()
+  const hasCustomerContext = /客户|甲方|集团|公司|医院|学校|政府|轨道|行业/iu.test(normalized)
+  const options = hasCustomerContext
+    ? [
+      { id: 'PRIVATE_DEPLOYMENT', label: '私有化部署' },
+      { id: 'HYBRID_DEPLOYMENT', label: '混合部署' },
+      { id: 'PUBLIC_CLOUD', label: '公有云部署' },
+    ]
+    : [
+      { id: 'ENTERPRISE', label: '企业客户' },
+      { id: 'GOVERNMENT', label: '政府/事业单位' },
+      { id: 'INDUSTRY', label: '行业客户' },
+    ]
+  return {
+    id: hasCustomerContext ? 'DEPLOYMENT_MODE' : 'CUSTOMER_TYPE',
+    question: hasCustomerContext ? '方案预计采用哪种部署方式？' : '这份方案主要面向哪类客户？',
+    type: 'SINGLE_CHOICE',
+    options,
+    required: true,
+    allowSkip: true,
+    position: 1,
+    total: 1,
   }
 }
 
@@ -415,6 +482,28 @@ export function createAgentSolutionDraft(
   if (review.status === 'REQUIRED' && !review.pendingItems.length) {
     review.pendingItems = ['请售前或架构师确认企业能力覆盖范围']
   }
+  const clarificationQuestions: ClarificationQuestion[] = readArray(raw, 'clarificationQuestions', 'clarification_questions').flatMap((item, index) => {
+    const record = asRecord(item)
+    if (!record) return []
+    const options = readArray(record, 'options').flatMap((option) => {
+      const value = asRecord(option)
+      if (!value) return []
+      const id = stringValue(readField(value, 'id', 'value'))
+      const label = stringValue(readField(value, 'label', 'text'), id)
+      return id && label ? [{ id, label, ...(typeof readField(value, 'description') === 'string' ? { description: String(readField(value, 'description')) } : {}) }] : []
+    })
+    const type = stringValue(readField(record, 'type'), 'TEXT')
+    return [{
+      id: stringValue(readField(record, 'id'), `QUESTION-${index + 1}`),
+      question: stringValue(readField(record, 'question', 'prompt'), '请补充方案所需信息'),
+      type: ['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT'].includes(type) ? type as ClarificationQuestion['type'] : 'TEXT',
+      options,
+      required: readField(record, 'required') !== false,
+      allowSkip: readField(record, 'allowSkip', 'allow_skip') !== false,
+      position: typeof readField(record, 'position') === 'number' ? Number(readField(record, 'position')) : index + 1,
+      total: typeof readField(record, 'total') === 'number' ? Number(readField(record, 'total')) : Math.max(1, readArray(raw, 'clarificationQuestions', 'clarification_questions').length),
+    }]
+  })
   const base = {
     title: stringValue(readField(raw, 'title'), '方案草稿'),
     customer: stringValue(readField(raw, 'customer')),
@@ -424,6 +513,7 @@ export function createAgentSolutionDraft(
     sections,
     assumptions: stringList(readField(raw, 'assumptions')),
     openQuestions: stringList(readField(raw, 'openQuestions', 'open_questions')),
+    ...(clarificationQuestions.length ? { clarificationQuestions } : {}),
     risks: riskList(readField(raw, 'risks')),
     conflicts,
     evidenceGaps: stringList(readField(raw, 'evidenceGaps', 'evidence_gaps')),
@@ -477,6 +567,7 @@ export function createLocalSolutionDraft(
   request: string,
   attachmentIds: string[],
   sourceRunId: string,
+  executionTrace?: SolutionDraft['executionTrace'],
 ): SolutionDraft {
   const now = new Date().toISOString()
   const knowledge = snapshot.knowledge
@@ -531,18 +622,36 @@ export function createLocalSolutionDraft(
   // The local compatibility path does not have access to Yuxi's governed
   // capability catalog. Make that boundary explicit instead of implying that
   // a similarly named document proves an enterprise capability exists.
-  const capabilityMatches: CapabilityMatch[] = [{
-    requirementId: 'REQ-1',
-    capabilityId: '',
-    capabilityName: '待从企业能力目录确认',
-    deliveryStatus: 'UNKNOWN',
-    matchType: 'UNKNOWN',
-    matchScore: 0,
-    confidence: 0,
-    citationIds: [],
-    limitations: ['当前运行模式未连接企业能力目录'],
-    reviewRequired: true,
-  }]
+  const capabilityIndex = buildCapabilityIndex(snapshot)
+  const capabilityMatches: CapabilityMatch[] = requirements.map((requirement) => {
+    const match = capabilityIndex
+      .map((capability) => ({ capability, score: score(requirement.text, `${capability.name}\n${capability.description}`) }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score)[0]?.capability
+    return match ? {
+      requirementId: requirement.id,
+      capabilityId: match.id,
+      capabilityName: match.name,
+      deliveryStatus: match.deliveryStatus,
+      matchType: ['PRODUCTIZED', 'DELIVERED'].includes(match.deliveryStatus) ? 'EXISTING' : 'UNKNOWN',
+      matchScore: Math.min(1, score(requirement.text, `${match.name}\n${match.description}`) / Math.max(1, tokens(requirement.text).length)),
+      confidence: match.confidence,
+      citationIds: match.citationIds,
+      limitations: ['需结合客户范围和版本进一步确认'],
+      reviewRequired: true,
+    } : {
+      requirementId: requirement.id,
+      capabilityId: '',
+      capabilityName: '企业能力目录未匹配到结果',
+      deliveryStatus: 'UNKNOWN',
+      matchType: 'UNKNOWN',
+      matchScore: 0,
+      confidence: 0,
+      citationIds: [],
+      limitations: ['需要补充能力边界或新增研发评估'],
+      reviewRequired: true,
+    }
+  })
   const evidence: DraftEvidenceItem[] = citations.map((citation, index) => ({
     id: `EVD-${index + 1}`,
     sourceType: 'ENTERPRISE_FORMAL',
@@ -588,7 +697,7 @@ export function createLocalSolutionDraft(
       requiredRoles: ['售前', '方案架构师'],
       decisions: [],
     },
-    executionTrace: {
+    executionTrace: executionTrace ?? {
       status: 'COMPLETED',
       startedAt: now,
       finishedAt: now,
@@ -640,7 +749,17 @@ export function editLocalSolutionDraft(draft: SolutionDraft, patch: SolutionDraf
   const { quality, confidenceSummary } = qualityFor(base)
   const now = new Date().toISOString()
   const currentVersion = draft.currentVersion + 1
-  const next = { ...draft, ...patch, quality, confidenceSummary, status: quality.status, currentVersion, updatedAt: now }
+  const next = {
+    ...draft,
+    ...patch,
+    quality,
+    confidenceSummary,
+    status: quality.status,
+    currentVersion,
+    versionSource: 'HUMAN_EDIT' as const,
+    baseVersionId: `${draft.id}:v${draft.currentVersion}`,
+    updatedAt: now,
+  }
   return {
     ...next,
     versions: [
@@ -673,7 +792,53 @@ export function editLocalSolutionDraft(draft: SolutionDraft, patch: SolutionDraf
         version: currentVersion,
         payload: { ...base, quality, confidenceSummary, status: quality.status },
         createdAt: now,
+        source: 'HUMAN_EDIT',
+        baseVersionId: `${draft.id}:v${draft.currentVersion}`,
       },
+    ],
+  }
+}
+
+export function confirmSolutionDraft(draft: SolutionDraft): SolutionDraft {
+  if (draft.status === 'BLOCKED') throw new Error('SOLUTION_DRAFT_NOT_READY')
+  if (draft.status === 'CONFIRMED') return structuredClone(draft)
+  const now = new Date().toISOString()
+  const currentVersion = draft.currentVersion + 1
+  const payload = {
+    title: draft.title,
+    customer: draft.customer,
+    customerContext: draft.customerContext,
+    executiveSummary: draft.executiveSummary,
+    requirements: draft.requirements,
+    sections: draft.sections,
+    assumptions: draft.assumptions,
+    openQuestions: draft.openQuestions,
+    clarificationQuestions: draft.clarificationQuestions,
+    risks: draft.risks,
+    conflicts: draft.conflicts,
+    evidenceGaps: draft.evidenceGaps,
+    citations: draft.citations,
+    capabilityMatches: draft.capabilityMatches,
+    architecture: draft.architecture,
+    evidence: draft.evidence,
+    confidenceSummary: draft.confidenceSummary,
+    review: { ...(draft.review ?? { status: 'NOT_REQUIRED', pendingItems: [], requiredRoles: [], decisions: [] }), status: 'CONFIRMED', pendingItems: [] },
+    quality: { ...draft.quality, status: 'CONFIRMED' as const },
+    status: 'CONFIRMED' as const,
+  }
+  return {
+    ...draft,
+    status: 'CONFIRMED',
+    quality: { ...draft.quality, status: 'CONFIRMED' },
+    review: payload.review,
+    versionSource: 'CONFIRMED',
+    baseVersionId: `${draft.id}:v${draft.currentVersion}`,
+    confirmedAt: now,
+    currentVersion,
+    updatedAt: now,
+    versions: [
+      ...(draft.versions ?? []),
+      { version: currentVersion, payload, createdAt: now, source: 'CONFIRMED', baseVersionId: `${draft.id}:v${draft.currentVersion}` },
     ],
   }
 }

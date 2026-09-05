@@ -5,6 +5,8 @@ import { ProductChatService } from '../application/productChatService.js'
 import type { PlatformRepository } from '../application/ports.js'
 import { YuxiAgentClient, YuxiAgentClientError, type YuxiRequestCredentials } from '../adapters/yuxiAgentClient.js'
 import { ulid } from 'ulid'
+import type { ClarificationQuestion, SolutionDraft, SolutionQuestionAnswer } from '../../shared/domain/models.js'
+import { clarificationQuestionForRequest } from '../application/solutionDraftService.js'
 
 const emptyBody = z.object({}).strict()
 const messageBody = z.object({
@@ -17,6 +19,8 @@ const messageBody = z.object({
 type MessageInput = z.infer<typeof messageBody>
 const resumeBody = z.object({
   answer: z.unknown(),
+  questionId: z.string().trim().min(1).max(128).optional(),
+  action: z.enum(['answer', 'skip']).default('answer'),
   requestId: z.string().trim().min(1).max(128).optional(),
 }).strict()
 type ResumeInput = z.infer<typeof resumeBody>
@@ -35,7 +39,21 @@ const feedbackBody = z.object({
 // phase-1 upload receives an intentional, machine-readable response instead
 // of Fastify's generic 415 error.
 const multipartContentType = /^multipart\/form-data(?:;.*)?$/u
-type LocalRun = { runId: string; conversationId: string; skillId?: MessageInput['skillId']; status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'; events: Array<{ event: string; payload: unknown; seq?: string }>; result?: unknown }
+type LocalRun = {
+  runId: string
+  conversationId: string
+  skillId?: MessageInput['skillId']
+  status: 'QUEUED' | 'RUNNING' | 'WAITING_FOR_INPUT' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
+  events: Array<{ event: string; payload: unknown; seq?: string }>
+  result?: unknown
+  rootInput?: string
+  attachmentIds?: string[]
+  answers?: SolutionQuestionAnswer[]
+  question?: ClarificationQuestion
+  startedAt?: string
+  requestId?: string
+  resumeRequestCursors?: Map<string, number>
+}
 const localRuns = new Map<string, LocalRun>()
 
 export function buildSolutionResumeContent(rootInput: string, answers: readonly string[]) {
@@ -96,7 +114,16 @@ type AgentProgress = {
   errorCode?: string
   retryable?: boolean
   runId?: string
-  interrupt?: string
+  interrupt?: {
+    question: string
+    questionId?: string
+    type?: ClarificationQuestion['type']
+    options?: ClarificationQuestion['options']
+    required?: boolean
+    allowSkip?: boolean
+    position?: number
+    total?: number
+  }
   terminalStatus?: string
   delta?: string
 }
@@ -211,9 +238,9 @@ function createProgressEmissionState(): ProgressEmissionState {
   return {}
 }
 
-function localExecutionTrace(run: LocalRun) {
-  const startedAt = new Date().toISOString()
-  const steps: Array<Record<string, unknown>> = []
+function localExecutionTrace(run: LocalRun): NonNullable<SolutionDraft['executionTrace']> {
+  const startedAt = run.startedAt ?? new Date().toISOString()
+  const steps: NonNullable<SolutionDraft['executionTrace']>['steps'] = []
   for (const event of run.events) {
     if (event.event !== 'progress' || !event.payload || typeof event.payload !== 'object') continue
     const payload = event.payload as Record<string, unknown>
@@ -227,9 +254,10 @@ function localExecutionTrace(run: LocalRun) {
       continue
     }
     if (current && current.status === 'ACTIVE') current.status = 'COMPLETED'
-    steps.push({ stage, label: stage, message, status: 'COMPLETED', startedAt, finishedAt: startedAt, elapsedMs: 0 })
+    const waiting = run.status === 'WAITING_FOR_INPUT' && stage === 'WAITING_FOR_INPUT'
+    steps.push({ stage, label: stage, message, status: waiting ? 'INTERRUPTED' : 'COMPLETED', startedAt, finishedAt: waiting ? null : startedAt, elapsedMs: 0 })
   }
-  return { status: run.status === 'CANCELLED' ? 'CANCELLED' : run.status === 'FAILED' ? 'FAILED' : run.status === 'RUNNING' ? 'RUNNING' : 'COMPLETED', startedAt, finishedAt: run.status === 'RUNNING' ? null : startedAt, elapsedMs: 0, steps }
+  return { status: run.status === 'CANCELLED' ? 'CANCELLED' : run.status === 'FAILED' ? 'FAILED' : run.status === 'WAITING_FOR_INPUT' ? 'WAITING_FOR_INPUT' : run.status === 'RUNNING' ? 'RUNNING' : 'COMPLETED', startedAt, finishedAt: ['RUNNING', 'WAITING_FOR_INPUT'].includes(run.status) ? null : startedAt, elapsedMs: 0, steps }
 }
 
 function emitProgress(
@@ -315,6 +343,101 @@ function yuxiProgressFromChunk(chunk: Record<string, unknown>) {
   return undefined
 }
 
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function firstValue(record: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) return record[key]
+  }
+  return undefined
+}
+
+/**
+ * Yuxi has emitted interrupts from more than one LangGraph adapter over time.
+ * Keep that protocol variance at the product boundary so the browser always
+ * receives one stable question shape. This intentionally reads only the
+ * interrupt/question envelope and never exposes the raw model payload.
+ */
+export function normalizeYuxiInterrupt(data: unknown): AgentProgress['interrupt'] | undefined {
+  const candidates: unknown[] = []
+  const hinted = new Set<unknown>()
+  const seen = new Set<unknown>()
+  const collect = (value: unknown, depth = 0, questionHint = false) => {
+    if (value === null || value === undefined || seen.has(value) || depth > 4) return
+    seen.add(value)
+    candidates.push(value)
+    if (questionHint) hinted.add(value)
+    const record = objectRecord(value)
+    if (!record) {
+      if (Array.isArray(value)) value.forEach((item) => collect(item, depth + 1))
+      return
+    }
+    for (const key of ['payload', 'chunk', 'data']) {
+      if (record[key] !== undefined) collect(record[key], depth + 1, false)
+    }
+    for (const key of ['interrupt', 'question', 'prompt']) {
+      if (record[key] !== undefined) collect(record[key], depth + 1, true)
+    }
+    for (const key of ['questions', 'items']) {
+      if (Array.isArray(record[key])) record[key].forEach((item) => collect(item, depth + 1, true))
+    }
+    for (const key of ['value', 'details']) {
+      if (record[key] !== undefined) collect(record[key], depth + 1, questionHint)
+    }
+  }
+  collect(data)
+
+  for (const candidate of candidates) {
+    const record = objectRecord(candidate)
+    if (!record) continue
+    if (!hinted.has(candidate) && !('question' in record) && !('prompt' in record) && !('questions' in record)) continue
+    const nestedQuestion = objectRecord(firstValue(record, 'question', 'prompt'))
+    const question = nestedQuestion ?? record
+    const questionText = typeof (nestedQuestion ? firstValue(question, 'question', 'prompt', 'text', 'message') : firstValue(record, 'question', 'prompt', 'text', 'message')) === 'string'
+      ? String(nestedQuestion ? firstValue(question, 'question', 'prompt', 'text', 'message') : firstValue(record, 'question', 'prompt', 'text', 'message')).trim()
+      : ''
+    if (!questionText) continue
+
+    const rawOptions = firstValue(question, 'options', 'choices')
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.flatMap((item, index) => {
+        if (typeof item === 'string') return [{ id: item, label: item }]
+        const option = objectRecord(item)
+        if (!option) return []
+        const rawLabel = firstValue(option, 'label', 'text', 'name', 'value', 'id')
+        const label = typeof rawLabel === 'string' ? rawLabel.trim() : ''
+        if (!label) return []
+        const rawId = firstValue(option, 'id', 'value', 'key', 'label', 'text')
+        const id = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `option-${index + 1}`
+        const description = firstValue(option, 'description', 'helpText', 'help_text')
+        return [{ id, label, ...(typeof description === 'string' && description.trim() ? { description: description.trim() } : {}) }]
+      })
+      : undefined
+    const rawType = firstValue(question, 'type', 'question_type', 'questionType', 'input_type')
+    const normalizedType = typeof rawType === 'string' ? rawType.trim().toUpperCase().replace(/[-\s]+/gu, '_') : ''
+    const type = ['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT'].includes(normalizedType)
+      ? normalizedType as ClarificationQuestion['type']
+      : undefined
+    const rawRequired = firstValue(question, 'required', 'is_required', 'isRequired')
+    const rawAllowSkip = firstValue(question, 'allowSkip', 'allow_skip', 'skippable')
+    const position = firstValue(question, 'position', 'current_position', 'currentPosition')
+    const total = firstValue(question, 'total', 'total_questions', 'totalQuestions')
+    return {
+      question: questionText,
+      ...(typeof firstValue(question, 'id', 'questionId', 'question_id') === 'string' ? { questionId: String(firstValue(question, 'id', 'questionId', 'question_id')).trim() } : {}),
+      ...(type ? { type } : {}),
+      ...(options?.length ? { options } : {}),
+      required: rawRequired === false ? false : true,
+      allowSkip: rawAllowSkip === false ? false : true,
+      ...(typeof position === 'number' && Number.isFinite(position) ? { position: Math.max(1, Math.trunc(position)) } : {}),
+      ...(typeof total === 'number' && Number.isFinite(total) ? { total: Math.max(1, Math.trunc(total)) } : {}),
+    }
+  }
+  return undefined
+}
+
 function yuxiProgress(event: { event: string; data: unknown }): AgentProgress | undefined {
   if (event.event === 'error') {
     const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
@@ -326,13 +449,10 @@ function yuxiProgress(event: { event: string; data: unknown }): AgentProgress | 
     }
   }
   if (event.event === 'interrupt') {
-    const envelope = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
-    const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload as Record<string, unknown> : envelope
-    const chunk = payload.chunk && typeof payload.chunk === 'object' ? payload.chunk as Record<string, unknown> : payload
-    const questions = Array.isArray(chunk.questions) ? chunk.questions : []
-    const question = questions.find((item) => item && typeof item === 'object' && typeof (item as Record<string, unknown>).question === 'string') as Record<string, unknown> | undefined
-    return { interrupt: String(question?.question ?? chunk.message ?? chunk.error_message ?? '请补充方案所需信息') }
+    return { interrupt: normalizeYuxiInterrupt(event.data) ?? { question: '请补充方案所需信息', required: true, allowSkip: true } }
   }
+  const interrupt = normalizeYuxiInterrupt(event.data)
+  if (interrupt) return { stage: 'WAITING_FOR_INPUT', message: '等待补充方案所需信息', interrupt }
   if (event.event === 'end') {
     const envelope = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
     const payload = envelope.payload && typeof envelope.payload === 'object' ? envelope.payload as Record<string, unknown> : envelope
@@ -465,6 +585,8 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
 
   app.get('/api/chat/skills', async () => service.skills())
 
+  app.get('/api/chat/capability-index', async () => ({ capabilities: await service.capabilityIndex() }))
+
   app.get('/api/chat/conversations', async () => ({ conversations: await service.listConversations() }))
 
   app.post('/api/chat/conversations', async (request, reply) => {
@@ -483,7 +605,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
     const local = [...localRuns.values()]
       .filter((run) => run.conversationId === request.params.conversationId
         && run.skillId === 'SOLUTION_DRAFT'
-        && ['QUEUED', 'RUNNING'].includes(run.status))
+        && ['QUEUED', 'RUNNING', 'WAITING_FOR_INPUT'].includes(run.status))
       .at(-1)
     if (local) {
       return {
@@ -491,6 +613,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           runId: local.runId,
           conversationId: local.conversationId,
           status: local.status,
+          ...(local.question ? { interrupt: { runId: local.runId, ...local.question, questionId: local.question.id, status: 'INTERRUPTED' as const } } : {}),
           executionTrace: localExecutionTrace(local),
           streamUrl: `/api/chat/runs/${encodeURIComponent(local.runId)}/events`,
         },
@@ -507,6 +630,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           status: remote.status,
           inputContent: remote.inputContent,
           executionTrace: remote.executionTrace ?? {},
+          ...(normalizeYuxiInterrupt(remote.interrupt ?? remote) ? { interrupt: { ...normalizeYuxiInterrupt(remote.interrupt ?? remote), status: 'INTERRUPTED' as const, ...(remote.runId ? { runId: remote.runId } : {}) } } : {}),
           streamUrl: `/api/chat/runs/${encodeURIComponent(remote.runId)}/events`,
         },
       }
@@ -562,7 +686,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         const progressState = createProgressEmissionState()
         emitProgress(reply.raw, { stage: 'UNDERSTANDING', message: '正在分析需求并规划方案' }, progressState, { preview: true, runId: run.runId })
         const streamState = createSolutionStreamState()
-        let interruptedQuestion: string | undefined
+        let interruptedQuestion: AgentProgress['interrupt']
         let terminalStatus = ''
         for await (const event of yuxi.streamEvents(run.runId, '0-0', requestCredentials(request))) {
           const progress = yuxiProgress(event)
@@ -588,7 +712,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           }
         }
         if (terminalStatus === 'interrupted' || interruptedQuestion) {
-          writeEvent(reply.raw, 'interrupt', { runId: run.runId, question: interruptedQuestion ?? '请补充方案所需信息', status: 'INTERRUPTED' })
+          writeEvent(reply.raw, 'interrupt', { runId: run.runId, ...(interruptedQuestion ?? { question: '请补充方案所需信息' }), status: 'INTERRUPTED' })
           return reply
         }
         if (terminalStatus && terminalStatus !== 'completed') {
@@ -624,7 +748,25 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
     try {
       const runId = parsed.data.requestId ? `local-${parsed.data.requestId}` : `local-${ulid()}`
       activeRunId = runId
-      const run: LocalRun = { runId, conversationId: request.params.conversationId, skillId: parsed.data.skillId, status: 'RUNNING', events: [] }
+      const existingRun = localRuns.get(runId)
+      if (existingRun) {
+        writeEvent(reply.raw, 'run_started', { runId: existingRun.runId, status: existingRun.status })
+        for (const event of existingRun.events) writeEvent(reply.raw, event.event, event.payload, event.seq)
+        return reply
+      }
+      const run: LocalRun = {
+        runId,
+        conversationId: request.params.conversationId,
+        skillId: parsed.data.skillId,
+        status: 'RUNNING',
+        events: [],
+        rootInput: parsed.data.content,
+        attachmentIds: parsed.data.attachmentIds ?? [],
+        answers: [],
+        startedAt: new Date().toISOString(),
+        requestId: parsed.data.requestId,
+        resumeRequestCursors: new Map(),
+      }
       localRuns.set(runId, run)
       // The local path is a compatibility fallback, not an Agent runtime. It
       // must not pretend that it performed retrieval, capability matching or
@@ -642,9 +784,33 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         ] as const
       writeEvent(reply.raw, 'run_started', { runId, status: run.status })
       const progressState = createProgressEmissionState()
+      if (parsed.data.skillId === 'SOLUTION_DRAFT') {
+        const initialProgress = { stage: 'REQUIREMENTS_ANALYSIS', message: '正在拆解需求并确认方案范围' } as const
+        emitProgress(reply.raw, initialProgress, progressState, {
+          runId,
+          persist: (event, payload) => {
+            const seq = String(run.events.length + 1)
+            run.events.push({ event, payload, seq })
+          },
+        })
+        await new Promise((resolve) => setTimeout(resolve, 90))
+        run.question = clarificationQuestionForRequest(parsed.data.content)
+        run.status = 'WAITING_FOR_INPUT'
+        emitProgress(reply.raw, { stage: 'WAITING_FOR_INPUT', message: '等待确认方案关键条件' }, progressState, {
+          runId,
+          persist: (event, payload) => {
+            const seq = String(run.events.length + 1)
+            run.events.push({ event, payload, seq })
+          },
+        })
+        const interruptPayload = { runId, ...run.question, questionId: run.question.id, status: 'INTERRUPTED' as const }
+        const interruptSeq = String(run.events.length + 1)
+        run.events.push({ event: 'interrupt', payload: interruptPayload, seq: interruptSeq })
+        writeEvent(reply.raw, 'interrupt', interruptPayload, interruptSeq)
+        return reply
+      }
       for (const item of progress) {
         emitProgress(reply.raw, item, progressState, {
-          preview: parsed.data.skillId === 'SOLUTION_DRAFT',
           runId,
           persist: (event, payload) => {
             const seq = String(run.events.length + 1)
@@ -654,18 +820,10 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         // Keep the local compatibility path observable as a stream. The real
         // Yuxi run naturally yields events over time; this small yield gives
         // the browser the same progressive experience when the fallback is in use.
-        if (parsed.data.skillId === 'SOLUTION_DRAFT') {
-          await new Promise((resolve) => setTimeout(resolve, 90))
-        }
       }
       const result = await service.addMessage(request.params.conversationId, parsed.data.content, parsed.data.skillId, parsed.data.attachmentIds, parsed.data.requestId)
       run.status = 'SUCCEEDED'
       run.result = result
-      if (parsed.data.skillId === 'SOLUTION_DRAFT') {
-        const seq = String(run.events.length + 1)
-        run.events.push({ event: 'draft', payload: result.assistantMessage.solutionDraft ?? {}, seq })
-        writeEvent(reply.raw, 'draft', result.assistantMessage.solutionDraft ?? {}, seq)
-      }
       const seq = String(run.events.length + 1)
       run.events.push({ event: 'complete', payload: result, seq })
       writeEvent(reply.raw, 'complete', result, seq)
@@ -692,6 +850,82 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
   app.post<{ Params: { runId: string } }>('/api/chat/runs/:runId/resume', async (request, reply) => {
     const parsed = resumeBody.safeParse(request.body)
     if (!parsed.success || parsed.data.answer === null || parsed.data.answer === undefined) throw invalidRequest()
+    const local = localRuns.get(request.params.runId)
+    if (local) {
+      if (parsed.data.requestId && local.resumeRequestCursors?.has(parsed.data.requestId)) {
+        const afterSeq = local.resumeRequestCursors.get(parsed.data.requestId) ?? 0
+        return reply.status(201).send({
+          run: {
+            runId: local.runId,
+            status: local.status,
+            requestId: parsed.data.requestId,
+            streamUrl: `/api/chat/runs/${encodeURIComponent(local.runId)}/events?afterSeq=${afterSeq}`,
+            executionTrace: localExecutionTrace(local),
+            resumedFromRunId: request.params.runId,
+          },
+        })
+      }
+      if (local.status !== 'WAITING_FOR_INPUT' || !local.question) throw new Error('RUN_NOT_WAITING_FOR_INPUT')
+      if (parsed.data.questionId && parsed.data.questionId !== local.question.id) throw new Error('QUESTION_NOT_CURRENT')
+      const afterSeq = local.events.length
+      const rawValue = parsed.data.answer
+      const value = typeof rawValue === 'string'
+        ? rawValue.trim()
+        : Array.isArray(rawValue)
+          ? rawValue.filter((item): item is string => typeof item === 'string').join('、').trim()
+          : JSON.stringify(rawValue)
+      if (parsed.data.action === 'answer' && !value) throw invalidRequest()
+      local.answers ??= []
+      local.answers.push({
+        questionId: local.question.id,
+        ...(value ? { value } : {}),
+        action: parsed.data.action,
+      })
+      local.status = 'RUNNING'
+      local.question = undefined
+      const progressState = createProgressEmissionState()
+      const appendProgress = (stage: string, message: string) => {
+        const payload = { stage, message, runId: local.runId, status: 'ACTIVE' }
+        local.events.push({ event: 'progress', payload, seq: String(local.events.length + 1) })
+        progressState.stage = stage
+        progressState.message = message
+      }
+      appendProgress('CAPABILITY_MATCHING', '正在匹配企业能力与交付边界')
+      appendProgress('ARCHITECTURE_DESIGN', '正在形成方案蓝图骨架')
+      appendProgress('QUALITY_REVIEW', '正在检查待确认项与证据覆盖')
+      const rootInput = local.rootInput ?? ''
+      const answers = (local.answers ?? []).flatMap((item) => {
+        if (item.action === 'skip') return ['（用户暂不确定）']
+        return typeof item.value === 'string' ? [item.value] : []
+      })
+      const content = buildSolutionResumeContent(rootInput, answers)
+      const result = await service.addMessage(
+        local.conversationId,
+        content,
+        'SOLUTION_DRAFT',
+        local.attachmentIds ?? [],
+        local.runId,
+        localExecutionTrace({ ...local, status: 'SUCCEEDED' }),
+      )
+      local.status = 'SUCCEEDED'
+      local.result = result
+      local.events.push({ event: 'draft', payload: result.assistantMessage.solutionDraft ?? {}, seq: String(local.events.length + 1) })
+      local.events.push({ event: 'complete', payload: result, seq: String(local.events.length + 1) })
+      if (parsed.data.requestId) {
+        local.resumeRequestCursors ??= new Map()
+        local.resumeRequestCursors.set(parsed.data.requestId, afterSeq)
+      }
+      return reply.status(201).send({
+        run: {
+          runId: local.runId,
+          status: local.status,
+          requestId: parsed.data.requestId,
+          streamUrl: `/api/chat/runs/${encodeURIComponent(local.runId)}/events?afterSeq=${afterSeq}`,
+          executionTrace: localExecutionTrace(local),
+          resumedFromRunId: request.params.runId,
+        },
+      })
+    }
     if (!yuxi.configured()) throw new Error('YUXI_NOT_CONFIGURED')
     const run = await yuxi.resumeRun(
       request.params.runId,
@@ -705,7 +939,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         threadId: run.threadId,
         status: run.status,
         requestId: run.requestId,
-        streamUrl: `/api/chat/runs/${run.runId}/events`,
+        streamUrl: `/api/chat/runs/${run.runId}/events?afterSeq=0-0`,
         resumedFromRunId: request.params.runId,
       },
     })
@@ -725,6 +959,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
             requestId: remoteRun.requestId ?? remoteRun.request_id,
             executionTrace: remoteRun.executionTrace ?? remoteRun.execution_trace ?? {},
             inputContent: remoteRun.inputContent ?? remoteRun.input_content,
+            ...(normalizeYuxiInterrupt(remoteRun.interrupt ?? remoteRun) ? { interrupt: { ...normalizeYuxiInterrupt(remoteRun.interrupt ?? remoteRun), status: 'INTERRUPTED' as const, runId: String(remoteRun.runId ?? remoteRun.run_id ?? request.params.runId) } } : {}),
             streamUrl: `/api/chat/runs/${request.params.runId}/events`,
           },
         }
@@ -734,7 +969,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
       }
     }
     if (!run) throw new Error('RUN_NOT_FOUND')
-    return { run: { runId: run.runId, conversationId: run.conversationId, status: run.status, executionTrace: localExecutionTrace(run), streamUrl: `/api/chat/runs/${run.runId}/events` } }
+    return { run: { runId: run.runId, conversationId: run.conversationId, status: run.status, ...(run.question ? { interrupt: { runId: run.runId, ...run.question, questionId: run.question.id, status: 'INTERRUPTED' as const } } : {}), executionTrace: localExecutionTrace(run), streamUrl: `/api/chat/runs/${run.runId}/events` } }
   })
 
   app.get<{ Params: { runId: string } }>('/api/chat/runs/:runId/events', async (request, reply) => {
@@ -746,9 +981,16 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         writeEvent(reply.raw, 'run_started', { runId: request.params.runId, status: 'running' })
         const progressState = createProgressEmissionState()
         const streamState = createSolutionStreamState()
-        let interruptedQuestion: string | undefined
+        let interruptedQuestion: AgentProgress['interrupt']
         let terminalStatus = ''
-        for await (const event of yuxi.streamEvents(request.params.runId, String((request.query as { afterSeq?: string } | undefined)?.afterSeq ?? '0-0'), requestCredentials(request))) {
+        const query = request.query as { afterSeq?: string } | undefined
+        const headerCursor = Array.isArray(request.headers['last-event-id'])
+          ? request.headers['last-event-id'][0]
+          : request.headers['last-event-id']
+        const afterSeq = (typeof headerCursor === 'string' && headerCursor.trim())
+          || (typeof query?.afterSeq === 'string' && query.afterSeq.trim())
+          || '0-0'
+        for await (const event of yuxi.streamEvents(request.params.runId, afterSeq, requestCredentials(request))) {
           const progress = yuxiProgress(event)
           if (!progress) continue
           if (progress.error) {
@@ -771,7 +1013,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           }
         }
         if (terminalStatus === 'interrupted' || interruptedQuestion) {
-          writeEvent(reply.raw, 'interrupt', { runId: request.params.runId, question: interruptedQuestion ?? '请补充方案所需信息', status: 'INTERRUPTED' })
+          writeEvent(reply.raw, 'interrupt', { runId: request.params.runId, ...(interruptedQuestion ?? { question: '请补充方案所需信息' }), status: 'INTERRUPTED' })
           return reply
         }
         if (terminalStatus && terminalStatus !== 'completed') {
@@ -791,7 +1033,12 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
     reply.hijack()
     reply.raw.writeHead(200, { 'cache-control': 'no-cache, no-transform', 'content-type': 'text/event-stream; charset=utf-8', connection: 'keep-alive' })
     writeEvent(reply.raw, 'run_started', { runId: run.runId, status: run.status })
-    const afterSeq = String((request.query as { afterSeq?: string } | undefined)?.afterSeq ?? '0')
+    const query = request.query as { afterSeq?: string } | undefined
+    const headerCursor = Array.isArray(request.headers['last-event-id'])
+      ? request.headers['last-event-id'][0]
+      : request.headers['last-event-id']
+    const afterSeq = (typeof headerCursor === 'string' && /^\d+$/u.test(headerCursor.trim()) ? headerCursor.trim() : undefined)
+      ?? (typeof query?.afterSeq === 'string' && query.afterSeq.trim() ? query.afterSeq.trim() : '0')
     const afterNumber = Number(afterSeq)
     for (const event of run.events) {
       if (Number.isFinite(afterNumber) && event.seq && Number(event.seq) <= afterNumber) continue
@@ -816,6 +1063,11 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
 
   app.patch<{ Params: { draftId: string } }>('/api/chat/solution-drafts/:draftId', async (request) => ({
     draft: await service.updateSolutionDraft(request.params.draftId, request.body as Record<string, unknown>),
+  }))
+
+  app.post<{ Params: { draftId: string } }>('/api/chat/solution-drafts/:draftId/confirm', async (request, reply) => ({
+    draft: await service.confirmSolutionDraft(request.params.draftId),
+    confirmed: true,
   }))
 
   app.post<{ Params: { conversationId: string } }>('/api/chat/conversations/:conversationId/archive', async (request, reply) => {

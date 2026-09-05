@@ -10,6 +10,7 @@ import type {
   FeedbackRating,
   FeedbackReasonType,
   ProductAnswerProgress,
+  ProductAgentInterrupt,
   ProductAttachment,
   ProductCitation,
   ProductConversation,
@@ -57,6 +58,39 @@ const exampleQuestions = [
 ] as const
 
 const FALLBACK_CONVERSATION_TITLE = '未命名会话'
+
+function normalizeInterrupt(value: unknown, runId?: string): ProductAgentInterrupt | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const payload = value as Record<string, unknown>
+  const question = typeof payload.question === 'string' && payload.question.trim()
+    ? payload.question.trim()
+    : undefined
+  if (!question) return undefined
+  const type = payload.type === 'SINGLE_CHOICE' || payload.type === 'MULTIPLE_CHOICE' || payload.type === 'TEXT'
+    ? payload.type
+    : undefined
+  const options = Array.isArray(payload.options)
+    ? payload.options.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      const option = item as Record<string, unknown>
+      const id = typeof option.id === 'string' ? option.id : ''
+      const label = typeof option.label === 'string' ? option.label : id
+      return id && label ? [{ id, label, ...(typeof option.description === 'string' ? { description: option.description } : {}) }] : []
+    })
+    : undefined
+  return {
+    question,
+    ...(typeof payload.questionId === 'string' ? { questionId: payload.questionId } : {}),
+    ...(type ? { type } : {}),
+    ...(options?.length ? { options } : {}),
+    required: payload.required !== false,
+    allowSkip: payload.allowSkip !== false,
+    ...(typeof payload.position === 'number' ? { position: payload.position } : {}),
+    ...(typeof payload.total === 'number' ? { total: payload.total } : {}),
+    ...(runId ? { runId } : typeof payload.runId === 'string' ? { runId: payload.runId } : {}),
+    status: 'INTERRUPTED',
+  }
+}
 
 function normalizeConversation(conversation: ProductConversation): ProductConversation {
   const title = typeof conversation.title === 'string' ? conversation.title.trim() : ''
@@ -262,6 +296,7 @@ interface ActiveRunResponse {
     streamUrl?: string
     inputContent?: string
     executionTrace?: unknown
+    interrupt?: unknown
   } | null
 }
 
@@ -274,7 +309,7 @@ export function ChatPage() {
   const [attachmentError, setAttachmentError] = useState<string>()
   const [answerMode, setAnswerMode] = useState<AnswerMode>('DETAILED')
   const [pendingQuestion, setPendingQuestion] = useState<string>()
-  const [agentInterruptQuestion, setAgentInterruptQuestion] = useState<string>()
+  const [agentInterruptQuestion, setAgentInterruptQuestion] = useState<ProductAgentInterrupt>()
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
   const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
   const [streamedAnswer, setStreamedAnswer] = useState('')
@@ -315,6 +350,12 @@ export function ChatPage() {
   const currentRunIdRef = useRef<string>()
   const restoredConversationIdsRef = useRef(new Set<string>())
   const lastEventIdRef = useRef<string>()
+
+  function streamRequestInit(signal: AbortSignal): RequestInit {
+    const headers = new Headers()
+    if (lastEventIdRef.current) headers.set('Last-Event-ID', lastEventIdRef.current)
+    return { method: 'GET', signal, headers }
+  }
 
   const loadWorkspace = useCallback(async () => {
     const version = ++contextVersionRef.current
@@ -487,6 +528,7 @@ export function ChatPage() {
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
+    lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
     setDraft('')
@@ -514,7 +556,7 @@ export function ChatPage() {
     setBusinessTask('SOLUTION_DRAFT')
     setBusinessTaskExplicit(false)
     setPendingQuestion(run.inputContent?.trim() || '正在恢复方案运行…')
-    setAgentInterruptQuestion(undefined)
+    setAgentInterruptQuestion(normalizeInterrupt(run.interrupt, run.runId))
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
     currentRunIdRef.current = run.runId
@@ -527,7 +569,7 @@ export function ChatPage() {
       const streamUrl = baseUrl.includes('?') ? `${baseUrl}&afterSeq=0` : `${baseUrl}?afterSeq=0`
       const result = await streamApi<SendResponse, ProductAnswerProgress>(
         streamUrl,
-        { method: 'GET', signal: abortController.signal },
+        streamRequestInit(abortController.signal),
         {
           onProgress: (progress) => {
             if (contextVersionRef.current === version) recordProgress({ ...progress, runId: progress.runId ?? run.runId })
@@ -551,8 +593,7 @@ export function ChatPage() {
           onInterrupt: (value) => {
             if (contextVersionRef.current !== version) return
             const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-            const question = typeof payload.question === 'string' && payload.question.trim() ? payload.question : '请补充方案所需信息'
-            setAgentInterruptQuestion(question)
+            setAgentInterruptQuestion(normalizeInterrupt(payload, run.runId))
             recordProgress({ stage: 'WAITING_FOR_INPUT', message: '等待补充方案所需信息', runId: run.runId, status: 'INTERRUPTED' })
           },
         },
@@ -616,6 +657,7 @@ export function ChatPage() {
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
+    lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
     setActivePairId(undefined)
@@ -648,6 +690,7 @@ export function ChatPage() {
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
+    lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
     setActivePairId(undefined)
@@ -698,6 +741,7 @@ export function ChatPage() {
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
+    lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
     setAttachmentError(undefined)
@@ -779,6 +823,7 @@ export function ChatPage() {
             currentRunIdRef.current = runId
             setCurrentRunId(runId)
           },
+          onEventId: (eventId) => { lastEventIdRef.current = eventId },
           onDraft: (value) => {
             if (contextVersionRef.current !== version) return
             if (value && typeof value === 'object') {
@@ -788,11 +833,8 @@ export function ChatPage() {
           onInterrupt: (value) => {
             if (contextVersionRef.current !== version) return
             const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-            const question = typeof payload.question === 'string' && payload.question.trim()
-              ? payload.question.trim()
-              : '请补充方案所需信息'
-            setAgentInterruptQuestion(question)
             const interruptedRunId = typeof payload.runId === 'string' ? payload.runId : currentRunIdRef.current
+            setAgentInterruptQuestion(normalizeInterrupt(payload, interruptedRunId))
             if (interruptedRunId) {
               currentRunIdRef.current = interruptedRunId
               setCurrentRunId(interruptedRunId)
@@ -833,10 +875,11 @@ export function ChatPage() {
     }
   }
 
-  async function resumeAgentRun() {
-    const answer = draft.trim()
+  async function resumeAgentRun(answerOverride?: string | string[], action: 'answer' | 'skip' = 'answer') {
+    const answer = answerOverride ?? draft.trim()
     const parentRunId = currentRunIdRef.current
-    if (!answer || !parentRunId || mutationLocked || archived || !agentInterruptQuestion) return
+    const hasAnswer = Array.isArray(answer) ? answer.length > 0 : Boolean(answer.trim())
+    if (action === 'answer' && !hasAnswer || !parentRunId || mutationLocked || archived || !agentInterruptQuestion) return
     const version = contextVersionRef.current
     const abortController = new AbortController()
     sendAbortControllerRef.current = abortController
@@ -844,13 +887,17 @@ export function ChatPage() {
     setDraft('')
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
+    // A resumed run has a new run id; do not send the parent cursor to it.
+    lastEventIdRef.current = undefined
     setAgentInterruptQuestion(undefined)
     setErrorText(undefined)
     try {
-      const resumed = await api<{ run: { runId: string } }>(`/api/chat/runs/${encodeURIComponent(parentRunId)}/resume`, {
+      const resumed = await api<{ run: { runId: string; streamUrl?: string } }>(`/api/chat/runs/${encodeURIComponent(parentRunId)}/resume`, {
         method: 'POST',
         body: JSON.stringify({
           answer,
+          action,
+          ...(agentInterruptQuestion.questionId ? { questionId: agentInterruptQuestion.questionId } : {}),
           requestId: globalThis.crypto?.randomUUID?.() ?? `resume-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         }),
         signal: abortController.signal,
@@ -859,8 +906,8 @@ export function ChatPage() {
       currentRunIdRef.current = resumed.run.runId
       setCurrentRunId(resumed.run.runId)
       const result = await streamApi<SendResponse, ProductAnswerProgress>(
-        `/api/chat/runs/${encodeURIComponent(resumed.run.runId)}/events`,
-        { method: 'GET', signal: abortController.signal },
+        resumed.run.streamUrl || `/api/chat/runs/${encodeURIComponent(resumed.run.runId)}/events`,
+        streamRequestInit(abortController.signal),
         {
           onProgress: (progress) => {
             if (contextVersionRef.current !== version) return
@@ -874,6 +921,7 @@ export function ChatPage() {
               setCurrentRunId(nextRunId)
             }
           },
+          onEventId: (eventId) => { lastEventIdRef.current = eventId },
           onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
             streamedAnswerRef.current += delta
@@ -884,7 +932,11 @@ export function ChatPage() {
           onInterrupt: (value) => {
             if (contextVersionRef.current !== version) return
             const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-            setAgentInterruptQuestion(typeof payload.question === 'string' ? payload.question : '请补充方案所需信息')
+            setAgentInterruptQuestion(normalizeInterrupt(payload, currentRunIdRef.current) ?? {
+              question: typeof payload.question === 'string' ? payload.question : '请补充方案所需信息',
+              status: 'INTERRUPTED',
+              runId: currentRunIdRef.current,
+            })
             recordProgress({
               stage: 'WAITING_FOR_INPUT',
               message: '等待补充方案所需信息',
@@ -1075,6 +1127,24 @@ export function ChatPage() {
     } catch {
       setErrorText('方案草稿保存失败，请重试')
       throw new Error('SOLUTION_DRAFT_SAVE_FAILED')
+    }
+  }
+
+  async function confirmSolutionDraft(draftId: string) {
+    try {
+      const response = await api<{ draft: NonNullable<ProductMessage['solutionDraft']>; confirmed: boolean }>(
+        `/api/chat/solution-drafts/${encodeURIComponent(draftId)}/confirm`,
+        { method: 'POST', body: JSON.stringify({}) },
+      )
+      setMessages((current) => current.map((message) => (
+        message.solutionDraft?.id === draftId
+          ? { ...message, solutionDraft: response.draft, content: response.draft.executiveSummary }
+          : message
+      )))
+      showToast('已确认并生成正式方案')
+    } catch (error) {
+      setErrorText(error instanceof ApiError ? error.message : '方案确认失败，请重试')
+      throw new Error('SOLUTION_DRAFT_CONFIRM_FAILED')
     }
   }
 
@@ -1400,6 +1470,9 @@ export function ChatPage() {
                     onMaterialDownload={(material) => void downloadMaterial(material)}
                     onMaterialDistribute={openMaterialDistribution}
                     onDraftSave={updateSolutionDraft}
+                    onDraftConfirm={confirmSolutionDraft}
+                    onInterruptAnswer={(answer, action) => void resumeAgentRun(answer, action)}
+                    interruptDisabled={sending}
                   />
                 ) : (
                   <div className="chat-empty prototype-home" aria-label="新对话引导">

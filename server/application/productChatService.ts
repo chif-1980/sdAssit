@@ -10,11 +10,11 @@ import type {
   SolutionDraftEditRequest,
 } from '../../shared/api/product.js'
 import type { ProductSkillCatalogResponse, ProductSkillDefinition, ProductSkillId } from '../../shared/api/skills.js'
-import type { Asset, Citation, ConversationMessage, DistributionTask, PlatformSnapshot } from '../../shared/domain/models.js'
+import type { Asset, Citation, ConversationMessage, DistributionTask, PlatformSnapshot, SolutionDraft } from '../../shared/domain/models.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
 import { ConversationService, displayConversationTitle, imageCitationFromText, type AddMessageInput } from './conversationService.js'
 import type { PlatformRepository } from './ports.js'
-import { createAgentSolutionDraft, createLocalSolutionDraft, editLocalSolutionDraft, renderLocalSolutionDraft } from './solutionDraftService.js'
+import { buildCapabilityIndex, confirmSolutionDraft, createAgentSolutionDraft, createLocalSolutionDraft, editLocalSolutionDraft, renderLocalSolutionDraft } from './solutionDraftService.js'
 import { ulid } from 'ulid'
 
 const skillCatalog: ProductSkillDefinition[] = [
@@ -334,6 +334,11 @@ export class ProductChatService {
     return { skills: structuredClone(skillCatalog) }
   }
 
+  async capabilityIndex() {
+    const snapshot = await this.repository.read()
+    return buildCapabilityIndex(snapshot)
+  }
+
   async listConversations() {
     return (await this.conversations.list()).map(toProductConversation)
   }
@@ -411,6 +416,7 @@ export class ProductChatService {
     requestedSkillId?: ProductSkillId,
     attachmentIds: string[] = [],
     sourceRunId?: string,
+    executionTrace?: SolutionDraft['executionTrace'],
   ) {
     const skillId = requestedSkillId ?? inferSkillId(content)
     const skill = skillId ? skillForId(skillId) : undefined
@@ -436,7 +442,7 @@ export class ProductChatService {
       })
       const snapshot = await this.repository.read()
       const resolvedSourceRunId = sourceRunId ?? `local-${ulid()}`
-      const draft = createLocalSolutionDraft(snapshot, id, content, attachmentIds, resolvedSourceRunId)
+      const draft = createLocalSolutionDraft(snapshot, id, content, attachmentIds, resolvedSourceRunId, executionTrace)
       await this.repository.transact((next) => {
         next.solutionDrafts ??= []
         next.solutionDrafts.push(draft)
@@ -546,6 +552,23 @@ export class ProductChatService {
         linked.answerStatus = updated.conflicts.length ? 'CONFLICTING' : updated.status === 'BLOCKED' ? 'INSUFFICIENT' : 'SUPPORTED'
       }
       return structuredClone(updated)
+    })
+  }
+
+  async confirmSolutionDraft(id: string) {
+    return this.repository.transact((snapshot) => {
+      const draft = snapshot.solutionDrafts?.find((item) => item.id === id)
+      if (!draft) throw new Error('SOLUTION_DRAFT_NOT_FOUND')
+      const conversation = snapshot.conversations.find((item) => item.id === draft.conversationId)
+      if (!conversation || conversation.userId !== snapshot.session.userId) throw new Error('FORBIDDEN')
+      const confirmed = confirmSolutionDraft(draft)
+      snapshot.solutionDrafts = (snapshot.solutionDrafts ?? []).map((item) => item.id === id ? confirmed : item)
+      const linked = snapshot.messages.find((message) => message.solutionDraftId === id)
+      if (linked) {
+        linked.text = renderLocalSolutionDraft(confirmed)
+        linked.answerStatus = 'SUPPORTED'
+      }
+      return structuredClone(confirmed)
     })
   }
 
