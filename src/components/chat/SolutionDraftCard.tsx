@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type { SolutionDraft, SolutionDraftEditRequest } from '../../../shared/api/product.js'
+import { mermaidMarkdownComponents } from './MermaidBlock'
 
 interface SolutionDraftCardProps {
   draft: SolutionDraft
@@ -212,7 +213,7 @@ export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
       {architecture ? (
         <div className="solution-draft-architecture">
           <h4>方案架构骨架</h4>
-          {architecture.overview.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{architecture.overview}</ReactMarkdown> : null}
+          {architecture.overview.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={mermaidMarkdownComponents}>{architecture.overview}</ReactMarkdown> : null}
           {architecture.layers.length ? (
             <div className="solution-draft-architecture-layers">
               {architecture.layers.map((layer) => <span key={layer.name}>{layer.components.length ? `${layer.name}：${layer.components.join('、')}` : layer.name}</span>)}
@@ -224,7 +225,7 @@ export function SolutionDraftCard({ draft, onSave }: SolutionDraftCardProps) {
         {draft.sections.map((section) => (
           <article key={section.id}>
             <h4>{section.title}</h4>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.contentMarkdown}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mermaidMarkdownComponents}>{section.contentMarkdown}</ReactMarkdown>
             {section.citationIds.length ? <small>引用 {section.citationIds.map((id) => draft.citations.findIndex((citation) => citation.id === id) + 1).filter((index) => index > 0).map((index) => `[${index}]`).join(' ')}</small> : null}
           </article>
         ))}

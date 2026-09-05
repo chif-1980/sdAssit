@@ -14,6 +14,7 @@ import type {
 } from '../../../shared/api/product.js'
 import type { ProductMaterial } from '../../../shared/api/product.js'
 import { MaterialResultList } from './MaterialResultList'
+import { mermaidMarkdownComponents } from './MermaidBlock'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
@@ -123,6 +124,7 @@ function AssistantMarkdown({
         remarkPlugins={[remarkGfm, createRemarkCitationLinks(citations)]}
         skipHtml
         components={{
+          ...mermaidMarkdownComponents,
           a: ({ href, children }) => {
             const match = /^#citation(-image)?-(\d+)$/.exec(href ?? '')
             if (!match) {

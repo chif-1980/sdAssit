@@ -727,6 +727,53 @@ tbody tr:last-child td { border-bottom: 0; }
 .assistant-markdown pre { max-width: 100%; margin: 8px 0 12px; padding: 11px 12px; overflow-x: auto; border-radius: 6px; background: #f1f5fa; }
 .assistant-markdown pre code { padding: 0; color: #24344c; background: transparent; }
 .assistant-markdown a { color: #2e69c2; text-underline-offset: 2px; }
+.mermaid-block {
+  min-width: 0;
+  margin: 10px 0 14px;
+  overflow: hidden;
+  border: 1px solid #dbe5f2;
+  border-radius: 9px;
+  background: #fbfdff;
+}
+.mermaid-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 6px 8px 6px 11px;
+  border-bottom: 1px solid #e6edf6;
+  background: #f6f9fd;
+}
+.mermaid-block-title { display: inline-flex; align-items: baseline; gap: 7px; color: #526987; font-size: 11px; }
+.mermaid-block-title strong { color: #315a8b; font-size: 11px; letter-spacing: .01em; }
+.mermaid-block-kicker { color: #8395ab; font-size: 10px; }
+.mermaid-block-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #dce6f3; border-radius: 6px; background: #ffffff; }
+.mermaid-block-tabs button {
+  min-width: 42px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 4px;
+  color: #70839c;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.mermaid-block-tabs button:hover { color: #315fba; background: #f0f5fc; }
+.mermaid-block-tabs button:focus-visible { outline: 2px solid rgb(59 116 215 / 28%); outline-offset: 1px; }
+.mermaid-block-tabs button.is-active { color: #2458ad; background: #eaf2ff; font-weight: 700; }
+.mermaid-block-body { min-width: 0; padding: 14px; overflow-x: auto; }
+.mermaid-diagram { min-width: max-content; display: grid; place-items: center; color: #1d3557; }
+.mermaid-diagram svg { display: block; max-width: none; height: auto; }
+.mermaid-block-status { margin: 8px 0; color: #7a8799; font-size: 11px; text-align: center; }
+.mermaid-block-error { display: grid; gap: 5px; color: #8a4a45; font-size: 11px; }
+.mermaid-block-error strong { color: #a43d36; font-size: 12px; }
+.mermaid-block-error span { color: #7c6a6a; }
+.mermaid-code { max-width: 100%; margin: 0; padding: 12px 13px; overflow-x: auto; border-radius: 6px; color: #24344c; background: #f1f5fa; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre; }
+.mermaid-code code { padding: 0; color: inherit; background: transparent; font: inherit; }
+.mermaid-block-body > .mermaid-code { margin: 0; }
 .inline-citation { display: inline-flex; align-items: center; margin: 0 1px; padding: 0 3px; border: 0; border-radius: 4px; color: #2f6fd5; background: #e9f1fd; font-size: .78em; font-weight: 750; line-height: 1.45; vertical-align: .08em; }
 .inline-citation:hover,
 .inline-citation:focus-visible { color: #174f9f; background: #d9e8fb; outline: none; }
