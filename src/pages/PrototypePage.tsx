@@ -552,7 +552,7 @@ export function PrototypePage() {
                   <div className="prototype-home">
                     <div className="prototype-hero">
                       <span className="prototype-eyebrow">统一对话入口 · 原型预览</span>
-                      <h2>让每一次售前准备，<em>都从一个对话开始。</em></h2>
+                      <h2>让每一次工作协作，<em>都从一个对话开始。</em></h2>
                       <p>像原来一样直接提问。需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。</p>
                     </div>
                     <div className="prototype-default-skill">

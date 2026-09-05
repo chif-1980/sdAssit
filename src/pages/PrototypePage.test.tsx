@@ -20,7 +20,7 @@ describe('PrototypePage business workbench', () => {
     const user = userEvent.setup()
     render(<PrototypePage />)
 
-    expect(screen.getByRole('heading', { name: /让每一次售前准备/u })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /让每一次工作协作/u })).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: /查资料/u })[0])
 
     expect(screen.getByText('找到 3 份可用资料')).toBeInTheDocument()

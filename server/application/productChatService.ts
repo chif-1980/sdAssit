@@ -7,12 +7,15 @@ import type {
   ProductConversation,
   ProductMaterial,
   ProductMessage,
+  SolutionDraftEditRequest,
 } from '../../shared/api/product.js'
 import type { ProductSkillCatalogResponse, ProductSkillDefinition, ProductSkillId } from '../../shared/api/skills.js'
 import type { Asset, Citation, ConversationMessage, DistributionTask, PlatformSnapshot } from '../../shared/domain/models.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
-import { ConversationService, imageCitationFromText, type AddMessageInput } from './conversationService.js'
+import { ConversationService, displayConversationTitle, imageCitationFromText, type AddMessageInput } from './conversationService.js'
 import type { PlatformRepository } from './ports.js'
+import { createAgentSolutionDraft, createLocalSolutionDraft, editLocalSolutionDraft, renderLocalSolutionDraft } from './solutionDraftService.js'
+import { ulid } from 'ulid'
 
 const skillCatalog: ProductSkillDefinition[] = [
   {
@@ -38,7 +41,7 @@ const skillCatalog: ProductSkillDefinition[] = [
       '实施方案', '方案草稿', '方案汇报', '汇报材料', '业务需求', '客户需求', '提纲',
       '售前', '起草方案', '起草汇报', '草稿',
     ],
-    availability: 'PLANNED',
+    availability: 'AVAILABLE',
     stage: 2,
   },
   {
@@ -148,7 +151,7 @@ function toProductConversation(conversation: {
 }): ProductConversation {
   return {
     id: conversation.id,
-    title: conversation.title,
+    title: displayConversationTitle(conversation.title),
     status: conversation.status,
     messageCount: conversation.messageCount,
     createdAt: conversation.createdAt,
@@ -157,6 +160,9 @@ function toProductConversation(conversation: {
 }
 
 function toProductMessage(message: ConversationMessage, snapshot: PlatformSnapshot): ProductMessage {
+  const solutionDraft = message.solutionDraftId
+    ? snapshot.solutionDrafts?.find((draft) => draft.id === message.solutionDraftId)
+    : undefined
   return {
     id: message.id,
     role: message.role,
@@ -170,6 +176,7 @@ function toProductMessage(message: ConversationMessage, snapshot: PlatformSnapsh
         return material ? [material] : []
       }) }
       : {}),
+    ...(solutionDraft ? { solutionDraft } : {}),
     createdAt: message.createdAt,
     feedbackRating: message.feedback ? (message.feedback.helpful ? 'LIKE' : 'DISLIKE') : null,
     feedbackReasonType: message.feedback?.type === 'WRONG'
@@ -336,6 +343,59 @@ export class ProductChatService {
     return toProductConversation(conversation)
   }
 
+  async uploadAttachment(conversationId: string, file: { name: string; mimeType: string; content: Buffer }) {
+    const attachment = await this.repository.transact((snapshot) => {
+      const conversation = snapshot.conversations.find((item) => item.id === conversationId)
+      if (!conversation || conversation.userId !== snapshot.session.userId) throw new Error('CONVERSATION_NOT_FOUND')
+      const id = createBusinessId('asset')
+      const isText = file.mimeType.startsWith('text/') || /\.(md|markdown|txt|csv)$/iu.test(file.name)
+      const content = isText ? file.content.toString('utf8') : `[附件 ${file.name}，已上传，需由方案 Agent 解析]`
+      const timestamp = new Date().toISOString()
+      snapshot.assets.push({
+        id,
+        title: file.name,
+        assetType: file.mimeType.startsWith('image/') ? 'IMAGE' : 'DOCUMENT',
+        businessType: 'SESSION_UPLOAD',
+        provider: 'LOCAL',
+        externalId: id,
+        ownerId: snapshot.session.userId,
+        authority: 'L0',
+        processStatus: 'PROCESSED',
+        summary: content.slice(0, 500),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        isSessionAsset: true,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        sections: [{ id: `${id}-section`, title: file.name, locator: 'document', excerpt: content.slice(0, 2000) }],
+      })
+      snapshot.assetInputs[id] = {
+        content,
+        mimeType: file.mimeType || 'application/octet-stream',
+        ...(isText ? {} : { contentBase64: file.content.toString('base64') }),
+      }
+      if (!conversation.sessionAssetIds.includes(id)) conversation.sessionAssetIds.push(id)
+      return { id, name: file.name, mimeType: file.mimeType, size: file.content.byteLength, status: 'READY' as const }
+    })
+    return attachment
+  }
+
+  async attachmentFile(conversationId: string, attachmentId: string) {
+    const snapshot = await this.repository.read()
+    const conversation = snapshot.conversations.find((item) => item.id === conversationId)
+    const asset = snapshot.assets.find((item) => item.id === attachmentId)
+    if (!conversation || conversation.userId !== snapshot.session.userId) throw new Error('CONVERSATION_NOT_FOUND')
+    if (!asset || !asset.isSessionAsset || asset.ownerId !== snapshot.session.userId || !conversation.sessionAssetIds.includes(attachmentId)) {
+      throw new Error('ASSET_NOT_FOUND')
+    }
+    const input = snapshot.assetInputs[attachmentId]
+    if (!input) throw new Error('ASSET_NOT_FOUND')
+    return {
+      name: asset.title,
+      mimeType: input.mimeType,
+      content: input.contentBase64 ? Buffer.from(input.contentBase64, 'base64') : Buffer.from(input.content, 'utf8'),
+    }
+  }
+
   async detail(id: string) {
     const detail = await this.conversations.detail(id)
     const snapshot = await this.repository.read()
@@ -345,9 +405,61 @@ export class ProductChatService {
     }
   }
 
-  async addMessage(id: string, content: string, requestedSkillId?: ProductSkillId) {
+  async addMessage(
+    id: string,
+    content: string,
+    requestedSkillId?: ProductSkillId,
+    attachmentIds: string[] = [],
+    sourceRunId?: string,
+  ) {
     const skillId = requestedSkillId ?? inferSkillId(content)
     const skill = skillId ? skillForId(skillId) : undefined
+    if (skillId === 'SOLUTION_DRAFT') {
+      if (sourceRunId) {
+        const existing = (await this.repository.read()).solutionDrafts?.find((item) => item.sourceRunId === sourceRunId)
+        if (existing) {
+          const final = await this.detail(id)
+          const assistant = final.messages.find((message) => message.solutionDraft?.id === existing.id)
+          const user = [...final.messages].slice(0, final.messages.indexOf(assistant ?? final.messages.at(-1)!)).at(-1)
+          if (assistant && user) return { conversation: final.conversation, userMessage: user, assistantMessage: assistant }
+        }
+      }
+      const result = await this.conversations.addMessage(id, {
+        text: content,
+        skillId,
+        sessionAssetIds: attachmentIds,
+        answerOverride: {
+          text: '正在生成方案草稿…',
+          confidence: 'INSUFFICIENT',
+          citations: [],
+        },
+      })
+      const snapshot = await this.repository.read()
+      const resolvedSourceRunId = sourceRunId ?? `local-${ulid()}`
+      const draft = createLocalSolutionDraft(snapshot, id, content, attachmentIds, resolvedSourceRunId)
+      await this.repository.transact((next) => {
+        next.solutionDrafts ??= []
+        next.solutionDrafts.push(draft)
+        const assistant = next.messages.find((message) => message.id === result.message.id)
+        if (assistant) {
+          assistant.solutionDraftId = draft.id
+          assistant.text = renderLocalSolutionDraft(draft)
+          assistant.answerStatus = draft.conflicts.length ? 'CONFLICTING' : draft.status === 'BLOCKED' ? 'INSUFFICIENT' : 'SUPPORTED'
+          assistant.citations = draft.citations.flatMap((citation) => {
+            const match = citation.id.startsWith('DRAFT-')
+              ? (() => { try { return JSON.parse(Buffer.from(citation.id.slice(6), 'base64url').toString('utf8')) as { knowledgeId: string; assetId: string } } catch { return undefined } })()
+              : undefined
+            return match ? [{ knowledgeId: match.knowledgeId, title: citation.title, assetId: match.assetId, locator: citation.locator, excerpt: citation.excerpt }] : []
+          })
+        }
+      })
+      const final = await this.detail(id)
+      return {
+        conversation: final.conversation,
+        userMessage: final.messages.at(-2)!,
+        assistantMessage: final.messages.at(-1)!,
+      }
+    }
     const materials = skillId === 'MATERIAL_SEARCH'
       ? await this.searchMaterials(materialSearchQuery(content))
       : []
@@ -371,6 +483,70 @@ export class ProductChatService {
         ...(materials.length ? { materials } : {}),
       },
     }
+  }
+
+  /** Persist a completed Yuxi Agent Run as a local product draft projection. */
+  async addAgentSolutionMessage(
+    id: string,
+    content: string,
+    attachmentIds: string[],
+    sourceRunId: string,
+    payload: unknown,
+  ) {
+    const snapshot = await this.repository.read()
+    const existing = snapshot.solutionDrafts?.find((item) => item.sourceRunId === sourceRunId)
+    if (existing) {
+      const final = await this.detail(id)
+      const assistant = final.messages.find((message) => message.solutionDraft?.id === existing.id)
+      const assistantIndex = assistant ? final.messages.indexOf(assistant) : -1
+      const user = assistantIndex > 0 ? final.messages[assistantIndex - 1] : undefined
+      if (assistant && user) return { conversation: final.conversation, userMessage: user, assistantMessage: assistant }
+    }
+    const draft = createAgentSolutionDraft(snapshot, id, sourceRunId, payload)
+    const result = await this.conversations.addMessage(id, {
+      text: content,
+      skillId: 'SOLUTION_DRAFT',
+      sessionAssetIds: attachmentIds,
+      answerOverride: { text: '正在生成方案草稿…', confidence: 'INSUFFICIENT', citations: [] },
+    })
+    await this.repository.transact((next) => {
+      next.solutionDrafts ??= []
+      if (!next.solutionDrafts.some((item) => item.sourceRunId === sourceRunId)) next.solutionDrafts.push(draft)
+      const assistant = next.messages.find((message) => message.id === result.message.id)
+      if (assistant) {
+        assistant.solutionDraftId = draft.id
+        assistant.text = renderLocalSolutionDraft(draft)
+        assistant.answerStatus = draft.conflicts.length ? 'CONFLICTING' : draft.status === 'BLOCKED' ? 'INSUFFICIENT' : 'SUPPORTED'
+      }
+    })
+    const final = await this.detail(id)
+    return { conversation: final.conversation, userMessage: final.messages.at(-2)!, assistantMessage: final.messages.at(-1)! }
+  }
+
+  async getSolutionDraft(id: string) {
+    const snapshot = await this.repository.read()
+    const draft = snapshot.solutionDrafts?.find((item) => item.id === id)
+    if (!draft) throw new Error('SOLUTION_DRAFT_NOT_FOUND')
+    const conversation = snapshot.conversations.find((item) => item.id === draft.conversationId)
+    if (!conversation || conversation.userId !== snapshot.session.userId) throw new Error('FORBIDDEN')
+    return draft
+  }
+
+  async updateSolutionDraft(id: string, patch: SolutionDraftEditRequest) {
+    return this.repository.transact((snapshot) => {
+      const draft = snapshot.solutionDrafts?.find((item) => item.id === id)
+      if (!draft) throw new Error('SOLUTION_DRAFT_NOT_FOUND')
+      const conversation = snapshot.conversations.find((item) => item.id === draft.conversationId)
+      if (!conversation || conversation.userId !== snapshot.session.userId) throw new Error('FORBIDDEN')
+      const updated = editLocalSolutionDraft(draft, patch)
+      snapshot.solutionDrafts = (snapshot.solutionDrafts ?? []).map((item) => item.id === id ? updated : item)
+      const linked = snapshot.messages.find((message) => message.solutionDraftId === id)
+      if (linked) {
+        linked.text = renderLocalSolutionDraft(updated)
+        linked.answerStatus = updated.conflicts.length ? 'CONFLICTING' : updated.status === 'BLOCKED' ? 'INSUFFICIENT' : 'SUPPORTED'
+      }
+      return structuredClone(updated)
+    })
   }
 
   async archive(id: string) {

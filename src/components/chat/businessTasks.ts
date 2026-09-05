@@ -36,7 +36,7 @@ export const skillRegistry: BusinessTaskDefinition[] = [
       '实施方案', '方案草稿', '方案汇报', '汇报材料', '业务需求', '客户需求', '提纲',
       '售前', '起草方案', '起草汇报', '草稿',
     ],
-    availability: 'PLANNED',
+    availability: 'AVAILABLE',
     stage: 2,
   },
   {

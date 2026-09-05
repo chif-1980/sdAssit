@@ -249,9 +249,143 @@ export interface ConversationMessage {
   skillId?: ConversationSkillId
   answerStatus?: 'SUPPORTED' | 'INSUFFICIENT' | 'CONFLICTING'
   materialIds?: string[]
+  solutionDraftId?: string
   citations: Citation[]
   createdAt: string
   feedback?: MessageFeedback
+}
+
+export type SolutionDraftStatus = 'GENERATING' | 'READY' | 'NEEDS_REVIEW' | 'BLOCKED' | 'SUPERSEDED'
+
+export interface DraftCitation {
+  id: string
+  title: string
+  locator: string
+  excerpt: string
+  sourceUrl?: string
+}
+
+export interface DraftRequirement {
+  id: string
+  text: string
+  source?: string
+}
+
+export interface DraftSection {
+  id: string
+  title: string
+  contentMarkdown: string
+  requirementIds: string[]
+  citationIds: string[]
+}
+
+export interface ConflictAlternative {
+  statement: string
+  applicability: Record<string, string>
+  citationIds: string[]
+}
+
+export interface ConflictItem {
+  claim: string
+  alternatives: ConflictAlternative[]
+  applicability: string
+  citationIds: string[]
+  status: 'UNRESOLVED' | 'SCOPED'
+}
+
+export interface SolutionDraftQuality {
+  status: SolutionDraftStatus
+  evidenceCoverage: number
+  missingSections: string[]
+  invalidCitations: string[]
+  notes: string[]
+}
+
+export type CapabilityDeliveryStatus = 'PRODUCTIZED' | 'DELIVERED' | 'CUSTOMIZABLE' | 'R_AND_D' | 'UNKNOWN'
+export type CapabilityMatchType = 'EXISTING' | 'CUSTOM' | 'R_AND_D' | 'UNKNOWN'
+
+export interface CapabilityMatch {
+  requirementId: string
+  capabilityId: string
+  capabilityName: string
+  deliveryStatus: CapabilityDeliveryStatus | string
+  matchType: CapabilityMatchType | string
+  matchScore: number
+  confidence: number
+  citationIds: string[]
+  limitations: string[]
+  reviewRequired: boolean
+}
+
+export type DraftEvidenceSourceType = 'ENTERPRISE_FORMAL' | 'PROJECT_CASE' | 'INDUSTRY_REFERENCE' | 'INNOVATION_HYPOTHESIS' | string
+
+export interface DraftEvidenceItem {
+  id: string
+  sourceType: DraftEvidenceSourceType
+  title: string
+  locator: string
+  excerpt: string
+  confidence: number
+  citationId?: string
+}
+
+export interface ConfidenceSummary {
+  enterpriseCoverage: number
+  evidenceCoverage: number
+  industryReferenceRatio: number
+  innovationRatio: number
+  notes: string[]
+}
+
+export interface SolutionReviewState {
+  status: string
+  pendingItems: string[]
+  requiredRoles: string[]
+  decisions: Array<Record<string, unknown>>
+}
+
+export interface SolutionDraft {
+  id: string
+  conversationId: string
+  sourceRunId?: string
+  currentVersion: number
+  status: SolutionDraftStatus
+  title: string
+  customerContext: string
+  executiveSummary: string
+  requirements: DraftRequirement[]
+  sections: DraftSection[]
+  assumptions: string[]
+  openQuestions: string[]
+  risks: string[]
+  conflicts: ConflictItem[]
+  evidenceGaps: string[]
+  citations: DraftCitation[]
+  quality: SolutionDraftQuality
+  customer?: string
+  capabilityMatches?: CapabilityMatch[]
+  architecture?: Record<string, unknown>
+  evidence?: DraftEvidenceItem[]
+  confidenceSummary?: ConfidenceSummary
+  review?: SolutionReviewState
+  executionTrace?: {
+    status: string
+    startedAt?: string | null
+    finishedAt?: string | null
+    elapsedMs: number
+    steps: Array<{
+      stage: string
+      label: string
+      message: string
+      status: string
+      startedAt?: string | null
+      finishedAt?: string | null
+      elapsedMs: number
+    }>
+  }
+  createdAt: string
+  updatedAt: string
+  versions?: Array<{ version: number; payload: Record<string, unknown>; createdAt: string }>
 }
 
 export interface DistributionTask {
@@ -277,6 +411,7 @@ export interface PlatformSnapshot {
   crossDocumentRelations?: CrossDocumentRelation[]
   conversations: Conversation[]
   messages: ConversationMessage[]
-  assetInputs: Record<string, { content: string; mimeType: string }>
+  assetInputs: Record<string, { content: string; mimeType: string; contentBase64?: string }>
   distributionTasks?: DistributionTask[]
+  solutionDrafts?: SolutionDraft[]
 }

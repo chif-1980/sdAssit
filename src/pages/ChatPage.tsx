@@ -15,6 +15,8 @@ import type {
   ProductConversation,
   ProductMaterial,
   ProductMessage,
+  SolutionDraftEditRequest,
+  SolutionExecutionTrace,
 } from '../../shared/api/product.js'
 import { ApiError, api, streamApi } from '../api/client'
 import { ChatComposer } from '../components/chat/ChatComposer'
@@ -54,8 +56,17 @@ const exampleQuestions = [
   '语音智控的技术架构',
 ] as const
 
+const FALLBACK_CONVERSATION_TITLE = '未命名会话'
+
+function normalizeConversation(conversation: ProductConversation): ProductConversation {
+  const title = typeof conversation.title === 'string' ? conversation.title.trim() : ''
+  return { ...conversation, title: title || FALLBACK_CONVERSATION_TITLE }
+}
+
 function sortConversations(conversations: ProductConversation[]) {
-  return [...conversations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  return conversations
+    .map(normalizeConversation)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
 function upsertConversation(current: ProductConversation[], next: ProductConversation) {
@@ -65,10 +76,21 @@ function upsertConversation(current: ProductConversation[], next: ProductConvers
     : [next, ...current])
 }
 
-function hasCompleteProgressTrail(progressTrail: readonly ProductAnswerProgress[]) {
-  const stages: ProductAnswerProgress['stage'][] = ['UNDERSTANDING', 'RETRIEVING', 'VERIFYING', 'COMPOSING']
-  return stages
-    .every((stage) => progressTrail.some((progress) => progress.stage === stage))
+function nextProgressTrail(
+  current: ProductAnswerProgress[],
+  progress: ProductAnswerProgress,
+): ProductAnswerProgress[] {
+  const currentProgress = current.at(-1)
+  if (currentProgress?.stage === progress.stage) {
+    if (
+      currentProgress.message === progress.message
+      && currentProgress.status === progress.status
+      && currentProgress.runId === progress.runId
+      && currentProgress.elapsedMs === progress.elapsedMs
+    ) return current
+    return [...current.slice(0, -1), progress]
+  }
+  return [...current, progress].slice(-24)
 }
 
 function attachmentUploadMessage(error: unknown) {
@@ -87,6 +109,21 @@ function attachmentUploadMessage(error: unknown) {
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
     || Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
+}
+
+/**
+ * Keep solution-draft deltas observable when several SSE events arrive in one
+ * network read. React 18 may batch synchronous updates from that read, so a
+ * paint boundary is required between visible chunks.
+ */
+function yieldSolutionStreamPaint() {
+  return new Promise<void>((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve())
+      return
+    }
+    globalThis.setTimeout(resolve, 16)
+  })
 }
 
 function triggerBlobDownload(blob: Blob, fileName: string) {
@@ -180,6 +217,54 @@ function replaceSelectedSkill(
   return replaced === current ? `${current}${current ? ' ' : ''}${nextValue} ` : replaced
 }
 
+const traceStageKeys = new Set<ProductAnswerProgress['stage']>([
+  'UNDERSTANDING',
+  'REQUIREMENTS_ANALYSIS',
+  'CAPABILITY_MATCHING',
+  'RETRIEVING',
+  'ARCHITECTURE_DESIGN',
+  'VERIFYING',
+  'EVIDENCE_CHECK',
+  'QUALITY_REVIEW',
+  'COMPOSING',
+  'WAITING_FOR_INPUT',
+])
+
+function traceToProgressTrail(trace: unknown, runId?: string): ProductAnswerProgress[] {
+  if (!trace || typeof trace !== 'object') return []
+  const value = trace as Partial<SolutionExecutionTrace> & { steps?: unknown }
+  if (!Array.isArray(value.steps)) return []
+  const trail: ProductAnswerProgress[] = []
+  for (const rawStep of value.steps) {
+    if (!rawStep || typeof rawStep !== 'object') continue
+    const step = rawStep as unknown as Record<string, unknown>
+    const stage = typeof step.stage === 'string' && traceStageKeys.has(step.stage as ProductAnswerProgress['stage'])
+      ? step.stage as ProductAnswerProgress['stage']
+      : undefined
+    if (!stage) continue
+    const message = typeof step.message === 'string' && step.message.trim()
+      ? step.message
+      : typeof step.label === 'string' && step.label.trim() ? step.label : '正在处理'
+    const status = typeof step.status === 'string' ? step.status : undefined
+    const elapsedMs = typeof step.elapsedMs === 'number' && Number.isFinite(step.elapsedMs) ? step.elapsedMs : undefined
+    const progress = { stage, message, ...(runId ? { runId } : {}), ...(status ? { status } : {}), ...(elapsedMs !== undefined ? { elapsedMs } : {}) }
+    const previous = trail.at(-1)
+    if (previous?.stage === stage) trail[trail.length - 1] = progress
+    else trail.push(progress)
+  }
+  return trail
+}
+
+interface ActiveRunResponse {
+  run?: {
+    runId: string
+    status?: string
+    streamUrl?: string
+    inputContent?: string
+    executionTrace?: unknown
+  } | null
+}
+
 export function ChatPage() {
   const [conversations, setConversations] = useState<ProductConversation[]>([])
   const [conversation, setConversation] = useState<ProductConversation>()
@@ -189,13 +274,14 @@ export function ChatPage() {
   const [attachmentError, setAttachmentError] = useState<string>()
   const [answerMode, setAnswerMode] = useState<AnswerMode>('DETAILED')
   const [pendingQuestion, setPendingQuestion] = useState<string>()
+  const [agentInterruptQuestion, setAgentInterruptQuestion] = useState<string>()
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
   const [answerProgressTrail, setAnswerProgressTrail] = useState<ProductAnswerProgress[]>([])
   const [streamedAnswer, setStreamedAnswer] = useState('')
-  const [pendingAnswer, setPendingAnswer] = useState<SendResponse>()
   const [loadingWorkspace, setLoadingWorkspace] = useState(true)
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
+  const [currentRunId, setCurrentRunId] = useState<string>()
   const [archiving, setArchiving] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
@@ -218,7 +304,6 @@ export function ChatPage() {
   const citationVersionRef = useRef(0)
   const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
   const streamedAnswerRef = useRef('')
-  const pendingAnswerRef = useRef<SendResponse>()
   const citationTriggerRef = useRef<HTMLButtonElement>()
   const messageScrollRef = useRef<HTMLDivElement>(null)
   const followLatestRef = useRef(true)
@@ -227,6 +312,9 @@ export function ChatPage() {
   const conversationCloseRef = useRef<HTMLButtonElement>(null)
   const toastTimerRef = useRef<number>()
   const sendAbortControllerRef = useRef<AbortController>()
+  const currentRunIdRef = useRef<string>()
+  const restoredConversationIdsRef = useRef(new Set<string>())
+  const lastEventIdRef = useRef<string>()
 
   const loadWorkspace = useCallback(async () => {
     const version = ++contextVersionRef.current
@@ -242,7 +330,7 @@ export function ChatPage() {
       if (initialConversation) {
         const detail = await api<ConversationDetail>(`/api/chat/conversations/${initialConversation.id}`)
         if (contextVersionRef.current !== version) return
-        setConversation(detail.conversation)
+        setConversation(normalizeConversation(detail.conversation))
         setMessages(detail.messages)
         setBusinessTask(businessTaskFromMessages(detail.messages))
         setBusinessTaskExplicit(false)
@@ -354,6 +442,19 @@ export function ChatPage() {
     setShowScrollToBottom(element.scrollHeight > element.clientHeight + 24)
   }, [streamedAnswer])
 
+  const recordProgress = useCallback((progress: ProductAnswerProgress) => {
+    const normalized = {
+      ...progress,
+      ...(progress.runId || !currentRunIdRef.current ? {} : { runId: currentRunIdRef.current }),
+      ...(progress.status ? {} : { status: 'ACTIVE' }),
+    }
+    const next = nextProgressTrail(answerProgressTrailRef.current, normalized)
+    if (next === answerProgressTrailRef.current) return
+    answerProgressTrailRef.current = next
+    setAnswerProgress(next.at(-1))
+    setAnswerProgressTrail(next)
+  }, [])
+
   const scrollToLatest = useCallback(() => {
     const element = messageScrollRef.current
     if (!element) return
@@ -370,31 +471,108 @@ export function ChatPage() {
     if (!query) return listedConversations
     return listedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
   }, [conversationSearch, listedConversations])
-  const switchLocked = sending || Boolean(pendingAnswer) || archiving || restoring
+  const switchLocked = sending || archiving || restoring
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
 
   const applyAnswer = useCallback((result: SendResponse) => {
-    pendingAnswerRef.current = undefined
-    setConversation(result.conversation)
-    setConversations((current) => upsertConversation(current, result.conversation))
+    const conversation = normalizeConversation(result.conversation)
+    setConversation(conversation)
+    setConversations((current) => upsertConversation(current, conversation))
     setMessages((current) => [...current, result.userMessage, result.assistantMessage])
     setPendingQuestion(undefined)
+    setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
-    setPendingAnswer(undefined)
+    currentRunIdRef.current = undefined
+    setCurrentRunId(undefined)
     setDraft('')
     setAttachments([])
     setAttachmentError(undefined)
   }, [])
 
-  const finishProgressPlayback = useCallback(() => {
-    const result = pendingAnswerRef.current
-    if (result) applyAnswer(result)
-  }, [applyAnswer])
+  const restoreActiveRun = useCallback(async (conversationId: string, version: number) => {
+    if (restoredConversationIdsRef.current.has(conversationId) || sending || currentRunIdRef.current) return
+    restoredConversationIdsRef.current.add(conversationId)
+    let active: ActiveRunResponse
+    try {
+      active = await api<ActiveRunResponse>(`/api/chat/conversations/${encodeURIComponent(conversationId)}/active-run`)
+    } catch {
+      return
+    }
+    const run = active.run
+    if (!run || contextVersionRef.current !== version) return
+    const terminal = String(run.status ?? '').toLowerCase()
+    if (['completed', 'succeeded', 'success', 'failed', 'cancelled'].includes(terminal)) return
+    const trail = traceToProgressTrail(run.executionTrace, run.runId)
+    answerProgressTrailRef.current = trail
+    setAnswerProgressTrail(trail)
+    setAnswerProgress(trail.at(-1))
+    setBusinessTask('SOLUTION_DRAFT')
+    setBusinessTaskExplicit(false)
+    setPendingQuestion(run.inputContent?.trim() || '正在恢复方案运行…')
+    setAgentInterruptQuestion(undefined)
+    setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    currentRunIdRef.current = run.runId
+    setCurrentRunId(run.runId)
+    setSending(true)
+    const abortController = new AbortController()
+    sendAbortControllerRef.current = abortController
+    try {
+      const baseUrl = run.streamUrl || `/api/chat/runs/${encodeURIComponent(run.runId)}/events`
+      const streamUrl = baseUrl.includes('?') ? `${baseUrl}&afterSeq=0` : `${baseUrl}?afterSeq=0`
+      const result = await streamApi<SendResponse, ProductAnswerProgress>(
+        streamUrl,
+        { method: 'GET', signal: abortController.signal },
+        {
+          onProgress: (progress) => {
+            if (contextVersionRef.current === version) recordProgress({ ...progress, runId: progress.runId ?? run.runId })
+          },
+          onEventId: (eventId) => { lastEventIdRef.current = eventId },
+          onRunStarted: (value) => {
+            const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+            const nextRunId = typeof payload.runId === 'string' ? payload.runId : run.runId
+            currentRunIdRef.current = nextRunId
+            setCurrentRunId(nextRunId)
+          },
+          onDelta: async (delta) => {
+            if (contextVersionRef.current !== version) return
+            streamedAnswerRef.current += delta
+            setStreamedAnswer(streamedAnswerRef.current)
+            await yieldSolutionStreamPaint()
+          },
+          onDraft: () => {
+            if (contextVersionRef.current === version) recordProgress({ stage: 'COMPOSING', message: '方案草稿已生成，正在整理结果', runId: run.runId })
+          },
+          onInterrupt: (value) => {
+            if (contextVersionRef.current !== version) return
+            const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+            const question = typeof payload.question === 'string' && payload.question.trim() ? payload.question : '请补充方案所需信息'
+            setAgentInterruptQuestion(question)
+            recordProgress({ stage: 'WAITING_FOR_INPUT', message: '等待补充方案所需信息', runId: run.runId, status: 'INTERRUPTED' })
+          },
+        },
+      )
+      if (contextVersionRef.current === version && result) applyAnswer(result)
+    } catch (error) {
+      if (contextVersionRef.current === version && !isAbortError(error)) {
+        setErrorText(error instanceof ApiError ? error.message : '方案运行恢复失败，请重试')
+      }
+    } finally {
+      if (sendAbortControllerRef.current === abortController) sendAbortControllerRef.current = undefined
+      if (contextVersionRef.current === version) setSending(false)
+    }
+  }, [applyAnswer, recordProgress, sending])
+
+  useEffect(() => {
+    const conversationId = conversation?.id
+    if (!conversationId || loadingWorkspace || loadingConversation) return
+    void restoreActiveRun(conversationId, contextVersionRef.current)
+  }, [conversation?.id, loadingConversation, loadingWorkspace, restoreActiveRun])
 
   function closeConversationList() {
     setConversationListOpen(false)
@@ -432,13 +610,14 @@ export function ChatPage() {
     setMessages([])
     setAnswerMode('DETAILED')
     setPendingQuestion(undefined)
+    setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
-    pendingAnswerRef.current = undefined
-    setPendingAnswer(undefined)
+    currentRunIdRef.current = undefined
+    setCurrentRunId(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(false)
@@ -458,17 +637,19 @@ export function ChatPage() {
 
   async function selectConversation(item: ProductConversation) {
     if (switchLocked) return
+    restoredConversationIdsRef.current.delete(item.id)
     const version = ++contextVersionRef.current
     citationVersionRef.current += 1
     setErrorText(undefined)
     setPendingQuestion(undefined)
+    setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
-    pendingAnswerRef.current = undefined
-    setPendingAnswer(undefined)
+    currentRunIdRef.current = undefined
+    setCurrentRunId(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
     setShowArchived(item.status === 'ARCHIVED')
@@ -484,7 +665,7 @@ export function ChatPage() {
     try {
       const detail = await api<ConversationDetail>(`/api/chat/conversations/${item.id}`)
       if (contextVersionRef.current !== version) return
-      setConversation(detail.conversation)
+      setConversation(normalizeConversation(detail.conversation))
       setMessages(detail.messages)
       setBusinessTask(businessTaskFromMessages(detail.messages))
       setBusinessTaskExplicit(false)
@@ -511,13 +692,14 @@ export function ChatPage() {
     setSending(true)
     setDraft('')
     setPendingQuestion(content)
+    setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
-    pendingAnswerRef.current = undefined
-    setPendingAnswer(undefined)
+    currentRunIdRef.current = undefined
+    setCurrentRunId(undefined)
     setAttachmentError(undefined)
     followLatestRef.current = true
     setErrorText(undefined)
@@ -530,7 +712,7 @@ export function ChatPage() {
           signal: abortController.signal,
         })
         if (contextVersionRef.current !== version) return
-        target = created.conversation
+        target = normalizeConversation(created.conversation)
         setConversation(target)
         setConversations((current) => upsertConversation(current, target!))
       }
@@ -563,6 +745,7 @@ export function ChatPage() {
       const messageBody = JSON.stringify({
         content,
         mode,
+        requestId: globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         ...(requestedSkillId ? { skillId: requestedSkillId } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
       })
@@ -576,34 +759,66 @@ export function ChatPage() {
         {
           onProgress: (progress) => {
             if (contextVersionRef.current !== version) return
-            setAnswerProgress(progress)
-            answerProgressTrailRef.current = answerProgressTrailRef.current.at(-1)?.stage === progress.stage
-              ? [...answerProgressTrailRef.current.slice(0, -1), progress]
-              : [...answerProgressTrailRef.current, progress]
-            setAnswerProgressTrail(answerProgressTrailRef.current)
+            recordProgress(progress)
           },
-          onDelta: (delta) => {
+          onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
             streamedAnswerRef.current += delta
             setStreamedAnswer(streamedAnswerRef.current)
+            if (requestedSkillId === 'SOLUTION_DRAFT') await yieldSolutionStreamPaint()
+          },
+          onRunStarted: (run) => {
+            if (contextVersionRef.current !== version || !run || typeof run !== 'object') return
+            const payload = run as Record<string, unknown>
+            const runId = typeof payload.runId === 'string'
+              ? payload.runId
+              : typeof payload.run_id === 'string'
+                ? payload.run_id
+                : undefined
+            if (!runId) return
+            currentRunIdRef.current = runId
+            setCurrentRunId(runId)
+          },
+          onDraft: (value) => {
+            if (contextVersionRef.current !== version) return
+            if (value && typeof value === 'object') {
+              recordProgress({ stage: 'COMPOSING', message: '方案草稿已生成，正在整理结果' })
+            }
+          },
+          onInterrupt: (value) => {
+            if (contextVersionRef.current !== version) return
+            const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+            const question = typeof payload.question === 'string' && payload.question.trim()
+              ? payload.question.trim()
+              : '请补充方案所需信息'
+            setAgentInterruptQuestion(question)
+            const interruptedRunId = typeof payload.runId === 'string' ? payload.runId : currentRunIdRef.current
+            if (interruptedRunId) {
+              currentRunIdRef.current = interruptedRunId
+              setCurrentRunId(interruptedRunId)
+            }
+            recordProgress({
+              stage: 'WAITING_FOR_INPUT',
+              message: '等待补充方案所需信息',
+              runId: interruptedRunId,
+              status: 'INTERRUPTED',
+            })
           },
         },
       )
       if (contextVersionRef.current !== version) return
-      if (hasCompleteProgressTrail(answerProgressTrailRef.current) && !streamedAnswerRef.current) {
-        pendingAnswerRef.current = result
-        setPendingAnswer(result)
-      } else applyAnswer(result)
+      if (!result) return
+      currentRunIdRef.current = undefined
+      setCurrentRunId(undefined)
+      applyAnswer(result)
     } catch (error) {
       if (contextVersionRef.current !== version) return
       setPendingQuestion(undefined)
-      setAnswerProgress(undefined)
-      setAnswerProgressTrail([])
-      answerProgressTrailRef.current = []
+      setAgentInterruptQuestion(undefined)
       setStreamedAnswer('')
       streamedAnswerRef.current = ''
-      pendingAnswerRef.current = undefined
-      setPendingAnswer(undefined)
+      currentRunIdRef.current = undefined
+      setCurrentRunId(undefined)
       // Upload errors already have a specific inline message next to the
       // attachment. Avoid replacing it with a generic send failure banner.
       if (!isAbortError(error)) {
@@ -618,20 +833,99 @@ export function ChatPage() {
     }
   }
 
+  async function resumeAgentRun() {
+    const answer = draft.trim()
+    const parentRunId = currentRunIdRef.current
+    if (!answer || !parentRunId || mutationLocked || archived || !agentInterruptQuestion) return
+    const version = contextVersionRef.current
+    const abortController = new AbortController()
+    sendAbortControllerRef.current = abortController
+    setSending(true)
+    setDraft('')
+    setStreamedAnswer('')
+    streamedAnswerRef.current = ''
+    setAgentInterruptQuestion(undefined)
+    setErrorText(undefined)
+    try {
+      const resumed = await api<{ run: { runId: string } }>(`/api/chat/runs/${encodeURIComponent(parentRunId)}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({
+          answer,
+          requestId: globalThis.crypto?.randomUUID?.() ?? `resume-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        }),
+        signal: abortController.signal,
+      })
+      if (contextVersionRef.current !== version) return
+      currentRunIdRef.current = resumed.run.runId
+      setCurrentRunId(resumed.run.runId)
+      const result = await streamApi<SendResponse, ProductAnswerProgress>(
+        `/api/chat/runs/${encodeURIComponent(resumed.run.runId)}/events`,
+        { method: 'GET', signal: abortController.signal },
+        {
+          onProgress: (progress) => {
+            if (contextVersionRef.current !== version) return
+            recordProgress(progress)
+          },
+          onRunStarted: (run) => {
+            const payload = run && typeof run === 'object' ? run as Record<string, unknown> : {}
+            const nextRunId = typeof payload.runId === 'string' ? payload.runId : undefined
+            if (nextRunId) {
+              currentRunIdRef.current = nextRunId
+              setCurrentRunId(nextRunId)
+            }
+          },
+          onDelta: async (delta) => {
+            if (contextVersionRef.current !== version) return
+            streamedAnswerRef.current += delta
+            setStreamedAnswer(streamedAnswerRef.current)
+            await yieldSolutionStreamPaint()
+          },
+          onDraft: () => recordProgress({ stage: 'COMPOSING', message: '方案草稿已生成，正在整理结果' }),
+          onInterrupt: (value) => {
+            if (contextVersionRef.current !== version) return
+            const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+            setAgentInterruptQuestion(typeof payload.question === 'string' ? payload.question : '请补充方案所需信息')
+            recordProgress({
+              stage: 'WAITING_FOR_INPUT',
+              message: '等待补充方案所需信息',
+              runId: currentRunIdRef.current,
+              status: 'INTERRUPTED',
+            })
+          },
+        },
+      )
+      if (contextVersionRef.current !== version || !result) return
+      applyAnswer(result)
+    } catch (error) {
+      if (contextVersionRef.current !== version) return
+      if (!isAbortError(error)) {
+        setErrorText(error instanceof ApiError ? error.message : '方案继续生成失败，请重试')
+      }
+    } finally {
+      if (sendAbortControllerRef.current === abortController) sendAbortControllerRef.current = undefined
+      if (contextVersionRef.current === version) setSending(false)
+    }
+  }
+
   function stopSending() {
     if (!sending) return
+    const runId = currentRunIdRef.current
+    if (runId) {
+      void api(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }).catch(() => undefined)
+    }
     sendAbortControllerRef.current?.abort()
     sendAbortControllerRef.current = undefined
+    currentRunIdRef.current = undefined
+    setCurrentRunId(undefined)
     contextVersionRef.current += 1
     setSending(false)
     setPendingQuestion(undefined)
+    setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
-    pendingAnswerRef.current = undefined
-    setPendingAnswer(undefined)
     setAttachments((current) => current.map((attachment) => (
       attachment.status === 'UPLOADING' ? { ...attachment, status: 'PENDING' } : attachment
     )))
@@ -763,6 +1057,24 @@ export function ChatPage() {
           return next
         })
       }
+    }
+  }
+
+  async function updateSolutionDraft(draftId: string, patch: SolutionDraftEditRequest) {
+    try {
+      const response = await api<{ draft: NonNullable<ProductMessage['solutionDraft']> }>(
+        `/api/chat/solution-drafts/${encodeURIComponent(draftId)}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      )
+      setMessages((current) => current.map((message) => (
+        message.solutionDraft?.id === draftId
+          ? { ...message, solutionDraft: response.draft, content: response.draft.executiveSummary }
+          : message
+      )))
+      showToast('方案草稿已保存为新版本')
+    } catch {
+      setErrorText('方案草稿保存失败，请重试')
+      throw new Error('SOLUTION_DRAFT_SAVE_FAILED')
     }
   }
 
@@ -1011,7 +1323,7 @@ export function ChatPage() {
                     disabled={switchLocked}
                     onClick={() => void selectConversation(item)}
                   >
-                    {item.title}
+                    {item.title || FALLBACK_CONVERSATION_TITLE}
                   </button>
                 </li>
               ))}
@@ -1023,7 +1335,11 @@ export function ChatPage() {
             </ul>
           </aside>
 
-          <main className={`chat-main${showEmptyState ? ' chat-main-empty' : ''}`} {...sourceBackgroundProps}>
+          <main
+            className={`chat-main${showEmptyState ? ' chat-main-empty' : ''}`}
+            data-agent-run-id={currentRunId}
+            {...sourceBackgroundProps}
+          >
             <div className="chat-utility-actions">
               <button
                 ref={conversationTriggerRef}
@@ -1068,6 +1384,7 @@ export function ChatPage() {
                   <MessageThread
                     messages={messages}
                     pendingQuestion={pendingQuestion}
+                    agentInterruptQuestion={agentInterruptQuestion}
                     answerProgress={answerProgress}
                     answerProgressTrail={answerProgressTrail}
                     streamedAnswer={streamedAnswer}
@@ -1076,19 +1393,19 @@ export function ChatPage() {
                     onCitation={(item, trigger) => void openCitation(item, trigger)}
                     feedbackPendingIds={feedbackPendingIds}
                     feedbackDisabled={archived}
-                    onProgressPlaybackComplete={finishProgressPlayback}
                     onFeedback={(messageId, rating, reasonType, reasonText) => (
                       void updateFeedback(messageId, rating, reasonType, reasonText)
                     )}
                     onMaterialPreview={openMaterialPreview}
                     onMaterialDownload={(material) => void downloadMaterial(material)}
                     onMaterialDistribute={openMaterialDistribution}
+                    onDraftSave={updateSolutionDraft}
                   />
                 ) : (
                   <div className="chat-empty prototype-home" aria-label="新对话引导">
                     <div className="prototype-hero">
                       <span className="prototype-eyebrow">统一对话入口 · 企业知识助手</span>
-                      <h2>让每一次售前准备，<em>都从一个对话开始。</em></h2>
+                      <h2>让每一次工作协作，<em>都从一个对话开始。</em></h2>
                     </div>
                     <div className="prototype-default-skill">
                       <span className="prototype-default-skill-icon"><MessageCircle aria-hidden="true" size={17} /></span>
@@ -1174,7 +1491,7 @@ export function ChatPage() {
                 showModeSwitch={false}
                 sending={sending}
                 onStop={stopSending}
-                onSubmit={() => void send()}
+                onSubmit={() => void (agentInterruptQuestion ? resumeAgentRun() : send())}
               />
             </div>
             {toastText ? <div className="chat-toast" role="status">{toastText}</div> : null}

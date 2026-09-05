@@ -26,6 +26,7 @@ export interface AddMessageInput {
   sessionAssetIds?: string[]
   materialIds?: string[]
   skillId?: ConversationSkillId
+  solutionDraftId?: string
   answerOverride?: AnswerPayload
 }
 
@@ -243,6 +244,13 @@ function buildAnswer(snapshot: PlatformSnapshot, conversation: Conversation, que
   }
 }
 
+export const FALLBACK_CONVERSATION_TITLE = '未命名会话'
+
+export function displayConversationTitle(title: unknown) {
+  const value = typeof title === 'string' ? title.trim() : ''
+  return value || FALLBACK_CONVERSATION_TITLE
+}
+
 function conversationTitle(text: string) {
   const value = text.trim().replace(/\s+/gu, ' ')
   return value ? value.slice(0, 40) : '新对话'
@@ -255,6 +263,7 @@ export class ConversationService {
     const snapshot = await this.repository.read()
     return snapshot.conversations
       .filter((conversation) => conversation.userId === snapshot.session.userId)
+      .map((conversation) => ({ ...conversation, title: displayConversationTitle(conversation.title) }))
       .sort((left, right) => right.lastActiveAt.localeCompare(left.lastActiveAt))
   }
 
@@ -296,7 +305,7 @@ export class ConversationService {
     const sessionAssetIds = new Set(conversation.sessionAssetIds)
     const sessionAssets = snapshot.assets.filter((asset) => sessionAssetIds.has(asset.id)
       && asset.ownerId === conversation.userId && asset.isSessionAsset)
-    return { conversation, messages, sessionAssets }
+    return { conversation: { ...conversation, title: displayConversationTitle(conversation.title) }, messages, sessionAssets }
   }
 
   async addMessage(id: string, input: AddMessageInput) {
@@ -335,11 +344,12 @@ export class ConversationService {
         ...(input.skillId ? { skillId: input.skillId } : {}),
         answerStatus: answer.confidence,
         ...(input.materialIds?.length ? { materialIds: [...new Set(input.materialIds)] } : {}),
+        ...(input.solutionDraftId ? { solutionDraftId: input.solutionDraftId } : {}),
         citations: answer.citations, createdAt: now(),
       }
       draft.messages.push(userMessage, assistantMessage)
       return {
-        conversation: structuredClone(target),
+        conversation: structuredClone({ ...target, title: displayConversationTitle(target.title) }),
         userMessage: structuredClone(userMessage),
         message: structuredClone(assistantMessage),
         answer,

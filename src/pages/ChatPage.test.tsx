@@ -154,7 +154,7 @@ describe('ChatPage product workspace', () => {
     const productHeading = await screen.findByRole('heading', { level: 1, name: '企业知识助手' })
     expect(productHeading).toBeInTheDocument()
     expect(productHeading.closest('.assistant-brand')?.querySelector('img')).toHaveAttribute('src', '/quickdone-mark.webp')
-    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
     expect(screen.getByText('统一对话入口 · 企业知识助手')).toBeInTheDocument()
     expect(screen.getByText('默认能力 · 直接问答')).toBeInTheDocument()
     expect(screen.getByText('需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。')).toBeInTheDocument()
@@ -248,12 +248,30 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
   })
 
+  it('shows a fallback label when a historical conversation has no title', async () => {
+    const unnamedConversation: ProductConversation = {
+      ...conversationA,
+      id: 'CVS-EMPTY-TITLE',
+      title: '  ',
+      updatedAt: '2026-08-12T02:00:00.000Z',
+    }
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [unnamedConversation] })
+      if (path === '/api/chat/conversations/CVS-EMPTY-TITLE') return jsonResponse(detail(unnamedConversation))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await screen.findByText('原有回答')
+    expect(screen.getByRole('button', { name: '未命名会话' })).toBeInTheDocument()
+  })
+
   it('fills the composer with an example question and keeps detailed mode implicit', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     await user.click(screen.getByRole('button', { name: '投标一体机定价体系' }))
 
     expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('投标一体机定价体系')
@@ -265,7 +283,7 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' })
     await user.type(textbox, '@查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
@@ -282,7 +300,7 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' })
     await user.type(textbox, '请帮我 @查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
@@ -295,7 +313,7 @@ describe('ChatPage product workspace', () => {
     emptyWorkspaceFetch()
     render(<ChatPage />)
 
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const textbox = screen.getByRole('textbox', { name: '问题' }) as HTMLTextAreaElement
     await user.type(textbox, '@查')
     await user.click(screen.getByRole('option', { name: /@查资料/u }))
@@ -344,17 +362,14 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
     expect(await screen.findByText('已找到相关资料。')).toBeInTheDocument()
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/chat/conversations/${createdConversation.id}/messages/stream`,
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          content: '@查资料 找产品说明',
-          mode: 'DETAILED',
-          skillId: 'MATERIAL_SEARCH',
-        }),
-      }),
-    )
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === `/api/chat/conversations/${createdConversation.id}/messages/stream` && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '@查资料 找产品说明',
+      mode: 'DETAILED',
+      skillId: 'MATERIAL_SEARCH',
+    })
   })
 
   it('blocks mutations during initial loading and ignores the response after starting a new conversation', async () => {
@@ -378,7 +393,7 @@ describe('ChatPage product workspace', () => {
       await pendingWorkspace
     })
 
-    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/chat/conversations/CVS-A', expect.anything())
   })
 
@@ -395,7 +410,7 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
     expect(screen.queryByText('原有回答')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })).toBeInTheDocument()
   })
 
   it('restores material cards in an existing chat without changing the ordinary conversation flow', async () => {
@@ -524,7 +539,7 @@ describe('ChatPage product workspace', () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const trigger = screen.getByRole('button', { name: '打开对话列表' })
 
     expect(trigger).toHaveAttribute('aria-controls', 'conversation-sidebar')
@@ -574,10 +589,13 @@ describe('ChatPage product workspace', () => {
       method: 'POST',
       body: JSON.stringify({}),
     }))
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ content: '上线条件是什么？', mode: 'DETAILED' }),
-    }))
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '上线条件是什么？',
+      mode: 'DETAILED',
+    })
   })
 
   it('sends the selected detailed answer mode', async () => {
@@ -600,13 +618,15 @@ describe('ChatPage product workspace', () => {
     await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      '/api/chat/conversations/CVS-A/messages/stream',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ content: '给出完整实施说明', mode: 'DETAILED' }),
-      }),
-    ))
+    await waitFor(() => {
+      const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+        path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+      ))
+      expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+        content: '给出完整实施说明',
+        mode: 'DETAILED',
+      })
+    })
   })
 
   it('uploads selected files before sending the question and includes their ids', async () => {
@@ -644,14 +664,14 @@ describe('ChatPage product workspace', () => {
     expect(uploadCall).toBeDefined()
     expect(uploadCall?.[1]?.body).toBeInstanceOf(FormData)
     expect((uploadCall?.[1]?.body as FormData).get('file')).toBeInstanceOf(File)
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/CVS-A/messages/stream', expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({
-        content: '请结合方案回答',
-        mode: 'DETAILED',
-        attachmentIds: ['ATT-1'],
-      }),
-    }))
+    const streamCall = fetchMock.mock.calls.find(([path, init]) => (
+      path === '/api/chat/conversations/CVS-A/messages/stream' && init?.method === 'POST'
+    ))
+    expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
+      content: '请结合方案回答',
+      mode: 'DETAILED',
+      attachmentIds: ['ATT-1'],
+    })
   })
 
   it('keeps an attachment and explains the failure when upload is rejected', async () => {
@@ -714,6 +734,7 @@ describe('ChatPage product workspace', () => {
         'event: progress\ndata: {"stage":"UNDERSTANDING","message":"正在结合当前对话理解问题"}\n\n'
         + 'event: progress\ndata: {"stage":"RETRIEVING","message":"正在检索已审核发布的资料"}\n\n'
         + 'event: progress\ndata: {"stage":"VERIFYING","message":"正在核对原文与适用条件"}\n\n'
+        + 'event: progress\ndata: {"stage":"RETRIEVING","message":"核验后正在补充检索资料"}\n\n'
         + 'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理结论和可核验来源"}\n\n'
         + 'event: delta\ndata: {"content":"## 结论\\n\\n支持"}\n\n',
       ))
@@ -722,6 +743,10 @@ describe('ChatPage product workspace', () => {
     expect(await screen.findByRole('heading', { level: 2, name: '结论' })).toBeInTheDocument()
     expect(screen.getByText('支持')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('正在生成')
+    await user.click(screen.getByRole('button', { name: '查看执行过程' }))
+    expect([...document.querySelectorAll('.message-streaming .thinking-step strong')].map((item) => item.textContent)).toEqual([
+      '理解问题', '检索资料', '核对依据', '检索资料', '组织答案',
+    ])
     expect(within(document.querySelector('.message-streaming') as HTMLElement)
       .queryByRole('button', { name: '点赞这条回答' })).not.toBeInTheDocument()
 
@@ -746,9 +771,8 @@ describe('ChatPage product workspace', () => {
     expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)
   })
 
-  it('plays all production progress events before replacing them with the final answer', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  it('applies the final answer immediately after production progress completes', async () => {
+    const user = userEvent.setup()
     const userMessage: ProductMessage = {
       ...priorMessage,
       id: 'MSG-PROGRESS-U',
@@ -779,15 +803,6 @@ describe('ChatPage product workspace', () => {
     await user.type(screen.getByRole('textbox', { name: '问题' }), '什么是智能客服？')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
-    expect(screen.getByText('理解问题').closest('li')).toHaveClass('is-current')
-    expect(screen.queryByText('智能客服是企业服务方案。')).not.toBeInTheDocument()
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('检索资料').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('核对依据').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('组织答案').closest('li')).toHaveClass('is-current')
-    act(() => vi.advanceTimersByTime(600))
     expect(await screen.findByText('智能客服是企业服务方案。')).toBeInTheDocument()
   })
 
@@ -906,8 +921,10 @@ describe('ChatPage product workspace', () => {
     expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
     expect(textbox).toHaveValue('')
     expect(document.querySelector('.message-pending-question')).toHaveTextContent('发送期间保留')
-    expect(screen.getByRole('status', { name: '正在整理答案' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '查看处理详情' })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '执行过程' })).toBeInTheDocument()
+    // Until the first backend progress event arrives, the compact indicator
+    // only says it is preparing; no fictitious execution step is shown.
+    expect(screen.queryByRole('button', { name: '查看执行过程' })).not.toBeInTheDocument()
 
     await act(async () => {
       resolveSend(sseResponse({
@@ -917,7 +934,7 @@ describe('ChatPage product workspace', () => {
       }))
       await pendingSend
     })
-    expect(screen.queryByRole('status', { name: '正在整理答案' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: '执行过程' })).not.toBeInTheDocument()
     expect(document.querySelector('.message-user:not(.message-pending-question)')).toHaveTextContent('发送期间保留')
     expect(screen.getByText('已回答')).toBeInTheDocument()
   })
@@ -950,7 +967,7 @@ describe('ChatPage product workspace', () => {
     expect(requestSignal.aborted).toBe(true)
     expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(screen.queryByRole('status', { name: '正在整理答案' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: '执行过程' })).not.toBeInTheDocument()
 
     await act(async () => {
       resolveSend(sseResponse({
@@ -1245,7 +1262,7 @@ describe('ChatPage product workspace', () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
-    await screen.findByRole('heading', { level: 2, name: '让每一次售前准备，都从一个对话开始。' })
+    await screen.findByRole('heading', { level: 2, name: '让每一次工作协作，都从一个对话开始。' })
     const messageScroll = document.querySelector('.chat-message-scroll') as HTMLDivElement
     const scrollTo = vi.fn()
     Object.defineProperty(messageScroll, 'scrollHeight', { configurable: true, value: 1200 })

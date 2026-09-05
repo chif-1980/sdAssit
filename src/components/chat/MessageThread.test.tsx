@@ -190,15 +190,15 @@ describe('MessageThread', () => {
       messages={[{
         ...firstMessage,
         role: 'ASSISTANT',
-        content: '「做方案 / 汇报」将在第 2 阶段开放。',
-        skillId: 'SOLUTION_DRAFT',
+        content: '「分析会议」将在第 3 阶段开放。',
+        skillId: 'MEETING_ANALYSIS',
         answerStatus: 'INSUFFICIENT',
       }]}
       onCitation={vi.fn()}
     />)
 
-    expect(screen.getByText('「做方案 / 汇报」将在第 2 阶段开放。')).toBeInTheDocument()
-    expect(screen.getByText('第 2 阶段开放')).toBeInTheDocument()
+    expect(screen.getByText('「分析会议」将在第 3 阶段开放。')).toBeInTheDocument()
+    expect(screen.getByText('第 3 阶段开放')).toBeInTheDocument()
   })
 
   it('keeps a material search result message visible when no material matches', () => {
@@ -288,20 +288,20 @@ describe('MessageThread', () => {
     />)
 
     expect(screen.getAllByText('部署前需要准备什么？')).toHaveLength(1)
-    const status = screen.getByRole('status', { name: '正在整理答案' })
+    const status = screen.getByRole('status', { name: '执行过程' })
     expect(status).not.toHaveTextContent('部署前需要准备什么？')
-    expect(within(status).getByText('理解问题')).toBeInTheDocument()
-    expect(within(status).getByText('检索资料')).toBeInTheDocument()
-    expect(within(status).getByText('核对依据')).toBeInTheDocument()
-    expect(within(status).getByText('组织答案')).toBeInTheDocument()
-    const toggle = screen.getByRole('button', { name: '查看处理详情' })
+    expect(status.querySelector('.thinking-summary-copy strong')).toHaveTextContent('理解问题')
+    expect(within(status).queryByText('检索资料')).not.toBeInTheDocument()
+    expect(within(status).queryByText('核对依据')).not.toBeInTheDocument()
+    expect(within(status).queryByText('组织答案')).not.toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: '查看执行过程' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await user.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('正在结合当前对话理解问题')).toBeInTheDocument()
-    expect(screen.getByText('我会优先返回有正式资料支持、并附上出处的答案。')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '收起处理详情' }))
-    expect(screen.getByRole('button', { name: '查看处理详情' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getAllByText('正在结合当前对话理解问题')).toHaveLength(2)
+    expect(screen.getByText('执行过程会随 Agent 的实际动作更新，不会预先展示未执行的阶段。')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '收起执行过程' }))
+    expect(screen.getByRole('button', { name: '查看执行过程' })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('changes stage only from backend progress and explains a longer wait', () => {
@@ -314,8 +314,8 @@ describe('MessageThread', () => {
     />)
 
     act(() => vi.advanceTimersByTime(9_000))
-    expect(screen.getByText('检索资料').closest('li')).toHaveClass('is-current')
-    expect(screen.getByText('组织答案').closest('li')).not.toHaveClass('is-current')
+    expect(document.querySelector('.thinking-step')?.textContent).toContain('检索资料')
+    expect(document.querySelector('.thinking-step')?.textContent).not.toContain('组织答案')
 
     rerender(<MessageThread
       messages={[]}
@@ -323,16 +323,15 @@ describe('MessageThread', () => {
       answerProgress={{ stage: 'COMPOSING', message: '正在整理结论和可核验来源' }}
       onCitation={vi.fn()}
     />)
-    expect(screen.getByText('组织答案').closest('li')).toHaveClass('is-current')
-    expect(screen.getByText('正在整理结论和可核验来源')).toBeInTheDocument()
+    expect(document.querySelector('.thinking-step')?.textContent).toContain('组织答案')
+    expect(document.querySelector('.thinking-summary-copy > span')).toHaveTextContent('正在整理结论和可核验来源')
 
     act(() => vi.advanceTimersByTime(4_000))
-    act(() => screen.getByRole('button', { name: '查看处理详情' }).click())
-    expect(screen.getByText('资料较多，我还在逐条核对来源。这个过程可能需要一点时间。')).toBeInTheDocument()
+    act(() => screen.getByRole('button', { name: '查看执行过程' }).click())
+    expect(screen.getByText('资料较多，我还在逐条核对来源。完成后会显示可编辑的方案草稿。')).toBeInTheDocument()
   })
 
-  it('plays progress events in order when several stages arrive together', () => {
-    vi.useFakeTimers()
+  it('renders the actual action order when the agent returns to retrieval', () => {
     render(<MessageThread
       messages={[]}
       pendingQuestion="查一下部署要求"
@@ -341,22 +340,20 @@ describe('MessageThread', () => {
         { stage: 'UNDERSTANDING', message: '正在结合当前对话理解问题' },
         { stage: 'RETRIEVING', message: '正在检索已审核发布的资料' },
         { stage: 'VERIFYING', message: '正在核对原文与适用条件' },
+        { stage: 'RETRIEVING', message: '核验后正在补充检索资料' },
         { stage: 'COMPOSING', message: '正在整理结论和可核验来源' },
       ]}
       onCitation={vi.fn()}
     />)
 
-    expect(screen.getByText('理解问题').closest('li')).toHaveClass('is-current')
-    expect(screen.getByText('组织答案').closest('li')).not.toHaveClass('is-current')
-
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('检索资料').closest('li')).toHaveClass('is-current')
-
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('核对依据').closest('li')).toHaveClass('is-current')
-
-    act(() => vi.advanceTimersByTime(600))
-    expect(screen.getByText('组织答案').closest('li')).toHaveClass('is-current')
+    const steps = [...document.querySelectorAll('.thinking-step')]
+    expect(steps.map((step) => step.querySelector('strong')?.textContent)).toEqual([
+      '理解问题', '检索资料', '核对依据', '检索资料', '组织答案',
+    ])
+    expect(steps.find((step) => step.textContent?.includes('组织答案'))).toHaveClass('is-current')
+    expect(steps.find((step) => step.textContent?.includes('理解问题'))).toHaveClass('is-complete')
+    expect(steps.filter((step) => step.textContent?.includes('检索资料'))).toHaveLength(2)
+    expect(steps.find((step) => step.textContent?.includes('核对依据'))).toHaveClass('is-complete')
   })
 
   it('replaces the thinking indicator with a temporary streaming Markdown answer', () => {
@@ -371,7 +368,7 @@ describe('MessageThread', () => {
     expect(screen.getByRole('heading', { level: 2, name: '结论' })).toBeInTheDocument()
     expect(screen.getByText(/^支持私有部署/)).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('正在生成')
-    expect(screen.queryByRole('button', { name: '查看处理详情' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看执行过程' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '点赞这条回答' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '查看来源 [1]' })).not.toBeInTheDocument()
     expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)

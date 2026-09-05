@@ -57,4 +57,39 @@ describe('streamApi', () => {
       }))
     vi.unstubAllGlobals()
   })
+
+  it('waits for an async delta callback before processing the next event', async () => {
+    const events: string[] = []
+    let signalStarted!: () => void
+    let releaseFirst!: () => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const firstComplete = new Promise<void>((resolve) => { releaseFirst = resolve })
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([
+      'event: delta\ndata: {"content":"第一段"}\n\n'
+        + 'event: delta\ndata: {"content":"第二段"}\n\n'
+        + 'event: complete\ndata: {"ok":true}\n\n',
+    ])))
+
+    const resultPromise = streamApi<{ ok: boolean }, { stage: string; message: string }>(
+      '/api/stream',
+      { method: 'POST' },
+      {
+        onProgress: vi.fn(),
+        onDelta: async (content) => {
+          events.push(content)
+          if (content === '第一段') {
+            signalStarted()
+            await firstComplete
+          }
+        },
+      },
+    )
+
+    await started
+    expect(events).toEqual(['第一段'])
+    releaseFirst()
+    await expect(resultPromise).resolves.toEqual({ ok: true })
+    expect(events).toEqual(['第一段', '第二段'])
+    vi.unstubAllGlobals()
+  })
 })

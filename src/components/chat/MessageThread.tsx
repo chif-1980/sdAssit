@@ -1,5 +1,5 @@
 import { ThumbsDown, ThumbsUp } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -10,16 +10,19 @@ import type {
   ProductAnswerProgress,
   ProductCitation,
   ProductMessage,
+  SolutionDraftEditRequest,
 } from '../../../shared/api/product.js'
 import type { ProductMaterial } from '../../../shared/api/product.js'
 import { MaterialResultList } from './MaterialResultList'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
+import { SolutionDraftCard } from './SolutionDraftCard'
 
 interface MessageThreadProps {
   messages: ProductMessage[]
   pendingQuestion?: string
+  agentInterruptQuestion?: string
   answerProgress?: ProductAnswerProgress
   answerProgressTrail?: readonly ProductAnswerProgress[]
   streamedAnswer?: string
@@ -28,7 +31,6 @@ interface MessageThreadProps {
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
   feedbackPendingIds?: ReadonlySet<string>
   feedbackDisabled?: boolean
-  onProgressPlaybackComplete?: () => void
   onFeedback?: (
     messageId: string,
     rating: FeedbackRating | null,
@@ -38,6 +40,7 @@ interface MessageThreadProps {
   onMaterialPreview?: (material: ProductMaterial, trigger: HTMLButtonElement) => void
   onMaterialDownload?: (material: ProductMaterial) => void
   onMaterialDistribute?: (material: ProductMaterial) => void
+  onDraftSave?: (draftId: string, patch: SolutionDraftEditRequest) => Promise<void>
 }
 
 const statusLabels: Record<AnswerStatus, string> = {
@@ -180,6 +183,7 @@ interface MessageBubbleProps {
   onMaterialPreview?: MessageThreadProps['onMaterialPreview']
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
+  onDraftSave?: MessageThreadProps['onDraftSave']
 }
 
 function MessageBubble({
@@ -192,6 +196,7 @@ function MessageBubble({
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onDraftSave,
 }: MessageBubbleProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [reasonType, setReasonType] = useState<FeedbackReasonType>(
@@ -244,26 +249,37 @@ function MessageBubble({
           onCitation={onCitation}
         />
       ) : <p>{message.content}</p>}
+      {message.role === 'ASSISTANT' && message.citations.some((citation) => !citationImageSrc(citation)) ? (
+        <div className="message-citations message-citations-inline" aria-label="回答引用">
+          {message.citations.map((citation, index) => citationImageSrc(citation) ? null : (
+            <button
+              type="button"
+              className="citation-button"
+              key={citation.id}
+              aria-label={`[${index + 1}]`}
+              aria-controls="source-drawer"
+              aria-haspopup="dialog"
+              aria-expanded={citation.id === expandedCitationId}
+              onClick={(event) => onCitation(citation, event.currentTarget)}
+            >
+              [{index + 1}]
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {message.role === 'ASSISTANT' && message.materials?.length ? (
+        <MaterialResultList
+          materials={message.materials}
+          onPreview={(material, trigger) => onMaterialPreview?.(material, trigger)}
+          onDownload={(material) => onMaterialDownload?.(material)}
+          onDistribute={(material) => onMaterialDistribute?.(material)}
+        />
+      ) : null}
+      {message.role === 'ASSISTANT' && message.solutionDraft ? (
+        <SolutionDraftCard draft={message.solutionDraft} onSave={onDraftSave ? (patch) => onDraftSave(message.solutionDraft!.id, patch) : undefined} />
+      ) : null}
       {message.role === 'ASSISTANT' ? (
         <div className="message-footer">
-          {message.citations.some((citation) => !citationImageSrc(citation)) ? (
-            <div className="message-citations" aria-label="回答引用">
-              {message.citations.map((citation, index) => citationImageSrc(citation) ? null : (
-                <button
-                  type="button"
-                  className="citation-button"
-                  key={citation.id}
-                  aria-label={`[${index + 1}]`}
-                  aria-controls="source-drawer"
-                  aria-haspopup="dialog"
-                  aria-expanded={citation.id === expandedCitationId}
-                  onClick={(event) => onCitation(citation, event.currentTarget)}
-                >
-                  [{index + 1}]
-                </button>
-              ))}
-            </div>
-          ) : null}
           <div className="message-feedback" aria-label="回答反馈">
             <button
               type="button"
@@ -320,14 +336,6 @@ function MessageBubble({
           ) : null}
         </div>
       ) : null}
-      {message.role === 'ASSISTANT' && message.materials?.length ? (
-        <MaterialResultList
-          materials={message.materials}
-          onPreview={(material, trigger) => onMaterialPreview?.(material, trigger)}
-          onDownload={(material) => onMaterialDownload?.(material)}
-          onDistribute={(material) => onMaterialDistribute?.(material)}
-        />
-      ) : null}
     </article>
   )
 }
@@ -343,6 +351,7 @@ function MessagePairBlock({
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onDraftSave,
 }: {
   pair: MessagePair
   highlighted: boolean
@@ -354,6 +363,7 @@ function MessagePairBlock({
   onMaterialPreview?: MessageThreadProps['onMaterialPreview']
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
+  onDraftSave?: MessageThreadProps['onDraftSave']
 }) {
   return (
     <div
@@ -361,8 +371,8 @@ function MessagePairBlock({
       data-message-pair={pair.id}
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
-      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} /> : null}
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} /> : null}
     </div>
   )
 }
@@ -370,6 +380,7 @@ function MessagePairBlock({
 export function MessageThread({
   messages,
   pendingQuestion,
+  agentInterruptQuestion,
   answerProgress,
   answerProgressTrail,
   streamedAnswer,
@@ -378,18 +389,15 @@ export function MessageThread({
   onCitation,
   feedbackPendingIds,
   feedbackDisabled = false,
-  onProgressPlaybackComplete,
   onFeedback,
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onDraftSave,
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
   const pairs = groupMessagePairs(messages)
-  const handleProgressPlaybackComplete = useCallback(() => {
-    onProgressPlaybackComplete?.()
-  }, [onProgressPlaybackComplete])
 
   useEffect(() => {
     const end = endRef.current
@@ -411,6 +419,7 @@ export function MessageThread({
           onMaterialPreview={onMaterialPreview}
           onMaterialDownload={onMaterialDownload}
           onMaterialDistribute={onMaterialDistribute}
+          onDraftSave={onDraftSave}
         />
       ))}
       {pendingQuestion ? (
@@ -419,20 +428,27 @@ export function MessageThread({
             <div className="message-role">你</div>
             <p>{pendingQuestion}</p>
           </article>
-          {streamedAnswer ? (
-            <article className="message-bubble message-assistant message-streaming" aria-live="polite">
-              <div className="message-streaming-heading">
-                <div className="message-role">助手</div>
-                <span className="message-streaming-status" role="status">正在生成</span>
-              </div>
-              <AssistantMarkdown content={streamedAnswer} citations={[]} onCitation={onCitation} />
+          {agentInterruptQuestion ? (
+            <article className="message-bubble message-assistant message-agent-interrupt" role="status">
+              <div className="message-role">助手</div>
+              <p>为了继续生成方案，请补充：</p>
+              <p>{agentInterruptQuestion}</p>
             </article>
           ) : (
-            <ThinkingIndicator
-              progress={answerProgress}
-              progressTrail={answerProgressTrail}
-              onPlaybackComplete={handleProgressPlaybackComplete}
-            />
+            <article className={`message-bubble message-assistant message-pending${streamedAnswer ? ' message-streaming' : ''}`}>
+              <div className="message-role">助手</div>
+              <ThinkingIndicator
+                progress={answerProgress}
+                progressTrail={answerProgressTrail}
+                streaming={Boolean(streamedAnswer)}
+              />
+              {streamedAnswer ? (
+                <div className="message-streaming-body" aria-live="polite">
+                  <span className="message-streaming-status" role="status">正在生成预览</span>
+                  <AssistantMarkdown content={streamedAnswer} citations={[]} onCitation={onCitation} />
+                </div>
+              ) : null}
+            </article>
           )}
         </>
       ) : null}

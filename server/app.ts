@@ -21,14 +21,25 @@ const badRequestCodes = new Set([
   'ASSIGNEE_NOT_FOUND',
   'INVALID_APPLICABILITY_SCOPE',
   'ATTACHMENTS_NOT_AVAILABLE',
+  'ATTACHMENT_TOO_LARGE',
   'CHANNEL_NOT_AVAILABLE',
 ])
 
 function classifyError(error: unknown) {
+  const errorRecord = typeof error === 'object' && error !== null ? error as Record<string, unknown> : undefined
+  const explicitStatus = typeof errorRecord?.status === 'number' ? errorRecord.status : undefined
+  const explicitCode = typeof errorRecord?.code === 'string' ? errorRecord.code : undefined
   const statusCode = typeof error === 'object' && error !== null
     && 'statusCode' in error && typeof error.statusCode === 'number'
     ? error.statusCode
     : undefined
+
+  if (explicitStatus !== undefined && explicitStatus >= 400 && explicitStatus < 600 && explicitCode) {
+    return { code: explicitCode, status: explicitStatus }
+  }
+  if (explicitCode?.startsWith('YUXI_')) {
+    return { code: explicitCode, status: explicitStatus ?? 503 }
+  }
 
   if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
     if (statusCode === 403) return { code: 'FORBIDDEN', status: 403 }
@@ -79,12 +90,20 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
 
   app.setErrorHandler((error, _request, reply) => {
     const { code, status } = classifyError(error)
+    const value = error && typeof error === 'object' ? error as Record<string, unknown> : {}
+    const message = typeof value.code === 'string' && typeof value.status === 'number'
+      && error instanceof Error && error.message && error.message !== code
+      ? error.message
+      : code
+    const details = value.details && typeof value.details === 'object' ? value.details : {}
 
     reply.status(status).send({
       error: {
         code,
-        message: code,
-        details: {},
+        message,
+        details,
+        ...(typeof value.runId === 'string' ? { runId: value.runId } : {}),
+        ...(typeof value.retryable === 'boolean' ? { retryable: value.retryable } : {}),
       },
     })
   })
