@@ -268,6 +268,9 @@ export interface ClarificationQuestionOption {
 export interface ClarificationQuestion {
   id: string
   question: string
+  intent?: string
+  domain?: string
+  confidence?: number
   type: ClarificationQuestionType
   options: ClarificationQuestionOption[]
   required: boolean
@@ -386,6 +389,8 @@ export interface SolutionDraft {
   assumptions: string[]
   openQuestions: string[]
   clarificationQuestions?: ClarificationQuestion[]
+  /** Questions already answered in an interactive confirmation round. */
+  clarificationQuestionsResolved?: boolean
   risks: string[]
   conflicts: ConflictItem[]
   evidenceGaps: string[]

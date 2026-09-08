@@ -8,11 +8,18 @@ import type { Asset, Conversation, Knowledge, PlatformSnapshot } from '../../sha
 import { JsonRepository } from '../adapters/jsonRepository.js'
 import { buildApp } from '../app.js'
 import { imageCitationFromText } from '../application/conversationService.js'
-import { createAgentSolutionDraft } from '../application/solutionDraftService.js'
+import { clarificationQuestionForRequest, createAgentSolutionDraft, createLocalSolutionDraft } from '../application/solutionDraftService.js'
 import {
   buildSolutionResumeContent,
+  collectLocalQuestionAnswers,
   createSolutionStreamState,
   normalizeYuxiInterrupt,
+  recoverRemoteSolutionRequest,
+  normalizeLocalResumeValue,
+  resumeDisplayAnswer,
+  resumeDisplayValue,
+  resumeAnswerEntries,
+  validateRemoteResumeAnswers,
   solutionSafeStreamDelta,
   splitSolutionStreamText,
 } from '../routes/productChatRoutes.js'
@@ -106,6 +113,114 @@ describe('Product chat compatibility API', () => {
     )
   })
 
+  it('does not create a compatibility clarification when the request already fixes the deployment mode', () => {
+    expect(clarificationQuestionForRequest('为轨交集团设计私有化部署方案')).toBeUndefined()
+    expect(clarificationQuestionForRequest('为企业客户设计方案')).toMatchObject({ id: 'DEPLOYMENT_MODE' })
+
+    const draft = createLocalSolutionDraft(
+      seedSnapshot(),
+      'CONV-EXPLICIT-DEPLOYMENT',
+      '为轨交集团设计私有化部署方案',
+      [],
+      'RUN-EXPLICIT-DEPLOYMENT',
+      undefined,
+      true,
+    )
+    expect(draft.clarificationQuestions).toEqual([])
+  })
+
+  it('keeps a compatibility clarification when knowledge citations exist but a key dimension is still missing', () => {
+    const snapshot = seedSnapshot()
+    snapshot.knowledge.push(enterpriseKnowledge())
+    snapshot.assets.push(enterpriseAsset())
+
+    const draft = createLocalSolutionDraft(
+      snapshot,
+      'CONV-CITED-CLARIFICATION',
+      '请为宠物用品微信小程序设计商城方案',
+      [],
+      'RUN-CITED-CLARIFICATION',
+      undefined,
+      true,
+    )
+
+    expect(draft.citations.length).toBeGreaterThan(0)
+    expect(draft.openQuestions).toEqual(['这份方案主要面向哪类客户？'])
+    expect(draft.clarificationQuestions).toMatchObject([{
+      id: 'CUSTOMER_TYPE',
+      question: '这份方案主要面向哪类客户？',
+      type: 'SINGLE_CHOICE',
+    }])
+  })
+
+  it('collects batch resume answers by question id and keeps pending questions blocked', () => {
+    const run = {
+      runId: 'local-batch',
+      conversationId: 'CONV-BATCH',
+      status: 'WAITING_FOR_INPUT' as const,
+      events: [],
+      questions: [
+        {
+          id: 'SCOPE', question: '首期范围？', type: 'SINGLE_CHOICE' as const,
+          options: [{ id: 'MVP', label: 'MVP' }], required: true, allowSkip: true, position: 1, total: 2,
+        },
+        {
+          id: 'DEPLOYMENT', question: '部署方式？', type: 'SINGLE_CHOICE' as const,
+          options: [{ id: 'PRIVATE', label: '私有化' }], required: true, allowSkip: true, position: 2, total: 2,
+        },
+      ],
+      answers: [],
+    }
+    const partial = collectLocalQuestionAnswers(run, {
+      answer: { DEPLOYMENT: 'PRIVATE', SCOPE: 'MVP' },
+      questionId: 'SCOPE',
+      action: 'answer',
+    })
+    expect(partial.pending).toHaveLength(0)
+    expect(partial.answers.map((item) => item.questionId)).toEqual(['SCOPE', 'DEPLOYMENT'])
+    expect(normalizeLocalResumeValue(['私有化', '国产化'])).toBe('私有化、国产化')
+
+    const nextRun = { ...run, answers: [{ questionId: 'SCOPE', value: 'MVP', action: 'answer' as const }] }
+    const remaining = collectLocalQuestionAnswers(nextRun, {
+      answer: 'PRIVATE', questionId: 'DEPLOYMENT', action: 'answer',
+    })
+    expect(remaining.pending).toHaveLength(0)
+
+    const repeated = collectLocalQuestionAnswers(nextRun, {
+      answer: 'FULL', questionId: 'SCOPE', action: 'answer',
+    })
+    expect(repeated.answers).toEqual([{ questionId: 'SCOPE', value: 'FULL', action: 'answer' }])
+  })
+
+  it('treats explicit skip markers in a batch as skipped decisions', () => {
+    const run = {
+      runId: 'local-skip-batch',
+      conversationId: 'CONV-SKIP-BATCH',
+      status: 'WAITING_FOR_INPUT' as const,
+      events: [],
+      questions: [
+        {
+          id: 'SCOPE', question: '首期范围？', type: 'SINGLE_CHOICE' as const,
+          options: [{ id: 'MVP', label: 'MVP' }], required: true, allowSkip: true, position: 1, total: 2,
+        },
+        {
+          id: 'DEPLOYMENT', question: '部署方式？', type: 'SINGLE_CHOICE' as const,
+          options: [{ id: 'PRIVATE', label: '私有化' }], required: true, allowSkip: true, position: 2, total: 2,
+        },
+      ],
+      answers: [],
+    }
+    const collected = collectLocalQuestionAnswers(run, {
+      answer: { SCOPE: '（用户暂不确定）', DEPLOYMENT: 'PRIVATE' },
+      action: 'answer',
+    })
+    expect(collected.pending).toHaveLength(0)
+    expect(collected.answers).toEqual([
+      { questionId: 'SCOPE', action: 'skip' },
+      { questionId: 'DEPLOYMENT', value: 'PRIVATE', action: 'answer' },
+    ])
+  })
+
   it('normalizes interrupt envelopes from LangGraph adapters', () => {
     expect(normalizeYuxiInterrupt({ payload: { chunk: { questions: [{
       question_id: 'DEPLOYMENT',
@@ -135,6 +250,137 @@ describe('Product chat compatibility API', () => {
       question: '请确认交付范围',
       type: 'TEXT',
     })
+  })
+
+  it('preserves a complete batch of clarification questions for one resume', () => {
+    expect(normalizeYuxiInterrupt({
+      payload: {
+        chunk: {
+          questions: [
+            { question_id: 'SCOPE', question: '首期范围？', options: [{ value: 'MVP', label: 'MVP' }] },
+            { question_id: 'DEPLOYMENT', question: '部署方式？', options: [{ value: 'PRIVATE', label: '私有化' }] },
+          ],
+        },
+      },
+    })).toMatchObject({
+      questionId: 'SCOPE',
+      question: '首期范围？',
+      total: 2,
+      questions: [
+        expect.objectContaining({ questionId: 'SCOPE', position: 1, total: 2 }),
+        expect.objectContaining({ questionId: 'DEPLOYMENT', position: 2, total: 2 }),
+      ],
+    })
+  })
+
+  it('deduplicates repeated remote interrupt questions and recomputes batch positions', () => {
+    const interrupt = normalizeYuxiInterrupt({
+      questions: [
+        { question_id: 'SCOPE', question: '首期  范围？' },
+        // Same id, different rendering: keep the first occurrence.
+        { question_id: 'SCOPE', question: '首期范围（重复）？' },
+        // Different id, whitespace-only text variation: still the same item
+        // under the browser's normalized-text rule.
+        { question_id: 'SCOPE_ALIAS', question: '首期   范围？' },
+        { question_id: 'DEPLOYMENT', question: '部署方式？' },
+      ],
+    })
+
+    expect(interrupt?.questions).toMatchObject([
+      expect.objectContaining({ questionId: 'SCOPE', position: 1, total: 2 }),
+      expect.objectContaining({ questionId: 'DEPLOYMENT', position: 2, total: 2 }),
+    ])
+    expect(interrupt?.questions).toHaveLength(2)
+    expect(interrupt?.questionId).toBe('SCOPE')
+
+    const validation = validateRemoteResumeAnswers(
+      (interrupt?.questions ?? []).map((question) => ({
+        id: question.questionId ?? question.id ?? '',
+        required: question.required,
+        allowSkip: question.allowSkip,
+      })),
+      { answer: { SCOPE: 'MVP', DEPLOYMENT: 'PRIVATE' }, action: 'answer' },
+    )
+    expect(validation).toMatchObject({ valid: true })
+  })
+
+  it('rejects a remote batch resume until every question has an explicit decision', () => {
+    const questions = [
+      { id: 'SCOPE', required: true, allowSkip: true },
+      { id: 'DEPLOYMENT', required: true, allowSkip: true },
+      { id: 'BUDGET', required: false, allowSkip: true },
+    ]
+    const partial = validateRemoteResumeAnswers(questions, {
+      answer: { SCOPE: 'MVP' },
+      action: 'answer',
+    })
+    expect(partial).toEqual({
+      valid: false,
+      code: 'QUESTIONS_INCOMPLETE',
+      missingQuestionIds: ['DEPLOYMENT', 'BUDGET'],
+    })
+
+    const complete = validateRemoteResumeAnswers(questions, {
+      answer: {
+        SCOPE: 'MVP',
+        DEPLOYMENT: { value: 'PRIVATE', action: 'answer' },
+        BUDGET: '（用户暂不确定）',
+      },
+      action: 'answer',
+    })
+    expect(complete).toMatchObject({ valid: true })
+    if (complete.valid) {
+      expect(complete.entries.map((entry) => [entry.questionId, entry.action])).toEqual([
+        ['SCOPE', 'answer'],
+        ['DEPLOYMENT', 'answer'],
+        ['BUDGET', 'skip'],
+      ])
+    }
+  })
+
+  it('keeps skip permission separate from the allow-other option flag', () => {
+    const disallowed = validateRemoteResumeAnswers(
+      [{ id: 'SCOPE', required: true, allowSkip: false }],
+      { answer: '（用户暂不确定）', action: 'answer' },
+    )
+    expect(disallowed).toEqual({
+      valid: false,
+      code: 'QUESTION_NOT_SKIPPABLE',
+      invalidQuestionIds: ['SCOPE'],
+    })
+    expect(resumeAnswerEntries({ answer: '', action: 'skip' })).toEqual([
+      { questionId: undefined, value: '', action: 'skip' },
+    ])
+  })
+
+  it('renders remote resume option ids as labels and keeps custom text intact', () => {
+    const interrupt = {
+      questionId: 'SCOPE',
+      question: '本次建设范围？',
+      options: [
+        { id: 'confirmed', label: '已确定' },
+        { id: 'other', label: '其他情况' },
+      ],
+      questions: [
+        {
+          questionId: 'SCOPE',
+          question: '本次建设范围？',
+          options: [{ id: 'confirmed', label: '已确定' }, { id: 'other', label: '其他情况' }],
+        },
+        {
+          questionId: 'DEPLOYMENT',
+          question: '部署方式？',
+          options: [{ id: 'PRIVATE', label: '私有化部署' }],
+        },
+      ],
+    }
+    expect(resumeDisplayValue('CONFIRMED', interrupt)).toBe('已确定')
+    expect(resumeDisplayAnswer({ answer: { SCOPE: 'confirmed', DEPLOYMENT: 'PRIVATE' }, action: 'answer' }, interrupt)).toBe(
+      '本次建设范围？：已确定\n部署方式？：私有化部署',
+    )
+    expect(resumeDisplayAnswer({ answer: 'please use admin for this area', action: 'answer' }, interrupt)).toBe(
+      'please use admin for this area',
+    )
   })
 
   it('accepts only safe same-origin public image references', () => {
@@ -392,7 +638,16 @@ describe('Product chat compatibility API', () => {
         confidenceSummary: { enterpriseCoverage: 0, evidenceCoverage: 0 },
       },
     })
-    expect(sent.json().assistantMessage.content).toContain('草稿状态：BLOCKED')
+    const assistant = sent.json().assistantMessage
+    expect(assistant.content).toContain('草稿状态：BLOCKED')
+    expect(assistant.content).toContain('执行摘要')
+    expect(assistant.content).toContain('需求与范围')
+    expect(assistant.solutionDraft.executiveSummary).toBeTruthy()
+    expect(assistant.solutionDraft.sections).toHaveLength(5)
+    expect(assistant.solutionDraft.sections.every((section: { contentMarkdown: string }) => section.contentMarkdown.trim())).toBe(true)
+    expect(assistant.solutionDraft.clarificationQuestions).toEqual([
+      expect.objectContaining({ id: 'DEPLOYMENT_MODE', type: 'SINGLE_CHOICE', allowSkip: true }),
+    ])
   })
 
   it('pauses a local solution run for confirmation, resumes idempotently and persists its trace', async () => {
@@ -506,6 +761,184 @@ describe('Product chat compatibility API', () => {
     expect(draft.citations[0].sourceUrl).toBe('https://feishu.cn/docx/product-1')
     expect(draft.quality).not.toHaveProperty('confidenceSummary')
     expect(draft.confidenceSummary).toMatchObject({ evidenceCoverage: 1 })
+  })
+
+  it('recovers remote resume context from both snake_case and camelCase Yuxi DTOs', () => {
+    expect(recoverRemoteSolutionRequest({
+      run_type: 'initial',
+      conversation_thread_id: 'product-CONV-SNAKE',
+      input_content: '设计投标方案',
+      request_id: 'req-snake',
+      input_metadata: {
+        attachment_file_ids: ['file-1'],
+        agent_invocation_meta: {
+          product_conversation_id: 'CONV-SNAKE',
+          product_attachment_ids: ['product-file-1'],
+        },
+      },
+    })).toEqual({
+      conversationId: 'CONV-SNAKE',
+      inputContent: '设计投标方案',
+      attachmentIds: ['product-file-1'],
+      requestId: 'req-snake',
+    })
+
+    expect(recoverRemoteSolutionRequest({
+      runType: 'initial',
+      conversationThreadId: 'product-CONV-CAMEL',
+      inputContent: '设计商城方案',
+      requestId: 'req-camel',
+      inputMetadata: JSON.stringify({
+        attachmentFileIds: ['file-2'],
+        agentInvocationMeta: {
+          productConversationId: 'CONV-CAMEL',
+          productAttachmentIds: ['product-file-2'],
+        },
+      }),
+    })).toEqual({
+      conversationId: 'CONV-CAMEL',
+      inputContent: '设计商城方案',
+      attachmentIds: ['product-file-2'],
+      requestId: 'req-camel',
+    })
+  })
+
+  it('does not turn an explicitly requested WeChat mini program into a pending requirement', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-AGENT', 'RUN-EXPLICIT', {
+      title: '宠物用品商城方案',
+      executive_summary: '初稿',
+      requirements: [
+        { id: 'REQ-1', text: '建设宠物用品电子商城微信小程序', source: '原始需求' },
+        { id: 'REQ-2', text: '明确是否建设微信小程序用户端', source: '产品形态推断，待确认' },
+        { id: 'REQ-3', text: '明确客户主体和运营模式', source: '待确认' },
+      ],
+      sections: [],
+      clarification_questions: [{ id: 'Q-1', question: '是否建设微信小程序用户端？', type: 'SINGLE_CHOICE', options: [] }],
+    }, '宠物用品电子商城，微信小程序')
+
+    expect(draft.requirements.map((item) => item.text)).not.toContain('明确是否建设微信小程序用户端')
+    expect(draft.clarificationQuestions?.map((item) => item.question)).not.toContain('是否建设微信小程序用户端？')
+  })
+
+  it('does not re-ask a clarification already answered in a resumed request', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-RESUMED', 'RUN-RESUMED', {
+      title: '商城方案',
+      executive_summary: '初稿',
+      requirements: [{ id: 'REQ-1', text: '建设商城' }],
+      sections: [],
+      clarification_questions: [
+        {
+          id: 'DEPLOYMENT_MODE',
+          question: '方案预计采用哪种部署方式？',
+          type: 'SINGLE_CHOICE',
+          options: [{ id: 'PRIVATE_DEPLOYMENT', label: '私有化部署' }, { id: 'PUBLIC_CLOUD', label: '公有云部署' }],
+        },
+        {
+          id: 'PAYMENT',
+          question: '是否需要在线支付？',
+          type: 'SINGLE_CHOICE',
+          options: [{ id: 'YES', label: '需要' }, { id: 'NO', label: '不需要' }],
+        },
+      ],
+    }, '建设商城\n\n补充信息：\nDEPLOYMENT_MODE：PRIVATE_DEPLOYMENT')
+
+    expect(draft.clarificationQuestions?.map((item) => item.id)).toEqual(['PAYMENT'])
+  })
+
+  it('projects open_questions into an interactive clarification batch when the Agent omits it', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-OPEN-QUESTIONS', 'RUN-OPEN-QUESTIONS', {
+      title: '宠物商城方案',
+      customer_context: '建设宠物用品商城',
+      executive_summary: '待确认范围后完善方案。',
+      requirements: [{ id: 'REQ-1', text: '建设宠物用品商城' }],
+      open_questions: [
+        '本次是展示型小程序，还是必须支持完整线上销售？',
+        { id: 'DEPLOYMENT', question: '方案采用哪种部署方式？' },
+      ],
+      sections: [
+        { id: 'SEC-1', title: '执行摘要', content_markdown: '摘要' },
+        { id: 'SEC-2', title: '需求与范围', content_markdown: '范围' },
+        { id: 'SEC-3', title: '方案设计', content_markdown: '设计' },
+        { id: 'SEC-4', title: '实施计划', content_markdown: '计划' },
+        { id: 'SEC-5', title: '风险与待确认', content_markdown: '风险' },
+      ],
+    })
+
+    expect(draft.clarificationQuestions?.map((item) => item.question)).toEqual([
+      '本次是展示型小程序，还是必须支持完整线上销售？',
+      '方案采用哪种部署方式？',
+    ])
+    expect(draft.clarificationQuestions?.[0].type).toBe('SINGLE_CHOICE')
+    expect(draft.clarificationQuestions?.[1].options.some((option) => option.id === 'OTHER')).toBe(true)
+  })
+
+  it('does not derive a duplicate question when explicit clarification questions exist', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-EXPLICIT-QUESTIONS', 'RUN-EXPLICIT-QUESTIONS', {
+      title: '商城方案',
+      customer_context: '建设商城',
+      executive_summary: '摘要',
+      open_questions: ['部署方式？'],
+      clarification_questions: [{
+        id: 'DEPLOYMENT', question: '部署方式？', type: 'SINGLE_CHOICE',
+        options: [{ id: 'PRIVATE', label: '私有化部署' }],
+      }],
+      sections: [
+        { id: 'SEC-1', title: '执行摘要', content_markdown: '摘要' },
+        { id: 'SEC-2', title: '需求与范围', content_markdown: '范围' },
+        { id: 'SEC-3', title: '方案设计', content_markdown: '设计' },
+        { id: 'SEC-4', title: '实施计划', content_markdown: '计划' },
+        { id: 'SEC-5', title: '风险与待确认', content_markdown: '风险' },
+      ],
+    })
+    expect(draft.clarificationQuestions).toHaveLength(1)
+    expect(draft.clarificationQuestions?.[0].options).toEqual([{ id: 'PRIVATE', label: '私有化部署' }])
+  })
+
+  it('filters a derived product-form question when the original request already names it', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-EXPLICIT-FORM', 'RUN-EXPLICIT-FORM', {
+      title: '商城方案',
+      customer_context: '微信小程序商城',
+      executive_summary: '摘要',
+      open_questions: ['是否建设微信小程序用户端？', '方案采用哪种部署方式？'],
+      sections: [],
+    }, '建设微信小程序商城')
+
+    expect(draft.clarificationQuestions?.map((item) => item.question)).toEqual(['方案采用哪种部署方式？'])
+  })
+
+  it('derives a choice dialog from legacy requirements explicitly marked for confirmation', () => {
+    const draft = createAgentSolutionDraft(seedSnapshot(), 'CONV-LEGACY-REQUIREMENT', 'RUN-LEGACY-REQUIREMENT', {
+      title: '宠物商城方案',
+      customer_context: '宠物用品电子商城',
+      executive_summary: '已形成方案蓝图初稿。',
+      requirements: [
+        {
+          id: 'REQ-SCOPE',
+          text: '建议纳入首期范围：微信小程序首页、商品分类、商品搜索和商品详情；购物车、下单和支付。',
+          source: '需求分析，待确认',
+        },
+      ],
+      sections: [
+        { id: 'SEC-1', title: '执行摘要', content_markdown: '摘要' },
+        { id: 'SEC-2', title: '需求与范围', content_markdown: '范围' },
+        { id: 'SEC-3', title: '方案设计', content_markdown: '设计' },
+        { id: 'SEC-4', title: '实施计划', content_markdown: '计划' },
+        { id: 'SEC-5', title: '风险与待确认', content_markdown: '风险' },
+      ],
+      citations: [{ id: 'CIT-1', title: '产品资料', locator: '第 1 页', excerpt: '正式资料' }],
+    }, '宠物用品电子商城')
+
+    expect(draft.clarificationQuestions).toMatchObject([{
+      id: 'REQUIREMENT_SCOPE',
+      type: 'MULTIPLE_CHOICE',
+      question: '以下建议内容是否纳入首期建设范围？',
+    }])
+    expect(draft.clarificationQuestions?.[0].options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '微信小程序首页、商品分类、商品搜索和商品详情' }),
+      expect.objectContaining({ label: '购物车、下单和支付。' }),
+      expect.objectContaining({ id: 'OTHER', label: '其他（请说明）' }),
+    ]))
+    expect(draft.openQuestions).toContain('以下建议内容是否纳入首期建设范围？')
   })
 
   it('keeps rich risk details and exposes missing capability matches as review items', () => {

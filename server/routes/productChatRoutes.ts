@@ -18,7 +18,10 @@ const messageBody = z.object({
 }).strict()
 type MessageInput = z.infer<typeof messageBody>
 const resumeBody = z.object({
-  answer: z.unknown(),
+  // A skip action may intentionally omit a value.  Keep answer optional at
+  // the transport boundary and reject missing values only for normal answer
+  // submissions below.
+  answer: z.unknown().optional(),
   questionId: z.string().trim().min(1).max(128).optional(),
   action: z.enum(['answer', 'skip']).default('answer'),
   requestId: z.string().trim().min(1).max(128).optional(),
@@ -39,7 +42,7 @@ const feedbackBody = z.object({
 // phase-1 upload receives an intentional, machine-readable response instead
 // of Fastify's generic 415 error.
 const multipartContentType = /^multipart\/form-data(?:;.*)?$/u
-type LocalRun = {
+export type LocalRun = {
   runId: string
   conversationId: string
   skillId?: MessageInput['skillId']
@@ -49,12 +52,471 @@ type LocalRun = {
   rootInput?: string
   attachmentIds?: string[]
   answers?: SolutionQuestionAnswer[]
+  /**
+   * The complete clarification batch.  `question` remains as the first
+   * pending item for clients that still consume the original single-question
+   * protocol.
+   */
+  questions?: ClarificationQuestion[]
   question?: ClarificationQuestion
   startedAt?: string
   requestId?: string
   resumeRequestCursors?: Map<string, number>
 }
 const localRuns = new Map<string, LocalRun>()
+
+type LocalResumeInput = Pick<ResumeInput, 'answer' | 'questionId' | 'action'>
+
+/** A normalized view of a remote LangGraph clarification question. */
+type RemoteResumeQuestion = {
+  id: string
+  required?: boolean
+  allowSkip?: boolean
+}
+
+export type ResumeAnswerEntry = {
+  questionId?: string
+  value?: unknown
+  action?: 'answer' | 'skip'
+}
+
+const SKIPPED_RESUME_VALUES = new Set(['（用户暂不确定）', '(用户暂不确定)', '暂不确定', '跳过'])
+
+function isSkippedResumeValue(value: unknown) {
+  return typeof value === 'string' && SKIPPED_RESUME_VALUES.has(value.trim())
+}
+
+function hasResumeValue(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.some((item) => hasResumeValue(item))
+  if (value && typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0
+  return value !== undefined && value !== null
+}
+
+/**
+ * Normalize the product resume shapes before validating a remote interrupt.
+ * The runtime accepts a scalar for a single question and a map for a batch;
+ * the product boundary also supports `{ value, action }` entries so a batch
+ * can mix answers and explicit skips.
+ */
+export function resumeAnswerEntries(input: LocalResumeInput): ResumeAnswerEntry[] {
+  const raw = input.answer
+  const rawRecord = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : undefined
+  if (rawRecord && typeof rawRecord.questionId === 'string' && ('answer' in rawRecord || 'value' in rawRecord)) {
+    const value = rawRecord.value ?? rawRecord.answer
+    return [{
+      questionId: rawRecord.questionId,
+      value,
+      action: rawRecord.action === 'skip' || isSkippedResumeValue(value) ? 'skip' : input.action,
+    }]
+  }
+  if (rawRecord && !('value' in rawRecord) && !('answer' in rawRecord) && !('questionId' in rawRecord)
+    && Object.keys(rawRecord).length > 0) {
+    return Object.entries(rawRecord).map(([questionId, value]) => {
+      const valueRecord = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
+      const normalizedValue = valueRecord ? (valueRecord.value ?? valueRecord.answer) : value
+      return {
+        questionId,
+        value: normalizedValue,
+        action: valueRecord?.action === 'skip' || isSkippedResumeValue(normalizedValue) ? 'skip' : input.action,
+      }
+    })
+  }
+  return [{
+    questionId: input.questionId,
+    value: raw,
+    action: input.action === 'skip' || isSkippedResumeValue(raw) ? 'skip' : input.action,
+  }]
+}
+
+export type ResumeValidationResult =
+  | { valid: true; entries: ResumeAnswerEntry[] }
+  | { valid: false; code: 'QUESTIONS_INCOMPLETE'; missingQuestionIds: string[]; invalidQuestionIds?: string[] }
+  | { valid: false; code: 'QUESTION_NOT_CURRENT'; invalidQuestionIds: string[] }
+  | { valid: false; code: 'QUESTION_NOT_SKIPPABLE'; invalidQuestionIds: string[] }
+
+/**
+ * Require a decision for every question in a remote interrupt before
+ * creating a LangGraph resume run.  A skipped question is a decision too;
+ * merely omitting an optional item is not enough because it would make the
+ * same interrupt reappear after a reconnect.
+ */
+export function validateRemoteResumeAnswers(
+  questions: readonly RemoteResumeQuestion[],
+  input: LocalResumeInput,
+): ResumeValidationResult {
+  const normalizedQuestions = questions
+    .map((question) => ({ ...question, id: String(question.id || '').trim() }))
+    .filter((question) => question.id)
+  if (!normalizedQuestions.length) return { valid: true, entries: resumeAnswerEntries(input) }
+
+  const byId = new Map(normalizedQuestions.map((question) => [question.id, question]))
+  const entries = resumeAnswerEntries(input)
+  const resolved = new Map<string, ResumeAnswerEntry>()
+  const invalidQuestionIds: string[] = []
+  const nonSkippableIds: string[] = []
+  const firstPendingId = normalizedQuestions[0]?.id
+
+  for (const entry of entries) {
+    const questionId = entry.questionId?.trim() || (entries.length === 1 ? firstPendingId : undefined)
+    if (!questionId || !byId.has(questionId)) {
+      invalidQuestionIds.push(questionId || '')
+      continue
+    }
+    const question = byId.get(questionId)!
+    const action = entry.action === 'skip' || isSkippedResumeValue(entry.value) ? 'skip' : 'answer'
+    if (action === 'skip' && question.allowSkip === false) nonSkippableIds.push(questionId)
+    if (action === 'answer' && !hasResumeValue(entry.value)) continue
+    resolved.set(questionId, { ...entry, questionId, action })
+  }
+  if (invalidQuestionIds.length) {
+    return { valid: false, code: 'QUESTION_NOT_CURRENT', invalidQuestionIds: invalidQuestionIds.filter(Boolean) }
+  }
+  if (nonSkippableIds.length) {
+    return { valid: false, code: 'QUESTION_NOT_SKIPPABLE', invalidQuestionIds: nonSkippableIds }
+  }
+
+  const missingQuestionIds = normalizedQuestions
+    .filter((question) => !resolved.has(question.id))
+    .map((question) => question.id)
+  if (missingQuestionIds.length) {
+    return { valid: false, code: 'QUESTIONS_INCOMPLETE', missingQuestionIds }
+  }
+  return {
+    valid: true,
+    entries: normalizedQuestions.map((question) => resolved.get(question.id)!).filter(Boolean),
+  }
+}
+
+function remoteResumePayload(input: LocalResumeInput, entries: readonly ResumeAnswerEntry[]) {
+  // Keep the original shape whenever possible: LangGraph tools commonly
+  // expect a scalar for one question and a question-id map for a batch.
+  if (entries.length === 1 && !(
+    input.answer && typeof input.answer === 'object' && !Array.isArray(input.answer)
+    && Object.keys(input.answer as Record<string, unknown>).length > 1
+  )) {
+    const entry = entries[0]
+    return entry.action === 'skip' ? '（用户暂不确定）' : entry.value
+  }
+  return Object.fromEntries(entries.map((entry) => [
+    entry.questionId,
+    entry.action === 'skip' ? '（用户暂不确定）' : entry.value,
+  ]))
+}
+
+class QuestionsIncompleteError extends Error {
+  readonly status = 400
+  readonly code = 'QUESTIONS_INCOMPLETE'
+  readonly retryable = false
+  readonly runId: string
+  readonly details: { missingQuestionIds: string[]; runId: string }
+
+  constructor(runId: string, missingQuestionIds: string[]) {
+    super('请先完成全部待确认问题，再继续生成方案')
+    this.name = 'QuestionsIncompleteError'
+    this.runId = runId
+    this.details = { missingQuestionIds, runId }
+  }
+}
+
+class QuestionResumeValidationError extends Error {
+  readonly status = 400
+  readonly code: 'QUESTION_NOT_CURRENT' | 'QUESTION_NOT_SKIPPABLE'
+  readonly retryable = false
+  readonly runId: string
+  readonly details: { questionIds: string[]; runId: string }
+
+  constructor(code: 'QUESTION_NOT_CURRENT' | 'QUESTION_NOT_SKIPPABLE', questionIds: string[], runId: string) {
+    super(code === 'QUESTION_NOT_SKIPPABLE' ? '当前问题不允许跳过' : '待确认问题已变化，请刷新后重试')
+    this.name = 'QuestionResumeValidationError'
+    this.code = code
+    this.runId = runId
+    this.details = { questionIds, runId }
+  }
+}
+
+/** Convert a scalar/array resume value to the text persisted in a local run. */
+export function normalizeLocalResumeValue(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim()
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join('、')
+      .trim()
+  }
+  if (raw && typeof raw === 'object') {
+    try {
+      return JSON.stringify(raw)
+    } catch {
+      return ''
+    }
+  }
+  return raw === undefined || raw === null ? '' : String(raw).trim()
+}
+
+/**
+ * Option ids are an Agent/runtime concern.  They must never become the
+ * visible transcript when a resume is projected back into the product
+ * conversation.  Keep a small compatibility dictionary for historical runs
+ * that predate Yuxi's `resume_display_answer` metadata; current questions are
+ * always preferred when their option labels are available.
+ */
+const legacyResumeLabels: Record<string, string> = {
+  confirmed: '已确定',
+  planning: '已有候选，尚未最终确认',
+  undecided: '尚未确定',
+  other: '其他情况',
+  self_operated: '自营',
+  platform: '平台入驻 / 多商户',
+  distribution: '分销',
+  store_delivery: '门店配送',
+  user_app: '用户端',
+  admin: '运营管理端',
+  catalog: '商品管理与上下架',
+  transaction: '购物车、下单和支付',
+  small: '少于 100 个 SKU',
+  medium: '100–1000 个 SKU',
+  large: '超过 1000 个 SKU',
+  erp: 'ERP / 业务系统',
+  inventory: '库存系统',
+  logistics: '物流 / 配送系统',
+  service: '客服 / 会员系统',
+  none: '暂无系统需要对接',
+  refund: '退款与售后',
+  coupon: '优惠券 / 促销',
+  membership: '会员 / 积分',
+  group_buy: '拼团 / 秒杀',
+}
+
+type ResumeDisplayQuestion = {
+  id?: string
+  questionId?: string
+  question?: string
+  options?: Array<{ id?: string; label?: string; text?: string; value?: string }>
+}
+
+function resumeDisplayLabel(value: string, question?: ResumeDisplayQuestion) {
+  const normalized = value.trim()
+  if (!normalized) return ''
+  const options = question?.options ?? []
+  const option = options.find((item) => {
+    const id = String(item.id ?? item.value ?? item.label ?? item.text ?? '').trim()
+    return id && id.toLocaleLowerCase() === normalized.toLocaleLowerCase()
+  })
+  if (option) return String(option.label ?? option.text ?? option.value ?? option.id ?? normalized).trim()
+  const legacy = Object.entries(legacyResumeLabels).find(([id]) => id.toLocaleLowerCase() === normalized.toLocaleLowerCase())
+  return legacy?.[1] ?? normalized
+}
+
+/** Render one runtime answer without exposing transport-only wrapper fields. */
+export function resumeDisplayValue(value: unknown, question?: ResumeDisplayQuestion): string {
+  if (isSkippedResumeValue(value)) return '暂不确定'
+  if (Array.isArray(value)) return value.map((item) => resumeDisplayValue(item, question)).filter(Boolean).join('、')
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('value' in record || 'answer' in record) {
+      return record.action === 'skip' ? '暂不确定' : resumeDisplayValue(record.value ?? record.answer, question)
+    }
+    return Object.entries(record)
+      .filter(([key]) => !['action', 'questionId', 'question_id'].includes(key))
+      .map(([, item]) => resumeDisplayValue(item, question))
+      .filter(Boolean)
+      .join('、')
+  }
+  if (value === undefined || value === null) return ''
+  const text = String(value).trim()
+  if (!text) return ''
+  // A legacy adapter may persist a serialized array/map as the answer. Parse
+  // only JSON-shaped values so ordinary prose is left untouched.
+  if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      const rendered = resumeDisplayValue(parsed, question)
+      if (rendered) return rendered
+    } catch {
+      // Fall through and preserve the original free-form answer.
+    }
+  }
+  if (text.startsWith('其他：') || text.startsWith('其他:')) return text
+  const parts = text.split(/[、,，;；]/u).map((item) => item.trim()).filter(Boolean)
+  if (parts.length > 1) {
+    const translated = parts.map((item) => resumeDisplayLabel(item, question))
+    if (translated.every(Boolean)) return translated.join('、')
+  }
+  return resumeDisplayLabel(text, question)
+}
+
+/** Render a scalar or question-id map submitted to a remote interrupt. */
+export function resumeDisplayAnswer(input: LocalResumeInput, interrupt?: AgentProgress['interrupt']): string {
+  const rawQuestions: ResumeDisplayQuestion[] = interrupt?.questions?.length
+    ? interrupt.questions
+    : interrupt
+      ? [interrupt]
+      : []
+  const questions = rawQuestions.filter(Boolean)
+  const byId = new Map<string, ResumeDisplayQuestion>()
+  questions.forEach((question) => {
+    const id = String(question.questionId ?? question.id ?? '').trim()
+    if (id) byId.set(id.toLocaleLowerCase(), question)
+  })
+  const entries = resumeAnswerEntries(input)
+  const rendered: string[] = []
+  for (const entry of entries) {
+    const questionId = entry.questionId?.trim() ?? ''
+    const question = questionId ? byId.get(questionId.toLocaleLowerCase()) : entries.length === 1 ? questions[0] : undefined
+    const value = entry.action === 'skip' ? '（用户暂不确定）' : entry.value
+    const display = resumeDisplayValue(value, question)
+    if (!display) continue
+    const questionText = question?.question?.trim()
+    rendered.push(questionText && entries.length > 1 ? `${questionText}：${display}` : display)
+  }
+  return rendered.join('\n')
+}
+
+export function localQuestionBatch(run: LocalRun): ClarificationQuestion[] {
+  const source = run.questions?.length ? run.questions : run.question ? [run.question] : []
+  const seen = new Set<string>()
+  const questions: ClarificationQuestion[] = []
+  source.forEach((question, index) => {
+    const id = question.id?.trim() || `question-${index + 1}`
+    if (seen.has(id)) return
+    seen.add(id)
+    questions.push({
+      ...question,
+      id,
+      position: index + 1,
+      total: source.length,
+    })
+  })
+  return questions
+}
+
+function localAnswerValue(raw: unknown): string | string[] {
+  if (Array.isArray(raw)) {
+    const values = raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    return values
+  }
+  return normalizeLocalResumeValue(raw)
+}
+
+/**
+ * Turn all supported resume shapes into question-id keyed answers.
+ *
+ * Supported inputs include the legacy scalar/array value, the usual
+ * `{questionId, answer}` request shape, and a batch map such as
+ * `{SCOPE: 'MVP', DEPLOYMENT: 'PRIVATE'}`.  The function is deliberately
+ * side-effect free; callers can decide whether the resulting batch is ready
+ * to continue the Agent run.
+ */
+export function collectLocalQuestionAnswers(
+  run: LocalRun,
+  input: LocalResumeInput,
+): { answers: SolutionQuestionAnswer[]; pending: ClarificationQuestion[] } {
+  const questions = localQuestionBatch(run)
+  const byId = new Map(questions.map((question) => [question.id, question]))
+  if (!questions.length) throw new Error('RUN_NOT_WAITING_FOR_INPUT')
+
+  const raw = input.answer
+  const entries: Array<{ questionId?: string; value?: unknown; action?: 'answer' | 'skip' }> = []
+  const rawRecord = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : undefined
+
+  // A nested `{questionId, answer}` value is accepted for integrations that
+  // put both fields inside `answer` rather than at the request top level.
+  if (rawRecord && typeof rawRecord.questionId === 'string' && 'answer' in rawRecord) {
+    entries.push({
+      questionId: rawRecord.questionId,
+      value: rawRecord.answer,
+      action: rawRecord.action === 'skip' || isSkippedResumeValue(rawRecord.answer) ? 'skip' : input.action,
+    })
+  } else if (rawRecord && !('value' in rawRecord) && !('answer' in rawRecord)
+    && !('questionId' in rawRecord) && Object.keys(rawRecord).length > 0
+    && Object.keys(rawRecord).every((questionId) => byId.has(questionId))) {
+    // A batch answer map.  Values may themselves be `{value, action}` objects
+    // so a single map can mix normal and skipped questions.
+    for (const [questionId, value] of Object.entries(rawRecord)) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const valueRecord = value as Record<string, unknown>
+        const normalizedValue = valueRecord.value ?? valueRecord.answer
+        entries.push({
+          questionId,
+          value: normalizedValue,
+          action: valueRecord.action === 'skip' || isSkippedResumeValue(normalizedValue) ? 'skip' : input.action,
+        })
+      } else {
+        entries.push({
+          questionId,
+          value,
+          action: input.action === 'skip' || isSkippedResumeValue(value) ? 'skip' : input.action,
+        })
+      }
+    }
+  } else {
+    entries.push({
+      questionId: input.questionId,
+      value: raw,
+      action: input.action === 'skip' || isSkippedResumeValue(raw) ? 'skip' : input.action,
+    })
+  }
+
+  // `暂不确定` without a question id means the first currently pending
+  // question.  It intentionally does not skip the whole batch; the caller
+  // will receive the remaining questions and can answer them one by one.
+  const existingAnswers = new Map<string, SolutionQuestionAnswer>()
+  for (const answer of run.answers ?? []) existingAnswers.set(answer.questionId, answer)
+  const pendingBefore = questions.filter((question) => !existingAnswers.has(question.id))
+  for (const entry of entries) {
+    const questionId = entry.questionId?.trim() || pendingBefore[0]?.id
+    if (!questionId || !byId.has(questionId)) throw new Error('QUESTION_NOT_CURRENT')
+    const question = byId.get(questionId)!
+    const action = entry.action === 'skip' ? 'skip' : 'answer'
+    if (action === 'skip') {
+      if (!question.allowSkip) throw new Error('QUESTION_NOT_SKIPPABLE')
+      existingAnswers.set(questionId, { questionId, action: 'skip' })
+      continue
+    }
+    const value = localAnswerValue(entry.value)
+    const hasValue = Array.isArray(value) ? value.length > 0 : Boolean(value)
+    if (!hasValue) throw new Error('INVALID_REQUEST')
+    existingAnswers.set(questionId, { questionId, value, action: 'answer' })
+  }
+
+  // Preserve the original question order, even when the client submits a
+  // map in a different order or repeats an already answered question.
+  const answers = questions
+    .map((question) => existingAnswers.get(question.id))
+    .filter((answer): answer is SolutionQuestionAnswer => Boolean(answer))
+  const pending = questions.filter((question) => !existingAnswers.has(question.id))
+  return { answers, pending }
+}
+
+export function localInterruptPayload(run: LocalRun, pending = localQuestionBatch(run).filter((question) => !(run.answers ?? []).some((answer) => answer.questionId === question.id))) {
+  const normalized = pending.map((question, index) => ({
+    ...question,
+    position: index + 1,
+    total: pending.length,
+    questionId: question.id,
+  }))
+  const first = normalized[0] ?? localQuestionBatch(run)[0]
+  if (!first) return { runId: run.runId, question: '请补充方案所需信息', status: 'INTERRUPTED' as const }
+  return {
+    runId: run.runId,
+    ...first,
+    questionId: first.id,
+    questions: normalized,
+    status: 'INTERRUPTED' as const,
+  }
+}
 
 export function buildSolutionResumeContent(rootInput: string, answers: readonly string[]) {
   const normalizedRoot = rootInput.trim()
@@ -119,6 +581,17 @@ type AgentProgress = {
     questionId?: string
     type?: ClarificationQuestion['type']
     options?: ClarificationQuestion['options']
+    questions?: Array<{
+      id?: string
+      question: string
+      questionId?: string
+      type?: ClarificationQuestion['type']
+      options?: ClarificationQuestion['options']
+      required?: boolean
+      allowSkip?: boolean
+      position?: number
+      total?: number
+    }>
     required?: boolean
     allowSkip?: boolean
     position?: number
@@ -354,6 +827,81 @@ function firstValue(record: Record<string, unknown>, ...keys: string[]) {
   return undefined
 }
 
+function stringValue(value: unknown, fallback = '') {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return fallback
+}
+
+/**
+ * Yuxi run responses have used both `input_metadata` and `inputMetadata` (and
+ * a few legacy deployments returned the same object as `meta`/`metadata`).
+ * Keep this compatibility decoding in one place so resume context recovery
+ * does not depend on the deployment's serializer.
+ */
+function remoteRunMetadata(run: Record<string, unknown>): Record<string, unknown> {
+  const raw = firstValue(run, 'input_metadata', 'inputMetadata', 'metadata', 'meta')
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+    } catch {
+      // A malformed optional metadata field must not prevent recovering the
+      // original request; the caller will use the thread id as a fallback.
+    }
+  }
+  return {}
+}
+
+function remoteInvocationMetadata(
+  run: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  const raw = firstValue(metadata, 'agent_invocation_meta', 'agentInvocationMeta')
+    ?? firstValue(run, 'agent_invocation_meta', 'agentInvocationMeta')
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+    } catch {
+      // Ignore malformed optional invocation metadata; the parent thread id
+      // and request body remain usable when present.
+    }
+  }
+  return {}
+}
+
+/** Recover the immutable product request from the root Yuxi run. */
+export function recoverRemoteSolutionRequest(run: Record<string, unknown>) {
+  const threadId = stringValue(firstValue(run,
+    'conversation_thread_id', 'conversationThreadId', 'thread_id', 'threadId'))
+  const inputContent = stringValue(firstValue(run, 'input_content', 'inputContent', 'query')).trim()
+  const metadata = remoteRunMetadata(run)
+  const invocation = remoteInvocationMetadata(run, metadata)
+  const conversationId = stringValue(firstValue(invocation,
+    'product_conversation_id', 'productConversationId', 'conversation_id', 'conversationId'),
+    stringValue(firstValue(metadata, 'product_conversation_id', 'productConversationId'), threadId.replace(/^product-/u, ''))).trim()
+  const rawAttachmentValue = firstValue(invocation,
+    'product_attachment_ids', 'productAttachmentIds', 'attachment_file_ids', 'attachmentFileIds')
+    ?? firstValue(metadata, 'attachment_file_ids', 'attachmentFileIds')
+  const rawAttachmentIds = Array.isArray(rawAttachmentValue) ? rawAttachmentValue : []
+  const attachmentIds = rawAttachmentIds
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim())
+  const requestId = stringValue(
+    firstValue(run, 'request_id', 'requestId'),
+    stringValue(firstValue(metadata, 'request_id', 'requestId')),
+  ).trim()
+  return {
+    conversationId,
+    inputContent,
+    attachmentIds,
+    ...(requestId ? { requestId } : {}),
+  }
+}
+
 /**
  * Yuxi has emitted interrupts from more than one LangGraph adapter over time.
  * Keep that protocol variance at the product boundary so the browser always
@@ -389,50 +937,102 @@ export function normalizeYuxiInterrupt(data: unknown): AgentProgress['interrupt'
   }
   collect(data)
 
-  for (const candidate of candidates) {
-    const record = objectRecord(candidate)
-    if (!record) continue
-    if (!hinted.has(candidate) && !('question' in record) && !('prompt' in record) && !('questions' in record)) continue
-    const nestedQuestion = objectRecord(firstValue(record, 'question', 'prompt'))
-    const question = nestedQuestion ?? record
-    const questionText = typeof (nestedQuestion ? firstValue(question, 'question', 'prompt', 'text', 'message') : firstValue(record, 'question', 'prompt', 'text', 'message')) === 'string'
-      ? String(nestedQuestion ? firstValue(question, 'question', 'prompt', 'text', 'message') : firstValue(record, 'question', 'prompt', 'text', 'message')).trim()
-      : ''
-    if (!questionText) continue
+  const normalizeQuestion = (value: unknown, index: number, total: number, batchSize: number) => {
+    const question = objectRecord(value)
+    if (!question) return undefined
+    const rawText = firstValue(question, 'question', 'prompt', 'text', 'message')
+    const questionText = typeof rawText === 'string' ? rawText.trim() : ''
+    if (!questionText) return undefined
 
     const rawOptions = firstValue(question, 'options', 'choices')
     const options = Array.isArray(rawOptions)
-      ? rawOptions.flatMap((item, index) => {
-        if (typeof item === 'string') return [{ id: item, label: item }]
+      ? rawOptions.flatMap((item, optionIndex) => {
+        if (typeof item === 'string') {
+          const label = item.trim()
+          return label ? [{ id: label, label }] : []
+        }
         const option = objectRecord(item)
         if (!option) return []
         const rawLabel = firstValue(option, 'label', 'text', 'name', 'value', 'id')
         const label = typeof rawLabel === 'string' ? rawLabel.trim() : ''
         if (!label) return []
         const rawId = firstValue(option, 'id', 'value', 'key', 'label', 'text')
-        const id = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `option-${index + 1}`
+        const id = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `option-${optionIndex + 1}`
         const description = firstValue(option, 'description', 'helpText', 'help_text')
         return [{ id, label, ...(typeof description === 'string' && description.trim() ? { description: description.trim() } : {}) }]
       })
       : undefined
     const rawType = firstValue(question, 'type', 'question_type', 'questionType', 'input_type')
     const normalizedType = typeof rawType === 'string' ? rawType.trim().toUpperCase().replace(/[-\s]+/gu, '_') : ''
+    const multiSelect = firstValue(question, 'multi_select', 'multiSelect') === true
     const type = ['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT'].includes(normalizedType)
       ? normalizedType as ClarificationQuestion['type']
-      : undefined
+      : multiSelect
+        ? 'MULTIPLE_CHOICE' as const
+        : options?.length
+          ? 'SINGLE_CHOICE' as const
+          : 'TEXT' as const
+    const rawId = firstValue(question, 'id', 'questionId', 'question_id')
+    const id = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `q-${index + 1}`
     const rawRequired = firstValue(question, 'required', 'is_required', 'isRequired')
     const rawAllowSkip = firstValue(question, 'allowSkip', 'allow_skip', 'skippable')
-    const position = firstValue(question, 'position', 'current_position', 'currentPosition')
-    const total = firstValue(question, 'total', 'total_questions', 'totalQuestions')
+    const rawPosition = firstValue(question, 'position', 'current_position', 'currentPosition')
+    const rawTotal = firstValue(question, 'total', 'total_questions', 'totalQuestions')
+    const position = batchSize === 1 && typeof rawPosition === 'number' && Number.isFinite(rawPosition)
+      ? Math.max(1, Math.trunc(rawPosition))
+      : index + 1
+    const normalizedTotal = batchSize === 1 && typeof rawTotal === 'number' && Number.isFinite(rawTotal)
+      ? Math.max(1, Math.trunc(rawTotal))
+      : Math.max(total, 1)
     return {
+      id,
+      questionId: id,
       question: questionText,
-      ...(typeof firstValue(question, 'id', 'questionId', 'question_id') === 'string' ? { questionId: String(firstValue(question, 'id', 'questionId', 'question_id')).trim() } : {}),
       ...(type ? { type } : {}),
       ...(options?.length ? { options } : {}),
       required: rawRequired === false ? false : true,
       allowSkip: rawAllowSkip === false ? false : true,
-      ...(typeof position === 'number' && Number.isFinite(position) ? { position: Math.max(1, Math.trunc(position)) } : {}),
-      ...(typeof total === 'number' && Number.isFinite(total) ? { total: Math.max(1, Math.trunc(total)) } : {}),
+      position,
+      total: normalizedTotal,
+    }
+  }
+
+  for (const candidate of candidates) {
+    const record = objectRecord(candidate)
+    if (!record) continue
+    if (!hinted.has(candidate) && !('question' in record) && !('prompt' in record) && !('questions' in record)) continue
+    const rawQuestions = firstValue(record, 'questions', 'items')
+    const questionValues = Array.isArray(rawQuestions) ? rawQuestions : [firstValue(record, 'question', 'prompt') ?? record]
+    const questions = questionValues
+      .map((value, index) => normalizeQuestion(value, index, questionValues.length, questionValues.length))
+      .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    if (!questions.length) continue
+    // LangGraph adapters have occasionally repeated the same interrupt item
+    // (once in the batch envelope and again in an item-level envelope).  The
+    // browser applies the same first-seen-by-id-or-normalized-text rule, so
+    // normalize it at the product boundary as well.  Otherwise the UI would
+    // render one item while resume validation still requires its hidden
+    // duplicate.
+    const seenIds = new Set<string>()
+    const seenTexts = new Set<string>()
+    const uniqueQuestions = questions.filter((question) => {
+      const id = question.id.trim()
+      const text = question.question.trim()
+      const textKey = text.replace(/\s+/gu, ' ')
+      if (!text || seenIds.has(id) || seenTexts.has(textKey)) return false
+      seenIds.add(id)
+      seenTexts.add(textKey)
+      return true
+    }).map((question, index, all) => ({
+      ...question,
+      position: questions.length === all.length ? question.position : index + 1,
+      total: questions.length === all.length ? question.total : all.length,
+    }))
+    if (!uniqueQuestions.length) continue
+    const first = uniqueQuestions[0]
+    return {
+      ...first,
+      questions: uniqueQuestions,
     }
   }
   return undefined
@@ -536,45 +1136,97 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
     return service.addAgentSolutionMessage(conversationId, data.content, data.attachmentIds ?? [], runId, payload)
   }
 
-  async function remoteSolutionContext(runId: string, credentials: YuxiRequestCredentials) {
+  type RemoteSolutionContextOptions = {
+    /** The answer that could not be sent to a completed/legacy run. */
+    pendingAnswer?: LocalResumeInput
+    /** Interrupt metadata used to render option ids from that answer. */
+    pendingInterrupt?: AgentProgress['interrupt']
+  }
+
+  function storedResumeDisplay(run: Record<string, unknown>, fallbackInterrupt?: AgentProgress['interrupt']) {
+    const metadata = remoteRunMetadata(run)
+    const explicit = firstValue(metadata, 'resume_display_answer', 'resumeDisplayAnswer')
+    if (typeof explicit === 'string' && explicit.trim()) return explicit.trim()
+    const raw = firstValue(run, 'input_content', 'inputContent')
+    if (typeof raw !== 'string' || !raw.trim()) return ''
+    let parsed: unknown = raw
+    try { parsed = JSON.parse(raw) } catch { /* preserve free-form legacy input */ }
+    return resumeDisplayAnswer({ answer: parsed, action: 'answer' }, fallbackInterrupt)
+      || resumeDisplayValue(parsed, fallbackInterrupt)
+  }
+
+  async function remoteSolutionContext(
+    runId: string,
+    credentials: YuxiRequestCredentials,
+    options: RemoteSolutionContextOptions = {},
+  ) {
     let current = await yuxi.getRun(runId, credentials) as Record<string, unknown>
     let run = current.run && typeof current.run === 'object' ? current.run as Record<string, unknown> : current
     const resumeAnswers: string[] = []
     while (String(run.run_type ?? run.runType ?? '') === 'resume' && (run.created_by_run_id ?? run.createdByRunId)) {
-      const rawAnswer = run.input_content ?? run.inputContent
-      if (typeof rawAnswer === 'string' && rawAnswer.trim()) {
-        try {
-          const parsed = JSON.parse(rawAnswer)
-          resumeAnswers.push(typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2))
-        } catch {
-          resumeAnswers.push(rawAnswer)
-        }
-      }
+      const displayAnswer = storedResumeDisplay(run, options.pendingInterrupt)
+      if (displayAnswer) resumeAnswers.push(displayAnswer)
       current = await yuxi.getRun(String(run.created_by_run_id ?? run.createdByRunId), credentials) as Record<string, unknown>
       run = current.run && typeof current.run === 'object' ? current.run as Record<string, unknown> : current
     }
-    const threadId = String(run.conversation_thread_id ?? run.threadId ?? '')
-    const inputContent = String(run.input_content ?? run.inputContent ?? '').trim()
-    const metadata = run.input_metadata && typeof run.input_metadata === 'object' ? run.input_metadata as Record<string, unknown> : {}
-    const invocation = metadata.agent_invocation_meta && typeof metadata.agent_invocation_meta === 'object'
-      ? metadata.agent_invocation_meta as Record<string, unknown>
-      : {}
-    const conversationId = String(invocation.product_conversation_id ?? threadId.replace(/^product-/u, '')).trim()
+    const recovered = recoverRemoteSolutionRequest(run)
+    const { conversationId, inputContent, attachmentIds, requestId } = recovered
     if (!conversationId || !inputContent) throw new YuxiAgentClientError('方案运行缺少可恢复的会话上下文', 502, 'YUXI_CONTEXT_MISSING')
-    const content = buildSolutionResumeContent(inputContent, resumeAnswers.reverse())
-    const rawAttachmentIds = Array.isArray(invocation.product_attachment_ids)
-      ? invocation.product_attachment_ids
-      : (Array.isArray(metadata.attachment_file_ids) ? metadata.attachment_file_ids : [])
-    const attachmentIds = rawAttachmentIds.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    const orderedAnswers = resumeAnswers.reverse()
+    if (options.pendingAnswer) {
+      const pendingDisplay = resumeDisplayAnswer(options.pendingAnswer, options.pendingInterrupt)
+      // A 409 fallback is invoked after a legacy/completed run rejected the
+      // resume request, so its answer is not present in the durable chain.
+      // Append it once, preserving a prior answer if this is a retry of the
+      // same request.  Do not de-duplicate equal labels from different
+      // questions when a question-specific prefix is available.
+      if (pendingDisplay && orderedAnswers.at(-1)?.trim() !== pendingDisplay.trim()) orderedAnswers.push(pendingDisplay)
+    }
+    const content = buildSolutionResumeContent(inputContent, orderedAnswers)
     return {
       conversationId,
       data: {
         content,
         skillId: 'SOLUTION_DRAFT' as const,
         attachmentIds,
-        requestId: typeof run.request_id === 'string' ? run.request_id : undefined,
+        requestId,
       },
     }
+  }
+
+  /**
+   * Read the currently interrupted question batch before forwarding a remote
+   * resume.  Older Yuxi run DTOs do not include the interrupt itself, so fall
+   * back to the replayable event stream when the run is already interrupted.
+   * This is deliberately read-only; no resume request is sent from here.
+   */
+  async function remoteInterruptForRun(runId: string, credentials: YuxiRequestCredentials) {
+    const response = await yuxi.getRun(runId, credentials) as Record<string, unknown>
+    const run = response.run && typeof response.run === 'object'
+      ? response.run as Record<string, unknown>
+      : response
+    const direct = normalizeYuxiInterrupt(run.interrupt ?? response.interrupt ?? response)
+    const status = String(run.status ?? response.status ?? '').trim().toLowerCase()
+    if (!['interrupted', 'waiting_for_input', 'waiting'].includes(status)) return direct
+
+    // A replay can contain an earlier interrupt followed by the current
+    // question batch. Returning from the first event makes an already
+    // answered question reappear after resume/reconnect. Consume the replay
+    // through its terminal marker and retain the last valid interrupt.
+    let latest = direct
+    try {
+      for await (const event of yuxi.streamEvents(runId, '0-0', credentials)) {
+        const progress = yuxiProgress(event)
+        if (progress?.interrupt) latest = progress.interrupt
+        if (event.event === 'end') break
+      }
+    } catch (error) {
+      // A directly persisted interrupt is already authoritative and remains
+      // usable during a transient replay failure. Without one, preserve the
+      // previous error semantics so callers do not resume blindly.
+      if (!latest) throw error
+    }
+    return latest
   }
 
   app.addContentTypeParser(
@@ -613,7 +1265,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           runId: local.runId,
           conversationId: local.conversationId,
           status: local.status,
-          ...(local.question ? { interrupt: { runId: local.runId, ...local.question, questionId: local.question.id, status: 'INTERRUPTED' as const } } : {}),
+          ...(local.question ? { interrupt: localInterruptPayload(local) } : {}),
           executionTrace: localExecutionTrace(local),
           streamUrl: `/api/chat/runs/${encodeURIComponent(local.runId)}/events`,
         },
@@ -794,19 +1446,54 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           },
         })
         await new Promise((resolve) => setTimeout(resolve, 90))
-        run.question = clarificationQuestionForRequest(parsed.data.content)
-        run.status = 'WAITING_FOR_INPUT'
-        emitProgress(reply.raw, { stage: 'WAITING_FOR_INPUT', message: '等待确认方案关键条件' }, progressState, {
-          runId,
-          persist: (event, payload) => {
-            const seq = String(run.events.length + 1)
-            run.events.push({ event, payload, seq })
-          },
-        })
-        const interruptPayload = { runId, ...run.question, questionId: run.question.id, status: 'INTERRUPTED' as const }
-        const interruptSeq = String(run.events.length + 1)
-        run.events.push({ event: 'interrupt', payload: interruptPayload, seq: interruptSeq })
-        writeEvent(reply.raw, 'interrupt', interruptPayload, interruptSeq)
+        const question = clarificationQuestionForRequest(parsed.data.content)
+        if (question) {
+          run.question = question
+          run.questions = [question]
+          run.status = 'WAITING_FOR_INPUT'
+          emitProgress(reply.raw, { stage: 'WAITING_FOR_INPUT', message: '等待确认方案关键条件' }, progressState, {
+            runId,
+            persist: (event, payload) => {
+              const seq = String(run.events.length + 1)
+              run.events.push({ event, payload, seq })
+            },
+          })
+          const interruptPayload = localInterruptPayload(run)
+          const interruptSeq = String(run.events.length + 1)
+          run.events.push({ event: 'interrupt', payload: interruptPayload, seq: interruptSeq })
+          writeEvent(reply.raw, 'interrupt', interruptPayload, interruptSeq)
+          return reply
+        }
+
+        // The request already answers the deterministic compatibility
+        // question. Continue directly instead of asking the same thing a
+        // second time or creating a synthetic interrupt with no new
+        // information.
+        run.status = 'RUNNING'
+        const appendProgress = (stage: string, message: string) => {
+          const payload = { stage, message, runId: run.runId, status: 'ACTIVE' }
+          run.events.push({ event: 'progress', payload, seq: String(run.events.length + 1) })
+          writeEvent(reply.raw, 'progress', payload, String(run.events.length))
+        }
+        appendProgress('CAPABILITY_MATCHING', '正在匹配企业能力与交付边界')
+        appendProgress('ARCHITECTURE_DESIGN', '正在形成方案蓝图骨架')
+        appendProgress('QUALITY_REVIEW', '正在检查待确认项与证据覆盖')
+        const result = await service.addMessage(
+          request.params.conversationId,
+          parsed.data.content,
+          'SOLUTION_DRAFT',
+          parsed.data.attachmentIds,
+          run.runId,
+          localExecutionTrace({ ...run, status: 'SUCCEEDED' }),
+        )
+        run.status = 'SUCCEEDED'
+        run.result = result
+        const draftSeq = String(run.events.length + 1)
+        run.events.push({ event: 'draft', payload: result.assistantMessage.solutionDraft ?? {}, seq: draftSeq })
+        writeEvent(reply.raw, 'draft', result.assistantMessage.solutionDraft ?? {}, draftSeq)
+        const completeSeq = String(run.events.length + 1)
+        run.events.push({ event: 'complete', payload: result, seq: completeSeq })
+        writeEvent(reply.raw, 'complete', result, completeSeq)
         return reply
       }
       for (const item of progress) {
@@ -849,7 +1536,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
 
   app.post<{ Params: { runId: string } }>('/api/chat/runs/:runId/resume', async (request, reply) => {
     const parsed = resumeBody.safeParse(request.body)
-    if (!parsed.success || parsed.data.answer === null || parsed.data.answer === undefined) throw invalidRequest()
+    if (!parsed.success || (parsed.data.action !== 'skip' && (parsed.data.answer === null || parsed.data.answer === undefined))) throw invalidRequest()
     const local = localRuns.get(request.params.runId)
     if (local) {
       if (parsed.data.requestId && local.resumeRequestCursors?.has(parsed.data.requestId)) {
@@ -865,38 +1552,64 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
           },
         })
       }
-      if (local.status !== 'WAITING_FOR_INPUT' || !local.question) throw new Error('RUN_NOT_WAITING_FOR_INPUT')
-      if (parsed.data.questionId && parsed.data.questionId !== local.question.id) throw new Error('QUESTION_NOT_CURRENT')
+      const questions = localQuestionBatch(local)
+      if (local.status !== 'WAITING_FOR_INPUT' || !questions.length) throw new Error('RUN_NOT_WAITING_FOR_INPUT')
       const afterSeq = local.events.length
-      const rawValue = parsed.data.answer
-      const value = typeof rawValue === 'string'
-        ? rawValue.trim()
-        : Array.isArray(rawValue)
-          ? rawValue.filter((item): item is string => typeof item === 'string').join('、').trim()
-          : JSON.stringify(rawValue)
-      if (parsed.data.action === 'answer' && !value) throw invalidRequest()
-      local.answers ??= []
-      local.answers.push({
-        questionId: local.question.id,
-        ...(value ? { value } : {}),
-        action: parsed.data.action,
-      })
+      const collected = collectLocalQuestionAnswers(local, parsed.data)
+      local.answers = collected.answers
+
+      // A batch resume is allowed to answer one or several questions.  Keep
+      // the run interrupted until every pending question has a decision; in
+      // particular, do not call addMessage or create a draft for a partial
+      // answer map.
+      if (collected.pending.length) {
+        local.status = 'WAITING_FOR_INPUT'
+        local.question = collected.pending[0]
+        const previousProgress = [...local.events].reverse().find((event) => event.event === 'progress')
+        const previousPayload = previousProgress?.payload && typeof previousProgress.payload === 'object'
+          ? previousProgress.payload as Record<string, unknown>
+          : undefined
+        if (previousPayload?.stage !== 'WAITING_FOR_INPUT') {
+          const progressPayload = {
+            stage: 'WAITING_FOR_INPUT',
+            message: '等待确认剩余方案条件',
+            runId: local.runId,
+            status: 'ACTIVE',
+          }
+          local.events.push({ event: 'progress', payload: progressPayload, seq: String(local.events.length + 1) })
+        }
+        const interruptPayload = localInterruptPayload(local, collected.pending)
+        local.events.push({ event: 'interrupt', payload: interruptPayload, seq: String(local.events.length + 1) })
+        if (parsed.data.requestId) {
+          local.resumeRequestCursors ??= new Map()
+          local.resumeRequestCursors.set(parsed.data.requestId, afterSeq)
+        }
+        return reply.status(201).send({
+          run: {
+            runId: local.runId,
+            status: local.status,
+            requestId: parsed.data.requestId,
+            streamUrl: `/api/chat/runs/${encodeURIComponent(local.runId)}/events?afterSeq=${afterSeq}`,
+            executionTrace: localExecutionTrace(local),
+            resumedFromRunId: request.params.runId,
+          },
+        })
+      }
+
       local.status = 'RUNNING'
       local.question = undefined
-      const progressState = createProgressEmissionState()
       const appendProgress = (stage: string, message: string) => {
         const payload = { stage, message, runId: local.runId, status: 'ACTIVE' }
         local.events.push({ event: 'progress', payload, seq: String(local.events.length + 1) })
-        progressState.stage = stage
-        progressState.message = message
       }
       appendProgress('CAPABILITY_MATCHING', '正在匹配企业能力与交付边界')
       appendProgress('ARCHITECTURE_DESIGN', '正在形成方案蓝图骨架')
       appendProgress('QUALITY_REVIEW', '正在检查待确认项与证据覆盖')
       const rootInput = local.rootInput ?? ''
-      const answers = (local.answers ?? []).flatMap((item) => {
+      const answers = local.answers.flatMap((item) => {
         if (item.action === 'skip') return ['（用户暂不确定）']
-        return typeof item.value === 'string' ? [item.value] : []
+        const value = normalizeLocalResumeValue(item.value)
+        return value ? [value] : []
       })
       const content = buildSolutionResumeContent(rootInput, answers)
       const result = await service.addMessage(
@@ -927,12 +1640,69 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
       })
     }
     if (!yuxi.configured()) throw new Error('YUXI_NOT_CONFIGURED')
-    const run = await yuxi.resumeRun(
-      request.params.runId,
-      parsed.data.answer,
-      parsed.data.requestId,
-      requestCredentials(request),
-    )
+    let run
+    let currentInterrupt: AgentProgress['interrupt'] | undefined
+    try {
+      const credentials = requestCredentials(request)
+      const interrupt = await remoteInterruptForRun(request.params.runId, credentials)
+      currentInterrupt = interrupt
+      let resumeAnswer: unknown = parsed.data.action === 'skip'
+        ? '（用户暂不确定）'
+        : parsed.data.answer
+      if (interrupt) {
+        const rawQuestions = interrupt.questions?.length
+          ? interrupt.questions
+          : [interrupt]
+        const questions: RemoteResumeQuestion[] = rawQuestions
+          .map((question) => ({
+            id: String(question.questionId ?? ('id' in question ? question.id : '') ?? '').trim(),
+            required: question.required,
+            allowSkip: question.allowSkip,
+          }))
+          .filter((question) => question.id)
+        const validation = validateRemoteResumeAnswers(questions, parsed.data)
+        if (!validation.valid) {
+          if (validation.code === 'QUESTIONS_INCOMPLETE') {
+            throw new QuestionsIncompleteError(request.params.runId, validation.missingQuestionIds)
+          }
+          throw new QuestionResumeValidationError(validation.code, validation.invalidQuestionIds, request.params.runId)
+        }
+        resumeAnswer = remoteResumePayload(parsed.data, validation.entries)
+      }
+      run = await yuxi.resumeRun(
+        request.params.runId,
+        resumeAnswer,
+        parsed.data.requestId,
+        credentials,
+        {
+          questionId: parsed.data.questionId,
+          action: parsed.data.action,
+        },
+      )
+    } catch (error) {
+      // A completed BLOCKED draft can still expose a deterministic
+      // clarification question. LangGraph can only resume an interrupted
+      // checkpoint, so continue that completed run as a new run on the same
+      // thread while preserving the original request and all prior answers.
+      // Completed solution drafts produced by older adapter versions may not
+      // have persisted a question id in their interrupt payload.  The draft
+      // itself is still a valid continuation point; let the Yuxi adapter
+      // recover the original solution context and start the next run rather
+      // than surfacing a misleading "only interrupted run" 409.
+      if (!(error instanceof YuxiAgentClientError) || error.status !== 409) throw error
+      const context = await remoteSolutionContext(request.params.runId, requestCredentials(request), {
+        pendingAnswer: parsed.data,
+        pendingInterrupt: currentInterrupt,
+      })
+      run = await createYuxiSolutionRun(context.conversationId, {
+        ...context.data,
+        // `remoteSolutionContext` already includes the complete historical
+        // chain and the answer that triggered the 409 fallback.  Keeping one
+        // canonical content string prevents a repeated scalar answer from
+        // being appended twice and preserves batch maps.
+        requestId: parsed.data.requestId,
+      }, requestCredentials(request))
+    }
     return reply.status(201).send({
       run: {
         runId: run.runId,
@@ -969,7 +1739,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
       }
     }
     if (!run) throw new Error('RUN_NOT_FOUND')
-    return { run: { runId: run.runId, conversationId: run.conversationId, status: run.status, ...(run.question ? { interrupt: { runId: run.runId, ...run.question, questionId: run.question.id, status: 'INTERRUPTED' as const } } : {}), executionTrace: localExecutionTrace(run), streamUrl: `/api/chat/runs/${run.runId}/events` } }
+    return { run: { runId: run.runId, conversationId: run.conversationId, status: run.status, ...(run.question ? { interrupt: localInterruptPayload(run) } : {}), executionTrace: localExecutionTrace(run), streamUrl: `/api/chat/runs/${run.runId}/events` } }
   })
 
   app.get<{ Params: { runId: string } }>('/api/chat/runs/:runId/events', async (request, reply) => {

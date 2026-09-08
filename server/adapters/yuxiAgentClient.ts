@@ -19,6 +19,19 @@ export interface YuxiRequestCredentials {
   cookie?: string
 }
 
+/** Product-only context needed when resuming an interactive LangGraph run.
+ *
+ * The answer itself remains the value sent to LangGraph.  The question id and
+ * action are transport metadata used by Yuxi's product adapter to validate a
+ * complete interrupt batch and to persist a human-readable answer alongside
+ * the runtime value.  Keeping this separate prevents labels from being sent
+ * in place of stable option ids.
+ */
+export interface YuxiResumeContext {
+  questionId?: string
+  action?: 'answer' | 'skip'
+}
+
 export interface YuxiAgentRun {
   runId: string
   threadId?: string
@@ -218,12 +231,19 @@ export class YuxiAgentClient {
     answer: unknown,
     requestId?: string,
     credentials: YuxiRequestCredentials = {},
+    context: YuxiResumeContext = {},
   ) {
-    // Yuxi's product resume contract intentionally accepts only the
-    // LangGraph resume value and an idempotency key. Product-only fields
-    // (questionId/action) are handled by the local adapter; forwarding them
-    // to Yuxi would be rejected by its strict Pydantic DTO.
-    const body = { answer, ...(requestId ? { requestId } : {}) }
+    // Yuxi validates the answer against the current LangGraph interrupt.  The
+    // optional product fields let it retain the display label while keeping
+    // the runtime answer (for example `confirmed`) unchanged. Older Yuxi
+    // deployments ignore these fields at their compatibility boundary; the
+    // product route still has a deterministic fallback for those deployments.
+    const body = {
+      answer,
+      ...(requestId ? { requestId } : {}),
+      ...(context.questionId ? { questionId: context.questionId } : {}),
+      ...(context.action ? { action: context.action } : {}),
+    }
     return parseRun(await this.json(
       `/api/chat/runs/${encodeURIComponent(runId)}/resume`,
       { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } },

@@ -14,7 +14,7 @@ import type { Asset, Citation, ConversationMessage, DistributionTask, PlatformSn
 import { createBusinessId } from '../../shared/domain/ids.js'
 import { ConversationService, displayConversationTitle, imageCitationFromText, type AddMessageInput } from './conversationService.js'
 import type { PlatformRepository } from './ports.js'
-import { buildCapabilityIndex, confirmSolutionDraft, createAgentSolutionDraft, createLocalSolutionDraft, editLocalSolutionDraft, renderLocalSolutionDraft } from './solutionDraftService.js'
+import { buildCapabilityIndex, confirmSolutionDraft, createAgentSolutionDraft, createLocalSolutionDraft, editLocalSolutionDraft, normalizeSolutionAnswerForDisplay, normalizeSolutionDraftForDisplay, renderLocalSolutionDraft } from './solutionDraftService.js'
 import { ulid } from 'ulid'
 
 const skillCatalog: ProductSkillDefinition[] = [
@@ -159,14 +159,200 @@ function toProductConversation(conversation: {
   }
 }
 
-function toProductMessage(message: ConversationMessage, snapshot: PlatformSnapshot): ProductMessage {
-  const solutionDraft = message.solutionDraftId
+function conversationTimeline(snapshot: PlatformSnapshot, conversationId: string) {
+  // The repository array is the authoritative insertion order.  ULIDs are
+  // intentionally not used as a tie breaker here: user/assistant pairs are
+  // often created within the same millisecond, and lexical id ordering can
+  // put the assistant before its request and break continuation recovery.
+  return snapshot.messages.filter((item) => item.conversationId === conversationId)
+}
+
+function adjacentSolutionDrafts(
+  message: ConversationMessage,
+  messageIndex: number,
+  timeline: readonly ConversationMessage[],
+  snapshot: PlatformSnapshot,
+) {
+  const drafts: SolutionDraft[] = []
+  const direct = message.solutionDraftId
     ? snapshot.solutionDrafts?.find((draft) => draft.id === message.solutionDraftId)
     : undefined
+  if (direct) drafts.push(direct)
+  // User messages do not carry a solutionDraftId in the legacy snapshot
+  // schema.  Resolve the draft from the assistant on the same side of the
+  // pair, stopping at the next assistant turn so unrelated prose is never
+  // treated as a solution answer.
+  for (let index = messageIndex + 1; index < timeline.length; index += 1) {
+    const candidate = timeline[index]
+    if (candidate.role !== 'ASSISTANT') continue
+    if (candidate.solutionDraftId) {
+      const draft = snapshot.solutionDrafts?.find((item) => item.id === candidate.solutionDraftId)
+      if (draft && !drafts.some((item) => item.id === draft.id)) drafts.push(draft)
+    }
+    break
+  }
+  for (let index = messageIndex - 1; index >= 0; index -= 1) {
+    const candidate = timeline[index]
+    if (candidate.role !== 'ASSISTANT') continue
+    if (candidate.solutionDraftId) {
+      const draft = snapshot.solutionDrafts?.find((item) => item.id === candidate.solutionDraftId)
+      if (draft && !drafts.some((item) => item.id === draft.id)) drafts.push(draft)
+    }
+    break
+  }
+  return drafts
+}
+
+function hasSolutionAnswerValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.some((item) => hasSolutionAnswerValue(item))
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('value' in record || 'answer' in record) return hasSolutionAnswerValue(record.value ?? record.answer)
+    return Object.keys(record).length > 0
+  }
+  return true
+}
+
+function answerOnlyForQuestions(content: string, draft: SolutionDraft | undefined) {
+  const trimmed = content.trim()
+  if (!trimmed || !draft?.clarificationQuestions?.length) return false
+  if (/(^|\n)补充信息：?/u.test(trimmed)) return false
+  const questions = draft.clarificationQuestions
+  const values = new Set(questions.flatMap((question) => [
+    question.id,
+    ...question.options.map((option) => option.id),
+    ...question.options.map((option) => option.label),
+  ].map((value) => value.trim().toLocaleLowerCase()).filter(Boolean)))
+  if (values.has(trimmed.toLocaleLowerCase())) return true
+  // Batch/legacy clients can persist `QUESTION_ID: option_id` lines instead
+  // of a scalar. Treat the message as answer-only only when every line maps
+  // to a known clarification id and has a non-empty value.
+  const mappedLines = trimmed.split('\n').map((line) => /^\s*([^：:]{1,120})[：:]\s*(\S.*)\s*$/u.exec(line)).filter(Boolean) as RegExpExecArray[]
+  if (mappedLines.length && mappedLines.every((match) => {
+    const question = questions.find((item) => item.id.toLocaleLowerCase() === match[1].trim().toLocaleLowerCase())
+    return Boolean(question && match[2].trim() && (
+      question.options.some((option) => option.id.toLocaleLowerCase() === match[2].trim().toLocaleLowerCase()
+        || option.label.trim().toLocaleLowerCase() === match[2].trim().toLocaleLowerCase())
+      || /^其他[：:]/u.test(match[2].trim())
+      || /暂不确定|跳过/u.test(match[2].trim())
+    ))
+  })) return true
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return Object.entries(parsed as Record<string, unknown>).length > 0
+          && Object.entries(parsed as Record<string, unknown>).every(([key, value]) => {
+            const question = questions.find((item) => item.id.toLocaleLowerCase() === key.toLocaleLowerCase())
+            return Boolean(question && hasSolutionAnswerValue(value))
+          })
+      }
+    } catch {
+      // Fall through to normal prose handling.
+    }
+  }
+  return false
+}
+
+function previousSolutionRequest(
+  assistantIndex: number,
+  draft: SolutionDraft | undefined,
+  timeline: readonly ConversationMessage[],
+) {
+  if (!draft) return ''
+  const directPrevious = assistantIndex > 0 && timeline[assistantIndex - 1]?.role === 'USER'
+    ? timeline[assistantIndex - 1]
+    : undefined
+  let root = directPrevious?.text?.trim() || draft.customerContext.trim()
+  const answers: string[] = []
+
+  // An old continuation persisted only the scalar answer as the user turn.
+  // Recover the original request from the blocked solution pair before it.
+  if (directPrevious && answerOnlyForQuestions(directPrevious.text, draft)) {
+    for (let index = assistantIndex - 2; index >= 0; index -= 1) {
+      const candidate = timeline[index]
+      if (candidate.role === 'ASSISTANT') {
+        if (!candidate.solutionDraftId) break
+        const priorUser = timeline[index - 1]
+        if (priorUser?.role === 'USER') root = priorUser.text.trim()
+        break
+      }
+    }
+    answers.push(directPrevious.text.trim())
+  }
+
+  // A legacy blocked draft can be followed by one or more answer-only user
+  // turns before the final assistant projection.  Include only values that
+  // match this draft's clarification set and stop at the next assistant.
+  for (let index = assistantIndex + 1; index < timeline.length; index += 1) {
+    const candidate = timeline[index]
+    if (candidate.role === 'ASSISTANT') break
+    if (candidate.role === 'USER' && (
+      answerOnlyForQuestions(candidate.text, draft)
+      || /(^|\n)补充信息：?/u.test(candidate.text)
+    )) answers.push(candidate.text.trim())
+  }
+  if (!answers.length) return root
+  const supplement = answers.join('\n')
+  if (/(^|\n)补充信息：?/u.test(root)) return `${root}\n${supplement}`
+  return `${root}\n\n补充信息：\n${supplement}`
+}
+
+function solutionDisplayContext(
+  message: ConversationMessage,
+  snapshot: PlatformSnapshot,
+) {
+  const timeline = conversationTimeline(snapshot, message.conversationId)
+  const messageIndex = timeline.findIndex((item) => item.id === message.id)
+  if (messageIndex < 0) return { text: message.text, request: '', draft: undefined as SolutionDraft | undefined }
+  const drafts = adjacentSolutionDrafts(message, messageIndex, timeline, snapshot)
+  const draft = drafts[0]
+  if (!draft) return { text: message.text, request: '', draft: undefined as SolutionDraft | undefined }
+  // A resumed user turn is commonly adjacent to a final draft whose
+  // clarificationQuestions have already been filtered out.  Retain the
+  // preceding blocked draft's options as display metadata so values such as
+  // `ENTERPRISE` can still be rendered as “企业客户” after a refresh.
+  const mergedQuestions = drafts.flatMap((item) => item.clarificationQuestions ?? [])
+    .filter((question, index, all) => all.findIndex((candidate) => candidate.id === question.id) === index)
+  const contextDraft = mergedQuestions.length
+    ? { ...draft, clarificationQuestions: mergedQuestions }
+    : draft
+  const request = message.role === 'ASSISTANT'
+    ? previousSolutionRequest(messageIndex, contextDraft, timeline)
+    : (() => {
+      // Only the immediately following assistant can be the response to this
+      // user turn.  Skipping a normal assistant would incorrectly attach an
+      // unrelated later solution draft to an intervening question or reply.
+      let assistantIndex = -1
+      for (let index = messageIndex + 1; index < timeline.length; index += 1) {
+        if (timeline[index].role === 'ASSISTANT') {
+          assistantIndex = index
+          break
+        }
+      }
+      const nextAssistant = assistantIndex >= 0 ? timeline[assistantIndex] : undefined
+      return nextAssistant?.solutionDraftId
+        ? previousSolutionRequest(assistantIndex, contextDraft, timeline)
+        : message.text
+    })()
+  return {
+    text: normalizeSolutionAnswerForDisplay(message.text, mergedQuestions),
+    request,
+    draft: contextDraft,
+  }
+}
+
+function toProductMessage(message: ConversationMessage, snapshot: PlatformSnapshot): ProductMessage {
+  const context = solutionDisplayContext(message, snapshot)
+  const solutionDraft = context.draft ? normalizeSolutionDraftForDisplay(context.draft, context.request) : undefined
   return {
     id: message.id,
     role: message.role,
-    content: message.text,
+    content: solutionDraft && message.role === 'ASSISTANT'
+      ? renderLocalSolutionDraft(solutionDraft)
+      : context.text,
     ...(message.skillId ? { skillId: message.skillId } : {}),
     answerStatus: message.answerStatus ?? null,
     citations: message.citations.map((citation) => toProductCitation(citation, snapshot)),
@@ -442,10 +628,15 @@ export class ProductChatService {
       })
       const snapshot = await this.repository.read()
       const resolvedSourceRunId = sourceRunId ?? `local-${ulid()}`
-      const draft = createLocalSolutionDraft(snapshot, id, content, attachmentIds, resolvedSourceRunId, executionTrace)
+      const requiresClarification = !executionTrace?.steps.some((step) => step.stage === 'WAITING_FOR_INPUT')
+      const rawDraft = createLocalSolutionDraft(snapshot, id, content, attachmentIds, resolvedSourceRunId, executionTrace, requiresClarification)
+      const displayContent = normalizeSolutionAnswerForDisplay(content, rawDraft.clarificationQuestions ?? [])
+      const draft = normalizeSolutionDraftForDisplay(rawDraft, displayContent)
       await this.repository.transact((next) => {
         next.solutionDrafts ??= []
         next.solutionDrafts.push(draft)
+        const user = next.messages.find((message) => message.id === result.userMessage.id)
+        if (user) user.text = displayContent
         const assistant = next.messages.find((message) => message.id === result.message.id)
         if (assistant) {
           assistant.solutionDraftId = draft.id
@@ -508,9 +699,11 @@ export class ProductChatService {
       const user = assistantIndex > 0 ? final.messages[assistantIndex - 1] : undefined
       if (assistant && user) return { conversation: final.conversation, userMessage: user, assistantMessage: assistant }
     }
-    const draft = createAgentSolutionDraft(snapshot, id, sourceRunId, payload)
+    const rawDraft = createAgentSolutionDraft(snapshot, id, sourceRunId, payload, content)
+    const displayContent = normalizeSolutionAnswerForDisplay(content, rawDraft.clarificationQuestions ?? [])
+    const draft = normalizeSolutionDraftForDisplay(rawDraft, displayContent)
     const result = await this.conversations.addMessage(id, {
-      text: content,
+      text: displayContent,
       skillId: 'SOLUTION_DRAFT',
       sessionAssetIds: attachmentIds,
       answerOverride: { text: '正在生成方案草稿…', confidence: 'INSUFFICIENT', citations: [] },

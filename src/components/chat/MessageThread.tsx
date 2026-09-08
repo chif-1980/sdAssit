@@ -20,7 +20,7 @@ import { ThinkingIndicator } from './ThinkingIndicator'
 import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
 import { SolutionDraftCard } from './SolutionDraftCard'
-import { ClarificationCard } from './ClarificationCard'
+import { ClarificationCard, type ClarificationAnswer } from './ClarificationCard'
 
 interface MessageThreadProps {
   messages: ProductMessage[]
@@ -29,6 +29,7 @@ interface MessageThreadProps {
   answerProgress?: ProductAnswerProgress
   answerProgressTrail?: readonly ProductAnswerProgress[]
   streamedAnswer?: string
+  activeClarificationRunId?: string
   highlightedPairId?: string
   expandedCitationId?: string
   onCitation: (citation: ProductCitation, trigger: HTMLButtonElement) => void
@@ -45,7 +46,7 @@ interface MessageThreadProps {
   onMaterialDistribute?: (material: ProductMaterial) => void
   onDraftSave?: (draftId: string, patch: SolutionDraftEditRequest) => Promise<void>
   onDraftConfirm?: (draftId: string) => Promise<void>
-  onInterruptAnswer?: (answer: string | string[], action: 'answer' | 'skip') => void
+  onInterruptAnswer?: (answer: ClarificationAnswer, action: 'answer' | 'skip') => void
   interruptDisabled?: boolean
 }
 
@@ -192,6 +193,10 @@ interface MessageBubbleProps {
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
   onDraftSave?: MessageThreadProps['onDraftSave']
   onDraftConfirm?: MessageThreadProps['onDraftConfirm']
+  onInterruptAnswer?: MessageThreadProps['onInterruptAnswer']
+  activeClarificationRunId?: string
+  interruptDisabled?: boolean
+  hideClarificationQuestions?: boolean
 }
 
 function MessageBubble({
@@ -206,6 +211,10 @@ function MessageBubble({
   onMaterialDistribute,
   onDraftSave,
   onDraftConfirm,
+  onInterruptAnswer,
+  activeClarificationRunId,
+  interruptDisabled = false,
+  hideClarificationQuestions = false,
 }: MessageBubbleProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [reasonType, setReasonType] = useState<FeedbackReasonType>(
@@ -228,6 +237,12 @@ function MessageBubble({
   }
 
   const skill = message.skillId ? taskDefinition(message.skillId) : undefined
+  const draftAnswerHandler = message.solutionDraft
+    && onInterruptAnswer
+    && Boolean(message.solutionDraft.sourceRunId)
+    && (!activeClarificationRunId || message.solutionDraft.sourceRunId === activeClarificationRunId)
+    ? onInterruptAnswer
+    : undefined
 
   return (
     <article className={`message-bubble message-${message.role.toLowerCase()}`}>
@@ -245,18 +260,26 @@ function MessageBubble({
         </span>
       ) : null}
       {message.role === 'ASSISTANT' ? (
-        <AssistantMarkdown
-          // Planned skills use INSUFFICIENT as their honest status, but their
-          // response is still actionable (it explains the rollout boundary).
-          // Only ordinary knowledge answers should replace the raw text with
-          // the generic evidence-shortage message.
-          content={message.answerStatus === 'INSUFFICIENT' && !skill
-            ? '暂无足够可靠资料'
-            : message.content}
-          citations={message.citations}
-          expandedCitationId={expandedCitationId}
-          onCitation={onCitation}
-        />
+        // A solution run already has a structured, editable representation
+        // below.  The runtime's `content` field often contains the same
+        // blueprint rendered as Markdown, so displaying both produced a
+        // duplicated answer (and placed feedback controls between two copies).
+        // Keep the structured card as the single source of truth; ordinary
+        // assistant answers retain the existing Markdown path.
+        message.solutionDraft ? null : (
+          <AssistantMarkdown
+            // Planned skills use INSUFFICIENT as their honest status, but their
+            // response is still actionable (it explains the rollout boundary).
+            // Only ordinary knowledge answers should replace the raw text with
+            // the generic evidence-shortage message.
+            content={message.answerStatus === 'INSUFFICIENT' && !skill
+              ? '暂无足够可靠资料'
+              : message.content}
+            citations={message.citations}
+            expandedCitationId={expandedCitationId}
+            onCitation={onCitation}
+          />
+        )
       ) : <p>{message.content}</p>}
       {message.role === 'ASSISTANT' && message.citations.some((citation) => !citationImageSrc(citation)) ? (
         <div className="message-citations message-citations-inline" aria-label="回答引用">
@@ -289,6 +312,9 @@ function MessageBubble({
           draft={message.solutionDraft}
           onSave={onDraftSave ? (patch) => onDraftSave(message.solutionDraft!.id, patch) : undefined}
           onConfirm={onDraftConfirm ? () => onDraftConfirm(message.solutionDraft!.id) : undefined}
+          onClarificationAnswer={draftAnswerHandler}
+          clarificationDisabled={interruptDisabled}
+          hideClarificationQuestions={hideClarificationQuestions}
         />
       ) : null}
       {message.role === 'ASSISTANT' ? (
@@ -366,6 +392,10 @@ function MessagePairBlock({
   onMaterialDistribute,
   onDraftSave,
   onDraftConfirm,
+  onInterruptAnswer,
+  activeClarificationRunId,
+  interruptDisabled,
+  hideClarificationQuestions,
 }: {
   pair: MessagePair
   highlighted: boolean
@@ -379,6 +409,10 @@ function MessagePairBlock({
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
   onDraftSave?: MessageThreadProps['onDraftSave']
   onDraftConfirm?: MessageThreadProps['onDraftConfirm']
+  onInterruptAnswer?: MessageThreadProps['onInterruptAnswer']
+  activeClarificationRunId?: string
+  interruptDisabled: boolean
+  hideClarificationQuestions: boolean
 }) {
   return (
     <div
@@ -386,8 +420,8 @@ function MessagePairBlock({
       data-message-pair={pair.id}
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
-      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} /> : null}
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
     </div>
   )
 }
@@ -399,6 +433,7 @@ export function MessageThread({
   answerProgress,
   answerProgressTrail,
   streamedAnswer,
+  activeClarificationRunId,
   highlightedPairId,
   expandedCitationId,
   onCitation,
@@ -416,6 +451,7 @@ export function MessageThread({
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
   const pairs = groupMessagePairs(messages)
+  const hideDraftClarifications = Boolean(pendingQuestion && agentInterruptQuestion)
 
   useEffect(() => {
     const end = endRef.current
@@ -439,6 +475,14 @@ export function MessageThread({
           onMaterialDistribute={onMaterialDistribute}
           onDraftSave={onDraftSave}
           onDraftConfirm={onDraftConfirm}
+          // Historical solution drafts can remain actionable after a refresh
+          // even when there is no live interrupt object in memory.  Pass the
+          // handler through so the draft card can render its choice controls;
+          // MessageBubble still scopes it to the active run when one exists.
+          onInterruptAnswer={onInterruptAnswer}
+          activeClarificationRunId={activeClarificationRunId}
+          interruptDisabled={interruptDisabled}
+          hideClarificationQuestions={hideDraftClarifications}
         />
       ))}
       {pendingQuestion ? (
@@ -466,13 +510,18 @@ export function MessageThread({
               />
               {streamedAnswer ? (
                 <div className="message-streaming-body" aria-live="polite">
-                  <span className="message-streaming-status" role="status">正在生成预览</span>
+                  <span className="message-streaming-status" role="status">{answerProgress?.status === 'FAILED' ? '未完成的方案预览' : '正在生成预览'}</span>
                   <AssistantMarkdown content={streamedAnswer} citations={[]} onCitation={onCitation} />
                 </div>
               ) : null}
             </article>
           )}
         </>
+      ) : null}
+      {!pendingQuestion && answerProgress ? (
+        <div className="sr-only" role="status" aria-label="执行过程">
+          {answerProgress.status === 'FAILED' ? '生成失败' : answerProgress.message}
+        </div>
       ) : null}
       <div ref={endRef} aria-hidden="true" />
     </div>

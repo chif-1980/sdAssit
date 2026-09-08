@@ -246,6 +246,9 @@ const draftRequirementSchema = z.object({
 const clarificationQuestionSchema = z.object({
   id: z.string(),
   question: z.string().min(1),
+  intent: z.string().optional(),
+  domain: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
   type: z.enum(['SINGLE_CHOICE', 'MULTIPLE_CHOICE', 'TEXT']),
   options: z.array(z.object({
     id: z.string(),
@@ -325,6 +328,7 @@ const solutionDraftSchema = z.object({
   assumptions: z.array(z.string()),
   openQuestions: z.array(z.string()),
   clarificationQuestions: z.array(clarificationQuestionSchema).optional(),
+  clarificationQuestionsResolved: z.boolean().optional(),
   risks: z.array(z.string()),
   conflicts: z.array(z.object({
     claim: z.string(),

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Clock3, FileSearch, LoaderCircle, Search, Sparkles, ShieldCheck, Waypoints, Workflow } from 'lucide-react'
+import { Check, ChevronDown, CircleAlert, Clock3, FileSearch, LoaderCircle, Search, Sparkles, ShieldCheck, Waypoints, Workflow } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { ProductAnswerProgress } from '../../../shared/api/product.js'
@@ -45,16 +45,21 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
     return items
   }, []), [progress, progressTrail])
   const visibleProgress = progressItems.at(-1) ?? progress
+  const failed = visibleProgress?.status === 'FAILED'
+  const terminal = failed || visibleProgress?.status === 'COMPLETED' || visibleProgress?.status === 'INTERRUPTED'
   const detailsVisible = detailsOpen
   const displayedElapsedMs = progress?.elapsedMs && progress.elapsedMs > 0 ? progress.elapsedMs : elapsedMs
 
   useEffect(() => {
-    const startedAt = Date.now()
+    if (terminal) return
+    const startedAt = Date.now() - elapsedMs
     const updateElapsed = () => setElapsedMs(Date.now() - startedAt)
     updateElapsed()
     const timer = window.setInterval(updateElapsed, 1_000)
     return () => window.clearInterval(timer)
-  }, [])
+  // Preserve the elapsed time when a failed or paused run stops updating.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminal])
 
   return (
     <div
@@ -66,10 +71,10 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
         <div className="thinking-compact">
           <div className="thinking-summary">
             <span className="thinking-summary-icon" aria-hidden="true">
-              {visibleProgress?.status === 'COMPLETED' ? <Check size={14} /> : <LoaderCircle className="thinking-spinner" size={15} />}
+              {failed ? <CircleAlert size={14} /> : terminal ? <Check size={14} /> : <LoaderCircle className="thinking-spinner" size={15} />}
             </span>
             <span className="thinking-summary-copy">
-              <strong>{visibleProgress ? (stageByKey.get(visibleProgress.stage)?.label ?? visibleProgress.stage) : '正在准备'}</strong>
+              <strong>{failed ? '生成失败' : visibleProgress ? (stageByKey.get(visibleProgress.stage)?.label ?? visibleProgress.stage) : '正在准备'}</strong>
               <span>{visibleProgress?.message ?? '正在连接知识服务'}</span>
             </span>
           </div>
@@ -100,7 +105,7 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
               return (
                 <li key={`${item.stage}-${index}`} className={`thinking-step${complete ? ' is-complete' : ' is-current'}`}>
                   <span className="thinking-step-marker" aria-hidden="true">
-                    {complete ? <Check size={12} /> : <Icon size={13} />}
+                    {item.status === 'FAILED' ? <CircleAlert size={12} /> : complete ? <Check size={12} /> : <Icon size={13} />}
                   </span>
                   <span className="thinking-step-copy">
                     <strong>{definition?.label ?? item.stage}</strong>
@@ -110,11 +115,11 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
               )
             })}
           </ol>
-          <p className="thinking-hint">
+          {!terminal ? <p className="thinking-hint">
             {displayedElapsedMs >= 12_000
               ? '资料较多，我还在逐条核对来源。完成后会显示可编辑的方案草稿。'
               : '执行过程会随 Agent 的实际动作更新，不会预先展示未执行的阶段。'}
-          </p>
+          </p> : null}
         </div>
     </div>
   )

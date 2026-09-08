@@ -63,6 +63,23 @@ export interface ProductAgentInterrupt {
   questionId?: string
   type?: ClarificationQuestion['type']
   options?: ClarificationQuestion['options']
+  /**
+   * A LangGraph ask_user_question interrupt may contain several independent
+   * questions.  Keep the first-question fields above for backwards
+   * compatibility, while exposing the complete batch to the product UI so a
+   * resume is submitted only after every required answer is collected.
+   */
+  questions?: Array<{
+    id?: string
+    question: string
+    questionId?: string
+    type?: ClarificationQuestion['type']
+    options?: ClarificationQuestion['options']
+    required?: boolean
+    allowSkip?: boolean
+    position?: number
+    total?: number
+  }>
   required?: boolean
   allowSkip?: boolean
   position?: number
@@ -163,6 +180,7 @@ export interface SolutionDraft {
   assumptions: string[]
   openQuestions: string[]
   clarificationQuestions?: ClarificationQuestion[]
+  clarificationQuestionsResolved?: boolean
   risks: string[]
   conflicts: ConflictItem[]
   evidenceGaps: string[]
@@ -199,6 +217,7 @@ export interface SolutionDraftEditRequest {
   confidenceSummary?: ConfidenceSummary
   review?: SolutionReviewState
   clarificationQuestions?: ClarificationQuestion[]
+  clarificationQuestionsResolved?: boolean
 }
 
 export interface SolutionDraftConfirmResponse {

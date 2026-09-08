@@ -25,12 +25,15 @@ import type { ComposerAttachment, ComposerMention } from '../components/chat/Cha
 import { businessTasks, composerMentions, inferBusinessTask, type BusinessTask } from '../components/chat/businessTasks'
 import { ConversationOutline } from '../components/chat/ConversationOutline'
 import { MessageThread } from '../components/chat/MessageThread'
+import { enrichClarificationQuestion, type ClarificationAnswer } from '../components/chat/ClarificationCard'
+import { clarificationQuestionsForDraft } from '../components/chat/SolutionDraftCard'
 import { MaterialDistributionDialog } from '../components/chat/MaterialDistributionDialog'
 import { canShareMaterialFiles, openShareApplication, shareMaterialViaDevice, type ShareApplicationOpenResult } from '../components/chat/materialSharing'
 import { messagePairAnchorId } from '../components/chat/messagePairs'
 import { SourceDrawer } from '../components/chat/SourceDrawer'
 import { attachmentError as getAttachmentError } from '../components/chat/fileAttachments'
 import { ProductShell } from '../components/layout/ProductShell'
+import { useSession } from '../session/SessionProvider'
 
 interface ConversationDetail {
   conversation: ProductConversation
@@ -59,42 +62,594 @@ const exampleQuestions = [
 
 const FALLBACK_CONVERSATION_TITLE = '未命名会话'
 
-function normalizeInterrupt(value: unknown, runId?: string): ProductAgentInterrupt | undefined {
+type InterruptQuestionView = {
+  id?: string
+  question: string
+  questionId?: string
+  type?: ProductAgentInterrupt['type']
+  options?: ProductAgentInterrupt['options']
+  required?: boolean
+  allowSkip?: boolean
+  position?: number
+  total?: number
+}
+
+export function normalizeInterrupt(value: unknown, runId?: string): ProductAgentInterrupt | undefined {
   if (!value || typeof value !== 'object') return undefined
   const payload = value as Record<string, unknown>
-  const question = typeof payload.question === 'string' && payload.question.trim()
-    ? payload.question.trim()
-    : undefined
-  if (!question) return undefined
-  const type = payload.type === 'SINGLE_CHOICE' || payload.type === 'MULTIPLE_CHOICE' || payload.type === 'TEXT'
-    ? payload.type
-    : undefined
-  const options = Array.isArray(payload.options)
-    ? payload.options.flatMap((item) => {
-      if (!item || typeof item !== 'object') return []
-      const option = item as Record<string, unknown>
+  const rawQuestions = Array.isArray(payload.questions) && payload.questions.length
+    ? payload.questions
+    : [payload]
+  const seenIds = new Set<string>()
+  const seenTexts = new Set<string>()
+  const questions = rawQuestions.flatMap((raw, index) => {
+    if (!raw || typeof raw !== 'object') return []
+    const item = raw as Record<string, unknown>
+    const question = typeof item.question === 'string' && item.question.trim()
+      ? item.question.trim()
+      : typeof item.prompt === 'string' && item.prompt.trim()
+        ? item.prompt.trim()
+        : undefined
+    if (!question) return []
+    const questionId = typeof item.questionId === 'string' && item.questionId.trim()
+      ? item.questionId.trim()
+      : typeof item.id === 'string' && item.id.trim()
+        ? item.id.trim()
+        : typeof payload.questionId === 'string' && payload.questionId.trim()
+          ? payload.questionId.trim()
+          : `question-${index + 1}`
+    const normalizedText = question.replace(/\s+/gu, ' ')
+    if (seenIds.has(questionId) || seenTexts.has(normalizedText)) return []
+    seenIds.add(questionId)
+    seenTexts.add(normalizedText)
+    const typeValue = item.type ?? payload.type
+    const type = typeValue === 'SINGLE_CHOICE' || typeValue === 'MULTIPLE_CHOICE' || typeValue === 'TEXT'
+      ? typeValue
+      : undefined
+    const rawOptions = item.options ?? item.choices ?? payload.options
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.flatMap((optionValue) => {
+      if (!optionValue || typeof optionValue !== 'object') return []
+      const option = optionValue as Record<string, unknown>
       const id = typeof option.id === 'string' ? option.id : ''
       const label = typeof option.label === 'string' ? option.label : id
       return id && label ? [{ id, label, ...(typeof option.description === 'string' ? { description: option.description } : {}) }] : []
     })
     : undefined
+    return [enrichClarificationQuestion({
+      id: questionId,
+      question,
+      questionId,
+      ...(type ? { type } : {}),
+      ...(options?.length ? { options } : {}),
+      required: item.required !== false && payload.required !== false,
+      allowSkip: item.allowSkip !== false && payload.allowSkip !== false,
+      ...(typeof item.position === 'number' ? { position: item.position } : {}),
+      ...(typeof item.total === 'number' ? { total: item.total } : {}),
+    } satisfies InterruptQuestionView)]
+  })
+  if (!questions.length) return undefined
+  const normalizedQuestions = questions.map((question, index) => ({
+    ...question,
+    id: question.questionId ?? question.id ?? `question-${index + 1}`,
+    questionId: question.questionId ?? question.id ?? `question-${index + 1}`,
+    position: index + 1,
+    total: questions.length,
+  }))
+  const first = normalizedQuestions[0]
   return {
-    question,
-    ...(typeof payload.questionId === 'string' ? { questionId: payload.questionId } : {}),
-    ...(type ? { type } : {}),
-    ...(options?.length ? { options } : {}),
-    required: payload.required !== false,
-    allowSkip: payload.allowSkip !== false,
-    ...(typeof payload.position === 'number' ? { position: payload.position } : {}),
-    ...(typeof payload.total === 'number' ? { total: payload.total } : {}),
+    ...first,
+    questions: normalizedQuestions,
     ...(runId ? { runId } : typeof payload.runId === 'string' ? { runId: payload.runId } : {}),
     status: 'INTERRUPTED',
-  }
+  } as ProductAgentInterrupt
 }
 
 function normalizeConversation(conversation: ProductConversation): ProductConversation {
   const title = typeof conversation.title === 'string' ? conversation.title.trim() : ''
   return { ...conversation, title: title || FALLBACK_CONVERSATION_TITLE }
+}
+
+/**
+ * Resume requests send option ids to the Agent so the runtime can make a
+ * deterministic decision.  Those ids are an implementation detail, though,
+ * and should never be rendered as the user's conversational reply.  Prefer
+ * the option label from the active question and keep a small compatibility
+ * map for legacy questions that were persisted without their options.
+ */
+const legacyClarificationLabels: Record<string, string> = {
+  confirmed: '已确定',
+  planning: '已有候选，尚未最终确认',
+  undecided: '尚未确定',
+  other: '其他情况',
+  self_operated: '自营',
+  platform: '平台入驻 / 多商户',
+  distribution: '分销',
+  store_delivery: '门店配送',
+  user_app: '用户端',
+  admin: '运营管理端',
+  catalog: '商品管理与上下架',
+  transaction: '购物车、下单和支付',
+  small: '少于 100 个 SKU',
+  medium: '100–1000 个 SKU',
+  large: '超过 1000 个 SKU',
+  erp: 'ERP / 业务系统',
+  inventory: '库存系统',
+  logistics: '物流 / 配送系统',
+  service: '客服 / 会员系统',
+  none: '暂无系统需要对接',
+  refund: '退款与售后',
+  coupon: '优惠券 / 促销',
+  membership: '会员 / 积分',
+  group_buy: '拼团 / 秒杀',
+}
+
+export function displayClarificationAnswer(
+  answer: ClarificationAnswer,
+  question?: ProductAgentInterrupt,
+) {
+  const questions: InterruptQuestionView[] = question?.questions?.length
+    ? question.questions
+    : question
+      ? [question]
+      : []
+  /**
+   * Convert an Agent-facing option id into the label a user selected.  The
+   * runtime has historically returned ids with different casing and, for
+   * multi-select answers, occasionally serialized an array as a string.  Do
+   * this conversion at the product boundary so neither the transcript nor a
+   * pending-answer bubble leaks implementation details such as `confirmed`.
+   */
+  const displayValue = (value: unknown, currentQuestion?: InterruptQuestionView): string => {
+    const enrichedQuestion = currentQuestion ? enrichClarificationQuestion(currentQuestion) : undefined
+    const options = enrichedQuestion?.options ?? []
+    const optionByLower = new Map(options.map((option) => [option.id.toLocaleLowerCase(), option.label]))
+    const legacyByLower = new Map(Object.entries(legacyClarificationLabels).map(([id, label]) => [id.toLocaleLowerCase(), label]))
+    const knownIds = new Set([...optionByLower.keys(), ...legacyByLower.keys()])
+
+    if (Array.isArray(value)) {
+      return value.map((item) => displayValue(item, currentQuestion)).filter(Boolean).join('、')
+    }
+    if (value && typeof value === 'object') {
+      // Keep nested values readable without exposing a JavaScript object
+      // representation.  This also handles adapters that wrap a scalar as
+      // `{ value: "confirmed" }`.
+      const record = value as Record<string, unknown>
+      if ('value' in record || 'answer' in record) return displayValue(record.value ?? record.answer, currentQuestion)
+      return Object.values(record).map((item) => displayValue(item, currentQuestion)).filter(Boolean).join('、')
+    }
+    if (typeof value !== 'string') return value == null ? '' : String(value)
+    const normalized = value.trim()
+    if (!normalized) return ''
+    if (normalized === '（用户暂不确定）' || normalized === '(用户暂不确定)' || normalized === '暂不确定') return '暂不确定'
+
+    // Some older resume adapters persisted a JSON array in the message body.
+    // Parse only an array-shaped string; ordinary prose remains unchanged.
+    if (normalized.startsWith('[') && normalized.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(normalized) as unknown
+        if (Array.isArray(parsed)) return displayValue(parsed, currentQuestion)
+      } catch {
+        // Fall through to conservative token handling for JSON-ish strings.
+      }
+    }
+
+    const labelFor = (token: string) => {
+      const tokenKey = token.trim().toLocaleLowerCase()
+      if (!tokenKey) return ''
+      if (token.trim().startsWith('其他：') || token.trim().startsWith('其他:')) return token.trim()
+      return optionByLower.get(tokenKey) ?? legacyByLower.get(tokenKey) ?? token.trim()
+    }
+    // Translate a plain multi-select serialization only when every segment is
+    // a known id.  This avoids rewriting natural-language text containing an
+    // English word that happens to resemble an option id.
+    const segments = normalized.split(/[、,，;；]/u).map((item) => item.trim()).filter(Boolean)
+    if (segments.length > 1 && segments.every((item) => knownIds.has(item.toLocaleLowerCase()))) {
+      return segments.map(labelFor).join('、')
+    }
+    // JSON-ish arrays from legacy clients may use single quotes or omit
+    // strict JSON quoting.  Extract only known ids, preserving surrounding
+    // punctuation when there is at least one complete token.
+    if (normalized.includes('[') && normalized.includes(']') && knownIds.size) {
+      const extracted = [...normalized.matchAll(/[A-Za-z][A-Za-z0-9_-]*/gu)]
+        .map((match) => match[0])
+        .filter((token) => knownIds.has(token.toLocaleLowerCase()))
+      if (extracted.length) return extracted.map(labelFor).join('、')
+    }
+    return labelFor(normalized)
+  }
+  if (answer && typeof answer === 'object' && !Array.isArray(answer)) {
+    return Object.entries(answer)
+      .map(([questionId, value]) => {
+        const currentQuestion = questions.find((item) => (item.questionId ?? item.id)?.toLocaleLowerCase() === questionId.toLocaleLowerCase())
+        const label = currentQuestion?.question ?? questionId
+        return `${label}：${displayValue(value, currentQuestion)}`
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  return displayValue(answer, questions[0])
+}
+
+function clarificationAnswerIds(answer: ClarificationAnswer, interrupt?: ProductAgentInterrupt) {
+  if (answer && typeof answer === 'object' && !Array.isArray(answer)) return new Set(Object.keys(answer))
+  const firstQuestion = interrupt?.questions?.[0]
+  const questionId = interrupt?.questionId
+    ?? firstQuestion?.questionId
+    ?? firstQuestion?.id
+  return questionId ? new Set([questionId]) : new Set<string>()
+}
+
+function filterAnsweredClarifications(
+  questions: NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions'] | undefined,
+  answeredIds: ReadonlySet<string>,
+) {
+  if (!questions?.length || !answeredIds.size) return questions ?? []
+  return questions.filter((question) => !answeredIds.has(question.id))
+}
+
+type HistoricalClarificationQuestion = NonNullable<NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions']>[number]
+
+function historicalClarificationQuestions(
+  items: ProductMessage[],
+  messageIndex: number,
+) {
+  // A resumed answer is persisted directly beside the blocked draft.  Keep
+  // the lookup adjacent so a later ordinary user message cannot accidentally
+  // inherit option ids from an older, unrelated clarification.
+  const previous = items[messageIndex - 1]
+  const next = items[messageIndex + 1]
+  const source = previous?.role === 'ASSISTANT' && previous.solutionDraft?.clarificationQuestions?.length
+    ? previous
+    : next?.role === 'ASSISTANT' && next.solutionDraft?.clarificationQuestions?.length
+      ? next
+      : undefined
+  return source?.solutionDraft?.clarificationQuestions ?? []
+}
+
+function normalizedHistoricalQuestions(
+  items: ProductMessage[],
+  messageIndex: number,
+) {
+  return historicalClarificationQuestions(items, messageIndex).map((question) => (
+    enrichClarificationQuestion(question) as HistoricalClarificationQuestion
+  ))
+}
+
+function historicalOptionLabel(value: string, question?: HistoricalClarificationQuestion) {
+  const normalized = value.trim()
+  if (!normalized) return ''
+  if (normalized === '（用户暂不确定）' || normalized === '(用户暂不确定)') return '暂不确定'
+  if (normalized.startsWith('其他：')) return normalized
+  const option = question?.options?.find((item) => item.id === normalized
+    || item.id.toLocaleLowerCase() === normalized.toLocaleLowerCase())
+  if (option?.label) return option.label
+  const legacy = Object.entries(legacyClarificationLabels)
+    .find(([id]) => id.toLocaleLowerCase() === normalized.toLocaleLowerCase())?.[1]
+  return legacy ?? normalized
+}
+
+function historicalQuestionById(
+  questions: HistoricalClarificationQuestion[],
+  questionId: string,
+) {
+  const normalizedId = questionId.trim().toLocaleLowerCase()
+  return questions.find((item) => item.id.trim().toLocaleLowerCase() === normalizedId)
+}
+
+function historicalQuestionForOption(
+  questions: HistoricalClarificationQuestion[],
+  optionId: string,
+) {
+  const normalizedId = optionId.trim().toLocaleLowerCase()
+  return questions.find((candidate) => candidate.options?.some(
+    (option) => option.id.trim().toLocaleLowerCase() === normalizedId,
+  ))
+}
+
+function historicalAnswerText(
+  value: unknown,
+  questions: HistoricalClarificationQuestion[],
+  question?: HistoricalClarificationQuestion,
+): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => historicalAnswerText(item, questions, question))
+      .filter(Boolean)
+      .join('、')
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    // Some older adapters persisted one answer as
+    // `{ questionId, answer }` instead of a question-id keyed map.
+    if (typeof record.questionId === 'string' && ('answer' in record || 'value' in record)) {
+      const current = historicalQuestionById(questions, record.questionId)
+      const display = historicalAnswerText(record.answer ?? record.value, questions, current)
+      return display
+        ? current ? `${current.question}：${display}` : display
+        : ''
+    }
+    return Object.entries(record)
+      .map(([questionId, answer]) => {
+        const current = historicalQuestionById(questions, questionId)
+        const label = current?.question ?? questionId
+        const display = historicalAnswerText(answer, questions, current)
+        return display ? `${label}：${display}` : ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (typeof value !== 'string') return ''
+  const normalized = value.trim()
+  if (!normalized) return ''
+  const optionIds = new Set([
+    ...questions.flatMap((item) => item.options?.map((option) => option.id) ?? []),
+    ...Object.keys(legacyClarificationLabels),
+  ])
+  const optionIdsByLower = new Map([...optionIds].map((id) => [id.toLocaleLowerCase(), id]))
+  // A persisted multi-select answer is occasionally stored as a plain
+  // comma-separated string rather than JSON.  Only translate it when every
+  // segment is a known option id; ordinary prose remains untouched.
+  const segments = normalized.split(/[、,，;；]/u).map((item) => item.trim()).filter(Boolean)
+  if (segments.length > 1 && segments.every((item) => optionIdsByLower.has(item.toLocaleLowerCase()))) {
+    return segments.map((item) => historicalOptionLabel(
+      item,
+      question ?? historicalQuestionForOption(questions, item),
+    )).join('、')
+  }
+  return historicalOptionLabel(
+    normalized,
+    question ?? historicalQuestionForOption(questions, normalized),
+  )
+}
+
+function normalizeHistoricalClarificationContent(
+  content: string,
+  questions: HistoricalClarificationQuestion[],
+) {
+  if (!content.trim()) return content
+  const optionIds = new Set([
+    ...questions.flatMap((item) => item.options?.map((option) => option.id) ?? []),
+    ...Object.keys(legacyClarificationLabels),
+  ])
+  const optionIdsByLower = new Map([...optionIds].map((id) => [id.toLocaleLowerCase(), id]))
+  const trimmed = content.trim()
+
+  // Newer adapters may persist a batch answer as JSON.  Render its values by
+  // question while keeping unknown/custom values intact.
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      const rendered = historicalAnswerText(parsed, questions)
+      if (rendered) return rendered
+    } catch {
+      // Fall through to the conservative plain-text handling below.
+    }
+  }
+
+  // Local resume runs keep the original request followed by a "补充信息"
+  // section.  Translate only that section so a normal user prompt containing
+  // an English word such as "admin" is never rewritten.
+  const supplementMarker = /(^|\n)补充信息：?/u.exec(content)
+  if (supplementMarker) {
+    const markerEnd = supplementMarker.index + supplementMarker[0].length
+    const prefix = content.slice(0, markerEnd)
+    const supplement = content.slice(markerEnd)
+    // Resume answers can be serialized as `user_app、transaction`, JSON-ish
+    // arrays, or ordinary whitespace-separated values. Replace only complete
+    // option-id tokens (case-insensitively) so punctuation is preserved and a
+    // prose word containing an id, such as `administrator`, is untouched.
+    const optionIdsByLower = new Map<string, string>()
+    for (const id of optionIds) optionIdsByLower.set(id.toLocaleLowerCase(), id)
+    const escapedIds = [...optionIdsByLower.keys()]
+      .sort((left, right) => right.length - left.length)
+      .map((id) => id.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    // Batch resumes have also been persisted as `QUESTION_ID: answer` lines.
+    // Resolve the line prefix before translating option ids because a
+    // question id can legitimately match an option id (for example ADMIN).
+    const translatedQuestionIds = supplement
+      .split('\n')
+      .map((line) => line.replace(
+        /^(\s*(?:[-*]\s*)?)([^\s：:]+)(\s*[：:])/u,
+        (match, indentation: string, questionId: string, separator: string) => {
+          const current = historicalQuestionById(questions, questionId)
+          return current ? `${indentation}${current.question}${separator}` : match
+        },
+      ))
+      .join('\n')
+    const translated = escapedIds.length
+      ? translatedQuestionIds.replace(
+        new RegExp(`(?<![A-Za-z0-9_-])(${escapedIds.join('|')})(?![A-Za-z0-9_-])`, 'giu'),
+        (token) => {
+          const canonicalId = optionIdsByLower.get(token.toLocaleLowerCase()) ?? token
+          const question = historicalQuestionForOption(questions, canonicalId)
+          return historicalOptionLabel(canonicalId, question)
+        },
+      )
+      : translatedQuestionIds
+    return `${prefix}${translated}`
+  }
+
+  // A single scalar answer (the common remote-run shape) can be translated
+  // directly.  For a plain multi-select string, historicalAnswerText handles
+  // the safe all-known-options case above.
+  const rendered = historicalAnswerText(trimmed, questions)
+  return rendered !== trimmed && (optionIdsByLower.has(trimmed.toLocaleLowerCase()) || rendered.includes('、'))
+    ? content.replace(trimmed, rendered)
+    : content
+}
+
+function normalizeHistoricalMessages(items: ProductMessage[]) {
+  const normalized = items.map((message, index) => {
+    if (message.role !== 'USER') return message
+    const questions = normalizedHistoricalQuestions(items, index)
+    const content = normalizeHistoricalClarificationContent(message.content, questions)
+    return content === message.content ? message : { ...message, content }
+  })
+  return markHistoricalAnsweredClarifications(normalized)
+}
+
+/**
+ * Historical transcripts predate the durable interrupt endpoint.  In those
+ * transcripts a blocked draft remains in place after a resume, so rendering
+ * its original questions would make an already answered card reappear after
+ * a refresh.  Infer only unambiguous answers (option id/label, a structured
+ * question-id map, or the explicit "补充信息" section) and mark those
+ * questions resolved in the view model.  Ordinary later user messages are
+ * deliberately ignored so an unrelated follow-up does not hide a pending
+ * clarification.
+ */
+function markHistoricalAnsweredClarifications(items: ProductMessage[]) {
+  return items.map((message, messageIndex) => {
+    const draft = message.role === 'ASSISTANT' ? message.solutionDraft : undefined
+    const questions = draft?.clarificationQuestions
+    if (!draft || draft.status !== 'BLOCKED' || draft.clarificationQuestionsResolved || !questions?.length) return message
+    const answeredIds = historicalAnsweredQuestionIds(items, messageIndex, questions)
+    if (!answeredIds.size) return message
+    const remaining = questions.filter((question) => !answeredIds.has(question.id))
+    return {
+      ...message,
+      solutionDraft: {
+        ...draft,
+        clarificationQuestions: remaining,
+        clarificationQuestionsResolved: remaining.length === 0,
+      },
+    }
+  })
+}
+
+function historicalValueTokens(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => historicalValueTokens(item))
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if ('value' in record || 'answer' in record) return historicalValueTokens(record.value ?? record.answer)
+    return Object.values(record).flatMap((item) => historicalValueTokens(item))
+  }
+  if (typeof value !== 'string') return []
+  const text = value.trim()
+  if (!text) return []
+  if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      const parsedTokens = historicalValueTokens(parsed)
+      if (parsedTokens.length) return parsedTokens
+    } catch {
+      // Keep conservative plain-text handling below for JSON-ish payloads.
+    }
+  }
+  return text
+    .split(/[\n、,，;；|]/u)
+    .map((item) => item.replace(/^\s*[-*]\s*/u, '').trim())
+    .filter(Boolean)
+}
+
+function historicalQuestionMatchesToken(question: HistoricalClarificationQuestion, token: string) {
+  const normalizedToken = token.trim().toLocaleLowerCase()
+  if (!normalizedToken) return false
+  if (normalizedToken === '（用户暂不确定）' || normalizedToken === '(用户暂不确定)' || normalizedToken === '暂不确定' || normalizedToken === '跳过') return true
+  if (normalizedToken.startsWith('其他：') || normalizedToken.startsWith('其他:')) return true
+  const values = [
+    question.id,
+    ...(question.options ?? []).flatMap((option) => [option.id, option.label]),
+    ...Object.keys(legacyClarificationLabels).filter((id) => question.options?.some((option) => option.id.toLocaleLowerCase() === id.toLocaleLowerCase()) ?? false),
+  ]
+  return values.some((value) => value.trim().toLocaleLowerCase() === normalizedToken)
+}
+
+function historicalAnsweredQuestionIds(
+  items: ProductMessage[],
+  draftIndex: number,
+  questions: HistoricalClarificationQuestion[],
+) {
+  const answered = new Set<string>()
+  const normalizedQuestions = questions.map((question) => enrichClarificationQuestion(question) as HistoricalClarificationQuestion)
+  const pending = () => normalizedQuestions.filter((question) => !answered.has(question.id))
+  const markByTokens = (tokens: string[], preferred?: HistoricalClarificationQuestion) => {
+    for (const token of tokens) {
+      const match = preferred && historicalQuestionMatchesToken(preferred, token)
+        ? preferred
+        : normalizedQuestions.find((question) => historicalQuestionMatchesToken(question, token))
+      if (match) answered.add(match.id)
+    }
+  }
+
+  for (let index = draftIndex + 1; index < items.length; index += 1) {
+    const item = items[index]
+    // The first subsequent assistant solution message closes this historical
+    // continuation window.  Messages after it belong to a later turn.
+    if (item.role === 'ASSISTANT') {
+      // A multi-question resume may persist a second BLOCKED draft for the
+      // remaining questions before the final continuation. Keep walking over
+      // that intermediate card so the original card can be marked with all
+      // answers from the complete historical chain. Stop at a normal answer
+      // (or any unrelated assistant turn) to avoid consuming later prose.
+      if (item.solutionDraft?.status === 'BLOCKED' && item.solutionDraft.clarificationQuestions?.length) continue
+      break
+    }
+    const content = item.content.trim()
+    if (!content) continue
+    const supplement = /(?:^|\n)补充信息：?/u.exec(content)
+    const answerText = supplement ? content.slice(supplement.index + supplement[0].length) : content
+
+    // Prefer an explicit question-id map when one was persisted.  This is
+    // the only safe way to distinguish two questions that share an option
+    // label such as “已确定”.
+    const parseCandidates = [content, answerText]
+    for (const candidate of parseCandidates) {
+      const trimmed = candidate.trim()
+      if (!((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']')))) continue
+      try {
+        const parsed = JSON.parse(trimmed) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+            const question = normalizedQuestions.find((itemToFind) => itemToFind.id.toLocaleLowerCase() === key.toLocaleLowerCase())
+            if (question && historicalValueTokens(value).length) answered.add(question.id)
+          }
+        }
+      } catch {
+        // Not strict JSON; token matching below remains conservative.
+      }
+    }
+
+    const lines = answerText.split(/\n+/u).map((line) => line.trim()).filter(Boolean)
+    for (const line of lines) {
+      const separator = line.search(/[：:]/u)
+      if (separator > 0) {
+        const left = line.slice(0, separator).trim()
+        const right = line.slice(separator + 1).trim()
+        const byIdOrQuestion = normalizedQuestions.find((question) => (
+          question.id.toLocaleLowerCase() === left.toLocaleLowerCase()
+          || question.question.trim() === left
+        ))
+        if (byIdOrQuestion && historicalValueTokens(right).length) {
+          answered.add(byIdOrQuestion.id)
+          continue
+        }
+        // The product's human-readable resume format prefixes a question's
+        // answer with its full text. If it is not a prefix, process the right
+        // side as a scalar option below.
+        markByTokens(historicalValueTokens(right), byIdOrQuestion)
+        continue
+      }
+      const tokens = historicalValueTokens(line)
+      const before = answered.size
+      markByTokens(tokens)
+      // A supplemental free-text answer has no option id to match. Only
+      // accept it when the explicit marker is present and exactly one
+      // question remains, avoiding accidental suppression for normal prose.
+      if (supplement && answered.size === before && pending().length === 1 && normalizedQuestions[0].type === 'TEXT') {
+        answered.add(pending()[0].id)
+      }
+    }
+
+    // A scalar option answer without a section marker is valid only when it
+    // maps to exactly one question. This handles older remote transcripts.
+    if (!supplement && answered.size === 0 && normalizedQuestions.length === 1) {
+      markByTokens(historicalValueTokens(content), normalizedQuestions[0])
+    }
+    if (answered.size === normalizedQuestions.length) break
+  }
+  return answered
 }
 
 function sortConversations(conversations: ProductConversation[]) {
@@ -187,6 +742,51 @@ function businessTaskFromMessages(items: ProductMessage[]): BusinessTask {
   // the material-search context from their persisted result cards.
   if ([...items].reverse().some((item) => item.role === 'ASSISTANT' && item.materials?.length)) return 'MATERIAL_SEARCH'
   return 'QA'
+}
+
+function historicalSolutionInterrupt(items: ProductMessage[]): ProductAgentInterrupt | undefined {
+  // A blocked draft is a useful compatibility fallback for conversations
+  // created before the active-run endpoint existed.  It is not, however, a
+  // durable interrupt by itself.  Prefer the real active run and only fall
+  // back to questions that are still unresolved in the historical transcript.
+  let message: ProductMessage | undefined
+  let messageIndex = -1
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const candidate = items[index]
+    if (
+      candidate.role !== 'ASSISTANT'
+      || candidate.solutionDraft?.status !== 'BLOCKED'
+      || candidate.solutionDraft.clarificationQuestionsResolved
+      || !candidate.solutionDraft.sourceRunId
+    ) continue
+    message = candidate
+    messageIndex = index
+    break
+  }
+  if (!message || messageIndex < 0) return undefined
+  const draft = message.solutionDraft
+  // Keep the historical interrupt in lock-step with the card renderer.  The
+  // helper also recovers early projections that persisted unresolved
+  // requirements but omitted both question fields; without this promotion the
+  // card could show choices that the resume handler could not submit.
+  const allQuestions = draft ? clarificationQuestionsForDraft(draft) : []
+  if (!allQuestions.length) return undefined
+  const answeredIds = historicalAnsweredQuestionIds(items, messageIndex, allQuestions)
+  const questions = allQuestions.filter((question) => !answeredIds.has(question.id))
+  // A later user message that cannot be identified as an answer is an
+  // ordinary follow-up, not proof that this old draft is still waiting.  Do
+  // not resurrect its choices in that case.  If some answers were identified
+  // and other questions remain, keep only the remaining batch for resumption.
+  const hasLaterUser = items.slice(messageIndex + 1).some((item) => item.role === 'USER')
+  if (!questions.length || (hasLaterUser && !answeredIds.size)) return undefined
+  const runId = message?.solutionDraft?.sourceRunId
+  if (!questions.length || !runId) return undefined
+  const first = questions[0]
+  return normalizeInterrupt({
+    ...enrichClarificationQuestion(first),
+    questionId: first.id,
+    questions: questions.map((question) => ({ ...enrichClarificationQuestion(question), id: question.id, questionId: question.id })),
+  }, runId)
 }
 
 function knownSkillTokenSpans(value: string, mentions: readonly ComposerMention[]) {
@@ -301,6 +901,7 @@ interface ActiveRunResponse {
 }
 
 export function ChatPage() {
+  const { reload: reloadSession } = useSession()
   const [conversations, setConversations] = useState<ProductConversation[]>([])
   const [conversation, setConversation] = useState<ProductConversation>()
   const [messages, setMessages] = useState<ProductMessage[]>([])
@@ -357,6 +958,12 @@ export function ChatPage() {
     return { method: 'GET', signal, headers }
   }
 
+  const recoverExpiredSession = useCallback(async (error: unknown) => {
+    if (!(error instanceof ApiError) || error.status !== 401) return false
+    await reloadSession()
+    return true
+  }, [reloadSession])
+
   const loadWorkspace = useCallback(async () => {
     const version = ++contextVersionRef.current
     setLoadingWorkspace(true)
@@ -371,21 +978,27 @@ export function ChatPage() {
       if (initialConversation) {
         const detail = await api<ConversationDetail>(`/api/chat/conversations/${initialConversation.id}`)
         if (contextVersionRef.current !== version) return
+        const historicalMessages = normalizeHistoricalMessages(detail.messages)
         setConversation(normalizeConversation(detail.conversation))
-        setMessages(detail.messages)
-        setBusinessTask(businessTaskFromMessages(detail.messages))
+        setMessages(historicalMessages)
+        setBusinessTask(businessTaskFromMessages(historicalMessages))
         setBusinessTaskExplicit(false)
+        const historicalInterrupt = historicalSolutionInterrupt(historicalMessages)
+        setAgentInterruptQuestion(historicalInterrupt)
+        currentRunIdRef.current = historicalInterrupt?.runId
+        setCurrentRunId(historicalInterrupt?.runId)
       } else {
         setConversation(undefined)
         setMessages([])
       }
-    } catch {
+    } catch (error) {
       if (contextVersionRef.current !== version) return
+      if (await recoverExpiredSession(error)) return
       setErrorText('会话加载失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setLoadingWorkspace(false)
     }
-  }, [])
+  }, [recoverExpiredSession])
 
   useEffect(() => {
     void loadWorkspace()
@@ -496,6 +1109,16 @@ export function ChatPage() {
     setAnswerProgressTrail(next)
   }, [])
 
+  const markProgressFailed = useCallback((message: string) => {
+    const latest = answerProgressTrailRef.current.at(-1)
+    recordProgress({
+      ...latest,
+      stage: latest?.stage ?? 'UNDERSTANDING',
+      message: latest?.message ?? message,
+      status: 'FAILED',
+    })
+  }, [recordProgress])
+
   const scrollToLatest = useCallback(() => {
     const element = messageScrollRef.current
     if (!element) return
@@ -516,39 +1139,147 @@ export function ChatPage() {
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
 
-  const applyAnswer = useCallback((result: SendResponse) => {
+  const applyAnswer = useCallback((
+    result: SendResponse,
+    userMessageContent?: string,
+    answeredIds: ReadonlySet<string> = new Set<string>(),
+    resolvedRunId?: string,
+  ) => {
     const conversation = normalizeConversation(result.conversation)
+    const originalDraft = result.assistantMessage.solutionDraft
+    const remainingClarifications = filterAnsweredClarifications(originalDraft?.clarificationQuestions, answeredIds)
+    // A continuation can be resumed in more than one batch by older/local
+    // adapters.  The final result normally has no pending questions (or marks
+    // them resolved); in that case clear every question from the historical
+    // blocked card, not only the ids included in this last batch.
+    const continuationCompleted = Boolean(
+      originalDraft
+      && (!originalDraft.clarificationQuestions?.length || originalDraft.clarificationQuestionsResolved),
+    )
+    const assistantMessage = originalDraft && answeredIds.size
+      ? {
+        ...result.assistantMessage,
+        solutionDraft: {
+          ...originalDraft,
+          clarificationQuestions: continuationCompleted ? [] : remainingClarifications,
+          clarificationQuestionsResolved: continuationCompleted || remainingClarifications.length === 0,
+        },
+      }
+      : result.assistantMessage
+    const solutionDraft = assistantMessage.solutionDraft
+    const firstClarification = solutionDraft?.clarificationQuestions?.[0]
+    const continuationRunId = currentRunIdRef.current ?? solutionDraft?.sourceRunId
+    const userMessage = userMessageContent === undefined
+      ? result.userMessage
+      : { ...result.userMessage, content: userMessageContent }
     setConversation(conversation)
     setConversations((current) => upsertConversation(current, conversation))
-    setMessages((current) => [...current, result.userMessage, result.assistantMessage])
+    setMessages((current) => {
+      if (!answeredIds.size) return [...current, userMessage, assistantMessage]
+
+      // The blocked draft that produced the interrupt remains in the
+      // transcript while a resume run is executing.  Once that batch has
+      // been answered, mark the old draft's questions as resolved before
+      // appending the continuation result; otherwise the historical card
+      // would render the same questions a second time below the new answer.
+      let targetIndex = -1
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const candidate = current[index]
+        const draft = candidate.role === 'ASSISTANT' ? candidate.solutionDraft : undefined
+        if (!draft || draft.clarificationQuestionsResolved || !draft.clarificationQuestions?.length) continue
+        if (resolvedRunId && draft.sourceRunId !== resolvedRunId) continue
+        targetIndex = index
+        break
+      }
+      if (targetIndex < 0 && resolvedRunId) {
+        for (let index = current.length - 1; index >= 0; index -= 1) {
+          const candidate = current[index]
+          const draft = candidate.role === 'ASSISTANT' ? candidate.solutionDraft : undefined
+          if (draft && !draft.clarificationQuestionsResolved && draft.clarificationQuestions?.length) {
+            targetIndex = index
+            break
+          }
+        }
+      }
+      const resolvedMessages = targetIndex < 0
+        ? current
+        : current.map((message, index) => {
+          if (index !== targetIndex || !message.solutionDraft) return message
+          const remaining = continuationCompleted
+            ? []
+            : filterAnsweredClarifications(message.solutionDraft.clarificationQuestions, answeredIds)
+          return {
+            ...message,
+            solutionDraft: {
+              ...message.solutionDraft,
+              clarificationQuestions: remaining,
+              clarificationQuestionsResolved: continuationCompleted || remaining.length === 0,
+            },
+          }
+        })
+      return [...resolvedMessages, userMessage, assistantMessage]
+    })
     setPendingQuestion(undefined)
-    setAgentInterruptQuestion(undefined)
+    if (firstClarification && continuationRunId) {
+      setAgentInterruptQuestion({
+        ...firstClarification,
+        questions: solutionDraft?.clarificationQuestions,
+        runId: continuationRunId,
+        status: 'INTERRUPTED',
+      })
+      currentRunIdRef.current = continuationRunId
+      setCurrentRunId(continuationRunId)
+    } else {
+      setAgentInterruptQuestion(undefined)
+      currentRunIdRef.current = undefined
+      setCurrentRunId(undefined)
+    }
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
     lastEventIdRef.current = undefined
-    currentRunIdRef.current = undefined
-    setCurrentRunId(undefined)
     setDraft('')
     setAttachments([])
     setAttachmentError(undefined)
   }, [])
 
   const restoreActiveRun = useCallback(async (conversationId: string, version: number) => {
-    if (restoredConversationIdsRef.current.has(conversationId) || sending || currentRunIdRef.current) return
+    if (restoredConversationIdsRef.current.has(conversationId) || sending) return
     restoredConversationIdsRef.current.add(conversationId)
     let active: ActiveRunResponse
     try {
       active = await api<ActiveRunResponse>(`/api/chat/conversations/${encodeURIComponent(conversationId)}/active-run`)
     } catch {
+      // The historical draft fallback is intentionally independent from the
+      // active-run endpoint.  A transient Yuxi/product outage must not erase
+      // a still-actionable clarification card (and a refresh would otherwise
+      // be required just to get the question back).  Leave the current
+      // fallback/trace untouched; a later conversation reload can retry the
+      // active-run lookup and replace it with the authoritative run state.
       return
     }
+    if (contextVersionRef.current !== version) return
     const run = active.run
-    if (!run || contextVersionRef.current !== version) return
+    if (!run) {
+      // Keep a validated historical fallback interrupt when the run endpoint
+      // has no active record.  `historicalSolutionInterrupt()` only creates
+      // this fallback when the blocked draft has no later user reply, so it
+      // remains resumable for older completed runs while answered questions
+      // are not resurrected.
+      setPendingQuestion(undefined)
+      setAnswerProgress(undefined)
+      setAnswerProgressTrail([])
+      answerProgressTrailRef.current = []
+      setStreamedAnswer('')
+      streamedAnswerRef.current = ''
+      return
+    }
     const terminal = String(run.status ?? '').toLowerCase()
-    if (['completed', 'succeeded', 'success', 'failed', 'cancelled'].includes(terminal)) return
+    if (['completed', 'succeeded', 'success', 'failed', 'cancelled'].includes(terminal)) {
+      return
+    }
     const trail = traceToProgressTrail(run.executionTrace, run.runId)
     answerProgressTrailRef.current = trail
     setAnswerProgressTrail(trail)
@@ -601,13 +1332,15 @@ export function ChatPage() {
       if (contextVersionRef.current === version && result) applyAnswer(result)
     } catch (error) {
       if (contextVersionRef.current === version && !isAbortError(error)) {
-        setErrorText(error instanceof ApiError ? error.message : '方案运行恢复失败，请重试')
+        const message = error instanceof ApiError ? error.message : '方案运行恢复失败，请重试'
+        markProgressFailed(message)
+        setErrorText(message)
       }
     } finally {
       if (sendAbortControllerRef.current === abortController) sendAbortControllerRef.current = undefined
       if (contextVersionRef.current === version) setSending(false)
     }
-  }, [applyAnswer, recordProgress, sending])
+  }, [applyAnswer, markProgressFailed, recordProgress, sending])
 
   useEffect(() => {
     const conversationId = conversation?.id
@@ -708,12 +1441,18 @@ export function ChatPage() {
     try {
       const detail = await api<ConversationDetail>(`/api/chat/conversations/${item.id}`)
       if (contextVersionRef.current !== version) return
+      const historicalMessages = normalizeHistoricalMessages(detail.messages)
       setConversation(normalizeConversation(detail.conversation))
-      setMessages(detail.messages)
-      setBusinessTask(businessTaskFromMessages(detail.messages))
+      setMessages(historicalMessages)
+      setBusinessTask(businessTaskFromMessages(historicalMessages))
       setBusinessTaskExplicit(false)
-    } catch {
+      const historicalInterrupt = historicalSolutionInterrupt(historicalMessages)
+      setAgentInterruptQuestion(historicalInterrupt)
+      currentRunIdRef.current = historicalInterrupt?.runId
+      setCurrentRunId(historicalInterrupt?.runId)
+    } catch (error) {
       if (contextVersionRef.current !== version) return
+      if (await recoverExpiredSession(error)) return
       setErrorText('会话加载失败，请重试')
     } finally {
       if (contextVersionRef.current === version) setLoadingConversation(false)
@@ -850,22 +1589,28 @@ export function ChatPage() {
       )
       if (contextVersionRef.current !== version) return
       if (!result) return
-      currentRunIdRef.current = undefined
-      setCurrentRunId(undefined)
       applyAnswer(result)
     } catch (error) {
       if (contextVersionRef.current !== version) return
-      setPendingQuestion(undefined)
       setAgentInterruptQuestion(undefined)
-      setStreamedAnswer('')
-      streamedAnswerRef.current = ''
-      currentRunIdRef.current = undefined
-      setCurrentRunId(undefined)
+      const preserveSolutionProgress = requestedSkillId === 'SOLUTION_DRAFT'
+        && !attachmentUploadFailed && !isAbortError(error)
+      if (preserveSolutionProgress) {
+        markProgressFailed(error instanceof ApiError ? error.message : '发送失败，请重试')
+      } else {
+        setPendingQuestion(undefined)
+        setStreamedAnswer('')
+        streamedAnswerRef.current = ''
+        currentRunIdRef.current = undefined
+        setCurrentRunId(undefined)
+      }
       // Upload errors already have a specific inline message next to the
       // attachment. Avoid replacing it with a generic send failure banner.
       if (!isAbortError(error)) {
         setDraft(content)
-        if (!attachmentUploadFailed) setErrorText('发送失败，请重试')
+        if (!attachmentUploadFailed) {
+          setErrorText(preserveSolutionProgress && error instanceof ApiError ? error.message : '发送失败，请重试')
+        }
       }
     } finally {
       if (sendAbortControllerRef.current === abortController) {
@@ -875,29 +1620,64 @@ export function ChatPage() {
     }
   }
 
-  async function resumeAgentRun(answerOverride?: string | string[], action: 'answer' | 'skip' = 'answer') {
+  async function resumeAgentRun(answerOverride?: ClarificationAnswer, action: 'answer' | 'skip' = 'answer') {
     const answer = answerOverride ?? draft.trim()
-    const parentRunId = currentRunIdRef.current
-    const hasAnswer = Array.isArray(answer) ? answer.length > 0 : Boolean(answer.trim())
-    if (action === 'answer' && !hasAnswer || !parentRunId || mutationLocked || archived || !agentInterruptQuestion) return
+    // A historical draft may be rendered before the active-run lookup has
+    // completed (or the lookup may be unavailable).  Recover the same
+    // interrupt from the loaded transcript instead of relying solely on the
+    // in-memory state set by the live SSE stream.
+    const questionForDisplay = agentInterruptQuestion ?? historicalSolutionInterrupt(messages)
+    const parentRunId = currentRunIdRef.current ?? questionForDisplay?.runId
+    const hasAnswer = answer && typeof answer === 'object' && !Array.isArray(answer)
+      ? Object.keys(answer).length > 0
+      : Array.isArray(answer) ? answer.length > 0 : Boolean(answer.trim())
+    if (action === 'answer' && !hasAnswer) return
+    if (mutationLocked || archived) return
+    if (!parentRunId || !questionForDisplay) {
+      // Do not fail silently when a stale historical card has no resumable
+      // run.  The user needs an actionable explanation rather than a button
+      // that appears to do nothing.
+      setErrorText('待确认问题已失效，请重新生成方案后再继续')
+      return
+    }
+    // Keep the question/options before clearing the interrupt state.  The
+    // runtime receives ids, while the user-facing message must use labels.
+    const answeredIds = clarificationAnswerIds(answer, questionForDisplay)
+    const displayAnswer = action === 'skip'
+      ? '暂时跳过，继续生成方案'
+      : displayClarificationAnswer(answer, questionForDisplay)
     const version = contextVersionRef.current
     const abortController = new AbortController()
     sendAbortControllerRef.current = abortController
     setSending(true)
     setDraft('')
+    setPendingQuestion(displayAnswer)
+    followLatestRef.current = true
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
     // A resumed run has a new run id; do not send the parent cursor to it.
     lastEventIdRef.current = undefined
     setAgentInterruptQuestion(undefined)
     setErrorText(undefined)
+    // Give immediate feedback while the resume request is being created. In
+    // particular, the network round trip can take a moment before the first
+    // SSE progress event arrives.
+    recordProgress({
+      stage: 'REQUIREMENTS_ANALYSIS',
+      message: '正在吸收补充信息，重新分析需求',
+      runId: parentRunId,
+      status: 'ACTIVE',
+    })
+    showToast('已提交，正在继续生成方案…')
     try {
       const resumed = await api<{ run: { runId: string; streamUrl?: string } }>(`/api/chat/runs/${encodeURIComponent(parentRunId)}/resume`, {
         method: 'POST',
         body: JSON.stringify({
           answer,
           action,
-          ...(agentInterruptQuestion.questionId ? { questionId: agentInterruptQuestion.questionId } : {}),
+          ...(typeof answer === 'object' && !Array.isArray(answer)
+            ? {}
+            : questionForDisplay.questionId ? { questionId: questionForDisplay.questionId } : {}),
           requestId: globalThis.crypto?.randomUUID?.() ?? `resume-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         }),
         signal: abortController.signal,
@@ -947,11 +1727,22 @@ export function ChatPage() {
         },
       )
       if (contextVersionRef.current !== version || !result) return
-      applyAnswer(result)
+      // Some Agent adapters persist the raw answer id in userMessage.content
+      // (for example, "confirmed").  Replace it at the product boundary so
+      // both the just-completed run and the historical transcript stay human
+      // readable without changing the id sent to the runtime.
+      applyAnswer(result, displayAnswer, answeredIds, parentRunId)
     } catch (error) {
       if (contextVersionRef.current !== version) return
       if (!isAbortError(error)) {
-        setErrorText(error instanceof ApiError ? error.message : '方案继续生成失败，请重试')
+        const message = error instanceof ApiError ? error.message : '方案继续生成失败，请重试'
+        markProgressFailed(message)
+        // Keep the clarification card actionable after a failed resume. The
+        // user should not have to reload the conversation (and lose answers)
+        // just to retry the same submission.
+        setAgentInterruptQuestion(questionForDisplay)
+        setPendingQuestion(undefined)
+        setErrorText(message)
       }
     } finally {
       if (sendAbortControllerRef.current === abortController) sendAbortControllerRef.current = undefined
@@ -1458,6 +2249,7 @@ export function ChatPage() {
                     answerProgress={answerProgress}
                     answerProgressTrail={answerProgressTrail}
                     streamedAnswer={streamedAnswer}
+                    activeClarificationRunId={agentInterruptQuestion?.runId}
                     highlightedPairId={highlightedPairId}
                     expandedCitationId={selectedCitation?.id}
                     onCitation={(item, trigger) => void openCitation(item, trigger)}

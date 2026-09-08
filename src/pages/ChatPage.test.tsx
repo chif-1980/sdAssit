@@ -5,17 +5,18 @@ import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProductCitation, ProductConversation, ProductMaterial, ProductMessage } from '../../shared/api/product.js'
-import { ChatPage } from './ChatPage'
+import type { ProductAgentInterrupt, ProductCitation, ProductConversation, ProductMaterial, ProductMessage } from '../../shared/api/product.js'
+import { ChatPage, displayClarificationAnswer } from './ChatPage'
 
 const logout = vi.fn(async () => undefined)
+const reloadSession = vi.fn(async () => undefined)
 
 vi.mock('../session/SessionProvider', () => ({
   useSession: () => ({
     user: { id: 'USR-1', name: '陈晨', avatarUrl: null },
     status: 'authenticated',
     logout,
-    reload: vi.fn(),
+    reload: reloadSession,
   }),
 }))
 
@@ -138,6 +139,7 @@ function stubMatchMedia(matches: boolean) {
 
 afterEach(() => {
   cleanup()
+  reloadSession.mockClear()
   vi.unstubAllGlobals()
   const browserNavigator = navigator as unknown as { share?: unknown; canShare?: unknown }
   delete browserNavigator.share
@@ -146,6 +148,48 @@ afterEach(() => {
 })
 
 describe('ChatPage product workspace', () => {
+  it('renders clarification labels for case variants and serialized multi-select ids', () => {
+    const interrupt: ProductAgentInterrupt = {
+      question: '首期需要哪些能力？',
+      questionId: 'FEATURES',
+      type: 'MULTIPLE_CHOICE',
+      options: [
+        { id: 'user_app', label: '用户端' },
+        { id: 'transaction', label: '购物车、下单和支付' },
+      ],
+      questions: [{
+        id: 'FEATURES',
+        questionId: 'FEATURES',
+        question: '首期需要哪些能力？',
+        type: 'MULTIPLE_CHOICE',
+        options: [
+          { id: 'user_app', label: '用户端' },
+          { id: 'transaction', label: '购物车、下单和支付' },
+        ],
+      }],
+      status: 'INTERRUPTED',
+    }
+
+    expect(displayClarificationAnswer('Confirmed', interrupt)).toBe('已确定')
+    expect(displayClarificationAnswer(['USER_APP', 'TRANSACTION'], interrupt)).toBe('用户端、购物车、下单和支付')
+    expect(displayClarificationAnswer('["user_app","transaction"]', interrupt)).toBe('用户端、购物车、下单和支付')
+  })
+
+  it('refreshes the product session instead of showing a conversation error after authentication expires', async () => {
+    mockFetch((path) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A') {
+        return jsonResponse({ error: { code: 'LOGIN_REQUIRED', message: '请使用飞书登录' } }, 401)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    render(<ChatPage />)
+
+    await waitFor(() => expect(reloadSession).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('会话加载失败，请重试')).not.toBeInTheDocument()
+  })
+
   it('shows an empty workspace without technical controls', async () => {
     emptyWorkspaceFetch()
 
@@ -769,6 +813,720 @@ describe('ChatPage product workspace', () => {
     await waitFor(() => expect(screen.queryByText('正在生成')).not.toBeInTheDocument())
     expect(screen.getAllByRole('button', { name: '点赞这条回答' })).toHaveLength(2)
     expect(screen.getAllByText('是否支持私有部署？')).toHaveLength(1)
+  })
+
+  it('keeps the solution execution process visible after a stream failure', async () => {
+    const user = userEvent.setup()
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+      if (path === '/api/chat/conversations/CVS-A/messages/stream') {
+        return new Response([
+          'event: run_started\ndata: {"runId":"RUN-FAILED"}\n\n',
+          'event: progress\ndata: {"stage":"REQUIREMENTS_ANALYSIS","message":"正在拆解客户需求"}\n\n',
+          'event: progress\ndata: {"stage":"COMPOSING","message":"正在整理方案"}\n\n',
+          'event: error\ndata: {"code":"AGENT_RUN_PROJECTION_FAILED","message":"方案草稿保存失败，请重试"}\n\n',
+        ].join(''), { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    expect(await screen.findByText('原有回答')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: '问题' }), '@做方案 设计商城方案')
+    await user.click(screen.getByRole('button', { name: '发送问题' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('方案草稿保存失败，请重试')
+    expect(screen.getByRole('status', { name: '执行过程' })).toHaveTextContent('生成失败')
+    expect(document.querySelector('.message-pending-question')).toHaveTextContent('设计商城方案')
+    await user.click(screen.getByRole('button', { name: '查看执行过程' }))
+    expect(document.querySelector('.thinking-steps')).toHaveTextContent('正在拆解客户需求')
+    expect(document.querySelector('.thinking-steps')).toHaveTextContent('正在整理方案')
+    expect(document.querySelector('.thinking-spinner')).toBeNull()
+  })
+
+  it('shows progress immediately when continuing a historical draft and retains it on failure', async () => {
+    const user = userEvent.setup()
+    let resolveResume!: (response: Response) => void
+    const pendingResume = new Promise<Response>((resolve) => { resolveResume = resolve })
+    const historical: ProductMessage = {
+      ...priorMessage,
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: 'DRAFT-OLD', conversationId: conversationA.id, sourceRunId: 'RUN-OLD', currentVersion: 1,
+        status: 'BLOCKED', title: '商城方案', customerContext: '商城', executiveSummary: '初步方案',
+        requirements: [], sections: [], assumptions: [], openQuestions: [], risks: [], conflicts: [], evidenceGaps: [], citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: [{ id: 'INDUSTRY', question: '请选择客户行业', type: 'SINGLE_CHOICE', options: [{ id: 'retail', label: '零售行业' }], required: true, allowSkip: true, position: 1, total: 1 }],
+        createdAt: conversationA.createdAt, updatedAt: conversationA.updatedAt,
+      },
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [historical]))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      if (path === '/api/chat/runs/RUN-OLD/resume') return pendingResume
+      if (path === '/api/chat/runs/RUN-NEW/events') {
+        return new Response('event: error\ndata: {"code":"AGENT_RUN_PROJECTION_FAILED","message":"方案草稿保存失败，请重试"}\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    await user.click(await screen.findByRole('button', { name: '零售行业' }))
+    await user.click(screen.getByRole('button', { name: '提交并继续' }))
+
+    expect(screen.getByRole('status', { name: '执行过程' })).toHaveTextContent('正在吸收补充信息，重新分析需求')
+    expect(document.querySelector('.message-pending-question')).toHaveTextContent('零售行业')
+    expect(screen.getByRole('button', { name: '停止生成' })).toBeEnabled()
+    await act(async () => { resolveResume(jsonResponse({ run: { runId: 'RUN-NEW' } })) })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('方案草稿保存失败，请重试')
+    expect(screen.getByRole('status', { name: '执行过程' })).toHaveTextContent('生成失败')
+    expect(document.querySelector('.thinking-spinner')).toBeNull()
+  })
+
+  it('resumes a legacy openQuestions draft instead of silently returning', async () => {
+    const user = userEvent.setup()
+    let resolveResume!: (response: Response) => void
+    const pendingResume = new Promise<Response>((resolve) => { resolveResume = resolve })
+    const historical: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-LEGACY-OPEN-RESUME',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: 'DRAFT-LEGACY-OPEN-RESUME',
+        conversationId: conversationA.id,
+        sourceRunId: 'RUN-LEGACY-OPEN',
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '商城方案',
+        customerContext: '宠物用品商城',
+        executiveSummary: '待补充部署方式后继续生成。',
+        requirements: [],
+        sections: [],
+        assumptions: [],
+        openQuestions: ['方案预计采用哪种部署方式？'],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    }
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [historical]))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      if (path === '/api/chat/runs/RUN-LEGACY-OPEN/resume') return pendingResume
+      if (path === '/api/chat/runs/RUN-LEGACY-OPEN-NEW/events') {
+        return sseResponse({
+          conversation: { ...conversationA, messageCount: 3 },
+          userMessage: { ...priorMessage, id: 'MSG-LEGACY-OPEN-U', role: 'USER', content: '私有化部署', answerStatus: null },
+          assistantMessage: { ...priorMessage, id: 'MSG-LEGACY-OPEN-A', role: 'ASSISTANT', content: '已继续生成方案。', answerStatus: 'SUPPORTED' },
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '私有化部署' }))
+    await user.click(screen.getByRole('button', { name: '提交并继续' }))
+
+    // The request must be sent and visible progress must start immediately,
+    // even while the resume endpoint is still waiting for the next run id.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/runs/RUN-LEGACY-OPEN/resume',
+      expect.objectContaining({ method: 'POST' }),
+    ))
+    expect(screen.getByRole('status', { name: '执行过程' })).toHaveTextContent('正在吸收补充信息，重新分析需求')
+    expect(screen.getByText('已提交，正在继续生成方案…')).toBeInTheDocument()
+    expect(document.querySelector('.message-pending-question')).toHaveTextContent('私有化部署')
+
+    // Avoid leaving the intentionally pending request around in the test.
+    await act(async () => { resolveResume(jsonResponse({ run: { runId: 'RUN-LEGACY-OPEN-NEW' } })) })
+  })
+
+  it('resumes a legacy requirements-only draft with the recovered scope choices', async () => {
+    const user = userEvent.setup()
+    const historical: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-LEGACY-REQUIREMENT-RESUME',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: 'DRAFT-LEGACY-REQUIREMENT-RESUME',
+        conversationId: conversationA.id,
+        sourceRunId: 'RUN-LEGACY-REQUIREMENT',
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '宠物用品商城方案',
+        customerContext: '建设宠物用品电子商城',
+        executiveSummary: '待补充首期范围后继续生成。',
+        requirements: [{
+          id: 'REQ-SCOPE',
+          text: '建议纳入首期范围：微信小程序首页、商品分类；购物车、下单和支付。',
+          source: '需求分析，待确认',
+        }],
+        sections: [],
+        assumptions: [],
+        openQuestions: [],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    }
+    const fetchMock = mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [historical]))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      if (path === '/api/chat/runs/RUN-LEGACY-REQUIREMENT/resume') {
+        return jsonResponse({ run: { runId: 'RUN-LEGACY-REQUIREMENT-NEW', streamUrl: '/api/chat/runs/RUN-LEGACY-REQUIREMENT-NEW/events' } })
+      }
+      if (path === '/api/chat/runs/RUN-LEGACY-REQUIREMENT-NEW/events') {
+        return sseResponse({
+          conversation: { ...conversationA, messageCount: 3 },
+          userMessage: { ...priorMessage, id: 'MSG-LEGACY-REQUIREMENT-U', role: 'USER', content: 'SCOPE_1', answerStatus: null },
+          assistantMessage: { ...priorMessage, id: 'MSG-LEGACY-REQUIREMENT-A', role: 'ASSISTANT', content: '已继续生成方案。', answerStatus: 'SUPPORTED' },
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: '微信小程序首页、商品分类' }))
+    await user.click(screen.getByRole('button', { name: '提交并继续' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/runs/RUN-LEGACY-REQUIREMENT/resume',
+      expect.objectContaining({ method: 'POST' }),
+    ))
+    const resumeCall = fetchMock.mock.calls.find(([path]) => path === '/api/chat/runs/RUN-LEGACY-REQUIREMENT/resume')
+    expect(resumeCall?.[1]?.body).toEqual(expect.stringContaining('SCOPE_1'))
+    expect(await screen.findByText('已继续生成方案。')).toBeInTheDocument()
+  })
+
+  it('keeps a historical clarification available when active-run lookup is temporarily unavailable', async () => {
+    const historical: ProductMessage = {
+      ...priorMessage,
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: 'DRAFT-RETRY-ACTIVE-RUN', conversationId: conversationA.id, sourceRunId: 'RUN-HISTORY-RETRY', currentVersion: 1,
+        status: 'BLOCKED', title: '商城方案', customerContext: '商城', executiveSummary: '初步方案',
+        requirements: [], sections: [], assumptions: [], openQuestions: [], risks: [], conflicts: [], evidenceGaps: [], citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: [{
+          id: 'SCOPE', question: '首期范围是否已经确定？', type: 'SINGLE_CHOICE',
+          options: [{ id: 'MVP', label: '已确定为 MVP' }], required: true, allowSkip: true, position: 1, total: 1,
+        }],
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt, updatedAt: conversationA.updatedAt,
+      },
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [historical]))
+      if (path.endsWith('/active-run')) return jsonResponse({ error: { code: 'YUXI_UNAVAILABLE', message: '暂时不可用' } }, 503)
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByRole('button', { name: '已确定为 MVP' })).toBeInTheDocument()
+    expect(screen.queryByText('会话加载失败，请重试')).not.toBeInTheDocument()
+  })
+
+  it('renders a clarification label instead of the internal option id after resume', async () => {
+    const user = userEvent.setup()
+    const historical: ProductMessage = {
+      ...priorMessage,
+      skillId: 'SOLUTION_DRAFT',
+      content: '商城方案草稿',
+      solutionDraft: {
+        id: 'DRAFT-LABEL', conversationId: conversationA.id, sourceRunId: 'RUN-LABEL', currentVersion: 1,
+        status: 'BLOCKED', title: '商城方案', customerContext: '商城', executiveSummary: '初步方案',
+        requirements: [], sections: [], assumptions: [], openQuestions: [], risks: [], conflicts: [], evidenceGaps: [], citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: [{
+          id: 'CUSTOMER', question: '客户主体和商城运营主体是否已经确定？', type: 'SINGLE_CHOICE',
+          options: [{ id: 'confirmed', label: '已确定' }], required: true, allowSkip: true, position: 1, total: 1,
+        }],
+        createdAt: conversationA.createdAt, updatedAt: conversationA.updatedAt,
+      },
+    }
+    const rawUserMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-LABEL-U',
+      role: 'USER',
+      content: 'confirmed',
+      answerStatus: null,
+    }
+    const assistantMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-LABEL-A',
+      role: 'ASSISTANT',
+      content: '正式方案已生成。',
+      answerStatus: 'SUPPORTED',
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [historical]))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      if (path === '/api/chat/runs/RUN-LABEL/resume') return jsonResponse({ run: { runId: 'RUN-LABEL-RESUMED' } })
+      if (path === '/api/chat/runs/RUN-LABEL-RESUMED/events') {
+        return sseResponse({
+          conversation: { ...conversationA, messageCount: 3 },
+          userMessage: rawUserMessage,
+          assistantMessage,
+        })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await user.click(await screen.findByRole('button', { name: /已确定/ }))
+    await user.click(screen.getByRole('button', { name: '提交并继续' }))
+
+    expect(await screen.findByText('正式方案已生成。')).toBeInTheDocument()
+    expect(screen.getAllByText('已确定').length).toBeGreaterThan(0)
+    expect(screen.queryByText('confirmed')).not.toBeInTheDocument()
+  })
+
+  it('normalizes persisted clarification ids when loading a historical conversation', async () => {
+    const draftMessage = (
+      id: string,
+      questions: NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions'],
+    ): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'ASSISTANT',
+      content: '方案草稿',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: `DRAFT-${id}`,
+        conversationId: conversationA.id,
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '方案草稿',
+        customerContext: '客户场景',
+        executiveSummary: '初步方案',
+        requirements: [],
+        sections: [],
+        assumptions: [],
+        openQuestions: [],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: questions,
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    })
+    const userMessage = (id: string, content: string): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'USER',
+      content,
+      answerStatus: null,
+    })
+    const plainAssistant = (id: string): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'ASSISTANT',
+      content: '已记录补充信息。',
+    })
+    const messages: ProductMessage[] = [
+      draftMessage('MSG-HISTORY-CONFIRMED-DRAFT', [{
+        id: 'CUSTOMER',
+        question: '客户主体是否已经确定？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'confirmed', label: '已确定' }],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 1,
+      }]),
+      userMessage('MSG-HISTORY-CONFIRMED', 'confirmed'),
+      plainAssistant('MSG-HISTORY-CONFIRMED-A'),
+      draftMessage('MSG-HISTORY-CUSTOM-DRAFT', [{
+        id: 'SCOPE',
+        question: '方案范围如何定义？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'custom_scope', label: '定制范围' }],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 1,
+      }]),
+      userMessage('MSG-HISTORY-CUSTOM', 'custom_scope'),
+      plainAssistant('MSG-HISTORY-CUSTOM-A'),
+      draftMessage('MSG-HISTORY-UNKNOWN-DRAFT', [{
+        id: 'UNKNOWN',
+        question: '其他条件？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'known', label: '已知选项' }],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 1,
+      }]),
+      userMessage('MSG-HISTORY-UNKNOWN', 'future_option'),
+      plainAssistant('MSG-HISTORY-UNKNOWN-A'),
+      draftMessage('MSG-HISTORY-MULTI-DRAFT', [{
+        id: 'FEATURES',
+        question: '首期需要哪些能力？',
+        type: 'MULTIPLE_CHOICE',
+        options: [
+          { id: 'user_app', label: '用户端' },
+          { id: 'transaction', label: '购物车、下单和支付' },
+        ],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 1,
+      }]),
+      userMessage('MSG-HISTORY-MULTI', 'user_app、transaction'),
+    ]
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, messages))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByText('已确定')).toBeInTheDocument()
+    expect(screen.getByText('定制范围')).toBeInTheDocument()
+    expect(screen.getByText('future_option')).toBeInTheDocument()
+    expect(screen.getByText('用户端、购物车、下单和支付')).toBeInTheDocument()
+    expect(screen.queryByText('confirmed')).not.toBeInTheDocument()
+    expect(screen.queryByText('custom_scope')).not.toBeInTheDocument()
+    expect(screen.queryByText('user_app、transaction')).not.toBeInTheDocument()
+  })
+
+  it('renders historical batch answer keys case-insensitively without exposing internal ids', async () => {
+    const questions: NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions'] = [
+      {
+        id: 'SCOPE',
+        question: '首期范围是否已经确定？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'confirmed', label: '已确定' }],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 2,
+      },
+      {
+        id: 'ADMIN',
+        question: '是否需要运营管理端？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'enabled', label: '需要' }],
+        required: true,
+        allowSkip: true,
+        position: 2,
+        total: 2,
+      },
+    ]
+    const blockedDraft = (id: string): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'ASSISTANT',
+      content: '方案草稿',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: `DRAFT-${id}`,
+        conversationId: conversationA.id,
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '方案草稿',
+        customerContext: '客户场景',
+        executiveSummary: '初步方案',
+        requirements: [],
+        sections: [],
+        assumptions: [],
+        openQuestions: [],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: questions,
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    })
+    const userMessage = (id: string, content: string): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'USER',
+      content,
+      answerStatus: null,
+    })
+    const messages: ProductMessage[] = [
+      blockedDraft('MSG-BATCH-JSON-DRAFT'),
+      userMessage('MSG-BATCH-JSON', '{"scope":"CONFIRMED","admin":"ENABLED"}'),
+      { ...priorMessage, id: 'MSG-BATCH-JSON-A', content: '已记录批量信息。' },
+      blockedDraft('MSG-BATCH-SUPPLEMENT-DRAFT'),
+      userMessage('MSG-BATCH-SUPPLEMENT', '继续设计\n\n补充信息：\nscope: confirmed\nADMIN：enabled'),
+      { ...priorMessage, id: 'MSG-BATCH-SUPPLEMENT-A', content: '已记录补充信息。' },
+    ]
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, messages))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    await screen.findByText('已记录补充信息。')
+    const userReplies = [...document.querySelectorAll<HTMLElement>('.message-user p')]
+      .map((element) => element.textContent)
+    expect(userReplies).toContain('首期范围是否已经确定？：已确定\n是否需要运营管理端？：需要')
+    expect(userReplies).toContain('继续设计\n\n补充信息：\n首期范围是否已经确定？: 已确定\n是否需要运营管理端？：需要')
+    expect(document.body).not.toHaveTextContent(/(?:scope|admin)\s*[：:]/iu)
+    expect(document.body).not.toHaveTextContent(/\b(?:confirmed|enabled)\b/iu)
+  })
+
+  it('normalizes standalone legacy clarification ids even when question metadata is absent', async () => {
+    const messages: ProductMessage[] = [
+      priorMessage,
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-CONFIRMED',
+        role: 'USER',
+        content: 'Confirmed',
+        answerStatus: null,
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-CONFIRMED-A',
+        role: 'ASSISTANT',
+        content: '已记录。',
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-MULTI',
+        role: 'USER',
+        content: 'user_app、TRANSACTION',
+        answerStatus: null,
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-MULTI-A',
+        role: 'ASSISTANT',
+        content: '已记录多选项。',
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-PROSE',
+        role: 'USER',
+        content: 'please use admin for this area',
+        answerStatus: null,
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-STANDALONE-PROSE-A',
+        role: 'ASSISTANT',
+        content: '已记录说明。',
+      },
+    ]
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, messages))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByText('已确定')).toBeInTheDocument()
+    expect(screen.getByText('用户端、购物车、下单和支付')).toBeInTheDocument()
+    expect(screen.getByText('please use admin for this area')).toBeInTheDocument()
+    expect(screen.queryByText('Confirmed')).not.toBeInTheDocument()
+    expect(screen.queryByText('user_app、TRANSACTION')).not.toBeInTheDocument()
+  })
+
+  it('does not restore an already answered historical clarification card after refresh', async () => {
+    const blockedDraft: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-ANSWERED-DRAFT',
+      role: 'ASSISTANT',
+      content: '方案草稿',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: 'DRAFT-ANSWERED',
+        conversationId: conversationA.id,
+        sourceRunId: 'RUN-ANSWERED',
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '商城方案',
+        customerContext: '商城方案',
+        executiveSummary: '初步方案',
+        requirements: [],
+        sections: [],
+        assumptions: [],
+        openQuestions: [],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions: [{
+          id: 'CUSTOMER',
+          question: '客户主体和商城运营主体是否已经确定？',
+          type: 'SINGLE_CHOICE',
+          options: [{ id: 'confirmed', label: '已确定' }],
+          required: true,
+          allowSkip: true,
+          position: 1,
+          total: 1,
+        }],
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    }
+    const answeredMessage: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-ANSWERED-USER',
+      role: 'USER',
+      content: 'confirmed',
+      answerStatus: null,
+    }
+    const continued: ProductMessage = {
+      ...priorMessage,
+      id: 'MSG-ANSWERED-CONTINUATION',
+      role: 'ASSISTANT',
+      content: '正式方案已生成。',
+      answerStatus: 'SUPPORTED',
+    }
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, [blockedDraft, answeredMessage, continued]))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByText('正式方案已生成。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '已确定' })).not.toBeInTheDocument()
+    expect(screen.queryByText('待确认问题')).not.toBeInTheDocument()
+  })
+
+  it('accumulates clarification answers across historical blocked batches after refresh', async () => {
+    const questions: NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions'] = [
+      {
+        id: 'CUSTOMER',
+        question: '客户主体是否确定？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'confirmed', label: '已确定' }],
+        required: true,
+        allowSkip: true,
+        position: 1,
+        total: 3,
+      },
+      {
+        id: 'DEPLOYMENT',
+        question: '采用哪种部署方式？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'private', label: '私有化部署' }],
+        required: true,
+        allowSkip: true,
+        position: 2,
+        total: 3,
+      },
+      {
+        id: 'BUDGET',
+        question: '预算范围是多少？',
+        type: 'SINGLE_CHOICE',
+        options: [{ id: 'range_a', label: '100–300 万元' }],
+        required: true,
+        allowSkip: true,
+        position: 3,
+        total: 3,
+      },
+    ]
+    const blockedDraft = (
+      id: string,
+      sourceRunId: string,
+      clarificationQuestions: NonNullable<ProductMessage['solutionDraft']>['clarificationQuestions'],
+    ): ProductMessage => ({
+      ...priorMessage,
+      id,
+      role: 'ASSISTANT',
+      content: '方案草稿',
+      skillId: 'SOLUTION_DRAFT',
+      solutionDraft: {
+        id: `DRAFT-${id}`,
+        conversationId: conversationA.id,
+        sourceRunId,
+        currentVersion: 1,
+        status: 'BLOCKED',
+        title: '商城方案',
+        customerContext: '商城方案',
+        executiveSummary: '初步方案',
+        requirements: [],
+        sections: [],
+        assumptions: [],
+        openQuestions: [],
+        risks: [],
+        conflicts: [],
+        evidenceGaps: [],
+        citations: [],
+        quality: { status: 'BLOCKED', evidenceCoverage: 0, missingSections: [], invalidCitations: [], notes: [] },
+        clarificationQuestions,
+        clarificationQuestionsResolved: false,
+        createdAt: conversationA.createdAt,
+        updatedAt: conversationA.updatedAt,
+      },
+    })
+    const messages: ProductMessage[] = [
+      blockedDraft('MSG-BATCH-ONE', 'RUN-BATCH-ONE', questions),
+      {
+        ...priorMessage,
+        id: 'MSG-BATCH-ONE-ANSWER',
+        role: 'USER',
+        content: JSON.stringify({ CUSTOMER: 'confirmed', DEPLOYMENT: 'private' }),
+        answerStatus: null,
+      },
+      blockedDraft('MSG-BATCH-TWO', 'RUN-BATCH-TWO', [questions[2]]),
+      {
+        ...priorMessage,
+        id: 'MSG-BATCH-TWO-ANSWER',
+        role: 'USER',
+        content: JSON.stringify({ BUDGET: 'range_a' }),
+        answerStatus: null,
+      },
+      {
+        ...priorMessage,
+        id: 'MSG-BATCH-COMPLETE',
+        role: 'ASSISTANT',
+        content: '全部条件已确认，正式方案已生成。',
+      },
+    ]
+    mockFetch((path, init) => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+      if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA, messages))
+      if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+
+    expect(await screen.findByText('全部条件已确认，正式方案已生成。')).toBeInTheDocument()
+    const userReplies = [...document.querySelectorAll<HTMLElement>('.message-user p')]
+      .map((element) => element.textContent)
+    expect(userReplies).toContain('客户主体是否确定？：已确定\n采用哪种部署方式？：私有化部署')
+    expect(userReplies).toContain('预算范围是多少？：100–300 万元')
+    expect(screen.queryByLabelText('待确认问题')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '已确定' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '私有化部署' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '100–300 万元' })).not.toBeInTheDocument()
   })
 
   it('applies the final answer immediately after production progress completes', async () => {
