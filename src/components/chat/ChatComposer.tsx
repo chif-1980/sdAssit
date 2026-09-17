@@ -1,5 +1,6 @@
-import { FileImage, FileSpreadsheet, FileText, Paperclip, Send, X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { FileImage, FileSpreadsheet, FileText, Paperclip, Send, Square, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import type { AnswerMode } from '../../../shared/api/product.js'
 import { attachmentKind, formatAttachmentSize } from './fileAttachments'
@@ -22,12 +23,73 @@ interface ChatComposerProps {
   onFiles?: (files: File[]) => void
   onRemoveAttachment?: (id: string) => void
   onSubmit: () => void
+  sending?: boolean
+  onStop?: () => void
+  mentions?: ComposerMention[]
+  onMentionSelect?: (mention: ComposerMention) => void
+  showModeSwitch?: boolean
+  placeholder?: string
+}
+
+export interface ComposerMention {
+  value: string
+  label: string
+  description: string
 }
 
 const modes: { value: AnswerMode; label: string; title: string }[] = [
   { value: 'CONCISE', label: '简洁', title: '快速直接回答' },
   { value: 'DETAILED', label: '详细', title: '多步查证后回答' },
 ]
+
+function mentionValues(mentions: ComposerMention[]) {
+  return mentions
+    .map((mention) => mention.value)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+}
+
+function renderComposerValue(value: string, mentions: ComposerMention[], placeholder: string): ReactNode {
+  if (!value) return <span className="composer-input-placeholder">{placeholder}</span>
+  const values = mentionValues(mentions)
+  if (!values.length) return value
+
+  const parts: ReactNode[] = []
+  let textStart = 0
+  let index = 0
+  while (index < value.length) {
+    const matched = values.find((mention) => (
+      value.startsWith(mention, index)
+      && (index === 0 || /\s/u.test(value[index - 1] ?? ''))
+      && (index + mention.length === value.length || /\s/u.test(value[index + mention.length] ?? ''))
+    ))
+    if (!matched) {
+      index += 1
+      continue
+    }
+    if (textStart < index) parts.push(value.slice(textStart, index))
+    parts.push(<span key={`${index}-${matched}`} className="composer-skill-token">{matched}</span>)
+    index += matched.length
+    textStart = index
+  }
+  if (textStart < value.length) parts.push(value.slice(textStart))
+  return parts
+}
+
+function removeSkillBeforeCaret(value: string, caret: number, mentions: ComposerMention[]) {
+  if (caret <= 0 || caret > value.length) return null
+  const values = mentionValues(mentions)
+  for (const mention of values) {
+    const hasTrailingSpace = value[caret - 1] === ' '
+    const tokenEnd = hasTrailingSpace ? caret - 1 : caret
+    const tokenStart = tokenEnd - mention.length
+    if (tokenStart < 0 || value.slice(tokenStart, tokenEnd) !== mention) continue
+    if (tokenStart > 0 && !/\s/u.test(value[tokenStart - 1] ?? '')) continue
+    const removeEnd = !hasTrailingSpace && value[caret] === ' ' ? caret + 1 : caret
+    return { value: `${value.slice(0, tokenStart)}${value.slice(removeEnd)}`, caret: tokenStart }
+  }
+  return null
+}
 
 export function ChatComposer({
   value,
@@ -40,10 +102,34 @@ export function ChatComposer({
   onFiles = () => undefined,
   onRemoveAttachment = () => undefined,
   onSubmit,
+  sending = false,
+  onStop = () => undefined,
+  mentions = [],
+  onMentionSelect = () => undefined,
+  showModeSwitch = true,
+  placeholder = '输入你的问题',
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragActive, setDragActive] = useState(false)
-  const canSubmit = !disabled && Boolean(value.trim())
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const canSubmit = !disabled && !sending && Boolean(value.trim())
+
+  const mentionQuery = useMemo(() => {
+    const match = /(?:^|\s)@([^\s@]*)$/u.exec(value)
+    return match?.[1]?.toLocaleLowerCase() ?? null
+  }, [value])
+
+  const filteredMentions = useMemo(() => {
+    if (mentionQuery === null || !mentions.length) return []
+    return mentions.filter((mention) => (
+      mention.label.toLocaleLowerCase().includes(mentionQuery)
+      || mention.value.toLocaleLowerCase().includes(mentionQuery)
+    ))
+  }, [mentionQuery, mentions])
+
+  useEffect(() => {
+    setMentionOpen(mentionQuery !== null && filteredMentions.length > 0 && !disabled)
+  }, [disabled, filteredMentions.length, mentionQuery])
 
   function submit() {
     if (canSubmit) onSubmit()
@@ -52,6 +138,11 @@ export function ChatComposer({
   function acceptFiles(files: FileList | File[]) {
     if (disabled) return
     onFiles(Array.from(files))
+  }
+
+  function selectMention(mention: ComposerMention) {
+    onMentionSelect(mention)
+    setMentionOpen(false)
   }
 
   function pastedFiles(data: DataTransfer) {
@@ -86,27 +177,10 @@ export function ChatComposer({
         submit()
       }}
     >
-      <textarea
-        aria-label="问题"
-        placeholder="输入你的问题"
-        value={value}
-        rows={3}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-        onPaste={(event) => {
-          const files = pastedFiles(event.clipboardData)
-          if (!files.length) return
-          event.preventDefault()
-          acceptFiles(files)
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault()
-            submit()
-          }
-        }}
-      />
-      <div className="composer-controls">
+      <div className="composer-input-shell">
+        <div className="composer-input-visual" aria-hidden="true">
+          {renderComposerValue(value, mentions, placeholder)}
+        </div>
         <input
           ref={fileInputRef}
           className="composer-file-input"
@@ -120,6 +194,60 @@ export function ChatComposer({
             event.currentTarget.value = ''
           }}
         />
+        <textarea
+          aria-label="问题"
+          placeholder={placeholder}
+          value={value}
+          rows={3}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          onPaste={(event) => {
+            const files = pastedFiles(event.clipboardData)
+            if (!files.length) return
+            event.preventDefault()
+            acceptFiles(files)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Backspace' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+              const target = event.currentTarget
+              if (target.selectionStart === target.selectionEnd) {
+                const removed = removeSkillBeforeCaret(value, target.selectionStart, mentions)
+                if (removed) {
+                  event.preventDefault()
+                  onChange(removed.value)
+                  requestAnimationFrame(() => {
+                    target.setSelectionRange(removed.caret, removed.caret)
+                  })
+                  return
+                }
+              }
+            }
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              submit()
+            }
+          }}
+        />
+      </div>
+      {mentionOpen ? (
+        <div className="composer-mention-menu" role="listbox" aria-label="快捷任务">
+          <div className="composer-mention-heading">可用技能</div>
+          {filteredMentions.map((mention) => (
+            <button
+              key={mention.value}
+              type="button"
+              className="composer-mention-option"
+              role="option"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectMention(mention)}
+            >
+              <span className="composer-mention-label">{mention.value}</span>
+              <span className="composer-mention-description">{mention.description}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className="composer-controls">
         <button
           type="button"
           className="composer-attachment-button"
@@ -151,31 +279,34 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-        <div className="answer-mode-switch" role="group" aria-label="回答方式">
-          {modes.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              className={mode === item.value ? 'is-active' : ''}
-              aria-label={`${item.label}模式`}
-              aria-pressed={mode === item.value}
-              title={item.title}
-              disabled={disabled}
-              onClick={() => onModeChange(item.value)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        {showModeSwitch ? (
+          <div className="answer-mode-switch" role="group" aria-label="回答方式">
+            {modes.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={mode === item.value ? 'is-active' : ''}
+                aria-label={`${item.label}模式`}
+                aria-pressed={mode === item.value}
+                title={item.title}
+                disabled={disabled}
+                onClick={() => onModeChange(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <button
-        type="submit"
-        className="primary-button composer-send"
-        aria-label="发送问题"
-        title="发送问题"
-        disabled={!canSubmit}
+        type={sending ? 'button' : 'submit'}
+        className={`primary-button composer-send${sending ? ' is-stop' : ''}`}
+        aria-label={sending ? '停止生成' : '发送问题'}
+        title={sending ? '停止生成' : '发送问题'}
+        disabled={sending ? false : !canSubmit}
+        onClick={sending ? onStop : undefined}
       >
-        <Send aria-hidden="true" size={18} />
+        {sending ? <Square aria-hidden="true" size={15} fill="currentColor" /> : <Send aria-hidden="true" size={18} />}
       </button>
       {attachmentError ? <p className="composer-attachment-error" role="alert">{attachmentError}</p> : null}
     </form>

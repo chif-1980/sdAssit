@@ -7,9 +7,10 @@ interface SourceDrawerProps {
   citation?: ProductCitation
   modal: boolean
   onClose: () => void
+  openHref?: string
 }
 
-export function SourceDrawer({ citation, modal, onClose }: SourceDrawerProps) {
+export function SourceDrawer({ citation, modal, onClose, openHref }: SourceDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const previousModalRef = useRef(modal)
@@ -75,7 +76,7 @@ export function SourceDrawer({ citation, modal, onClose }: SourceDrawerProps) {
         <p>{citation.excerpt}</p>
         <a
           className="secondary-button"
-          href={`/api/citations/${citation.id}/open`}
+          href={openHref ?? `/api/citations/${citation.id}/open`}
           target="_blank"
           rel="noreferrer"
         >

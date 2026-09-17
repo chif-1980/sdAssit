@@ -6,6 +6,8 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     proxy: {
+      // The enterprise assistant uses the Yuxi API for authenticated,
+      // persistent conversations.
       '/api': 'http://127.0.0.1:5050',
       '/minio/public': {
         target: 'http://127.0.0.1:9000',

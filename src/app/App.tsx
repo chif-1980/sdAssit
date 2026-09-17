@@ -2,10 +2,20 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import { ChatPage } from '../pages/ChatPage'
 import { LoginPage } from '../pages/LoginPage'
+import { PrototypePage } from '../pages/PrototypePage'
 import { SessionProvider, useSession } from '../session/SessionProvider'
 
 function ProductRoutes() {
   const { status, reload } = useSession()
+
+  if (window.location.pathname === '/prototype') {
+    return (
+      <Routes>
+        <Route path="/prototype" element={<PrototypePage />} />
+        <Route path="*" element={<Navigate to="/prototype" replace />} />
+      </Routes>
+    )
+  }
 
   if (status === 'loading') {
     return <main className="center-state" aria-label="正在加载"><span className="spinner" /></main>
