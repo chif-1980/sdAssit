@@ -185,7 +185,7 @@ describe('MessageThread', () => {
     expect(screen.queryByText('不应展示的原始正文')).not.toBeInTheDocument()
   })
 
-  it('keeps the rollout message visible for a planned skill', () => {
+  it('keeps historical rollout text without marking the now available meeting skill as planned', () => {
     render(<MessageThread
       messages={[{
         ...firstMessage,
@@ -198,7 +198,7 @@ describe('MessageThread', () => {
     />)
 
     expect(screen.getByText('「分析会议」将在第 3 阶段开放。')).toBeInTheDocument()
-    expect(screen.getByText('第 3 阶段开放')).toBeInTheDocument()
+    expect(screen.queryByText('第 3 阶段开放')).not.toBeInTheDocument()
   })
 
   it('keeps a material search result message visible when no material matches', () => {
@@ -714,7 +714,7 @@ describe('MessageThread', () => {
 
     act(() => vi.advanceTimersByTime(4_000))
     act(() => screen.getByRole('button', { name: '查看执行过程' }).click())
-    expect(screen.getByText('资料较多，我还在逐条核对来源。完成后会显示可编辑的方案草稿。')).toBeInTheDocument()
+    expect(screen.getByText('资料较多，正在逐条核对来源；处理进度会持续更新。')).toBeInTheDocument()
   })
 
   it('stops timing and preserves the preview and execution steps after failure', () => {

@@ -46,7 +46,7 @@ const skillCatalog: ProductSkillDefinition[] = [
   },
   {
     id: 'MEETING_ANALYSIS',
-    label: '分析会议',
+    label: '会议纪要',
     description: '提炼摘要、待办和产品建议',
     prompt: '请分析我上传的会议纪要，提炼摘要、待办和产品建议。',
     triggerKeywords: ['会议', '纪要', '待办', '行动项'],

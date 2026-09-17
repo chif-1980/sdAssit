@@ -892,6 +892,7 @@ function traceToProgressTrail(trace: unknown, runId?: string): ProductAnswerProg
 interface ActiveRunResponse {
   run?: {
     runId: string
+    skillId?: string
     status?: string
     streamUrl?: string
     inputContent?: string
@@ -930,6 +931,18 @@ export function ChatPage() {
   const [conversationSearch, setConversationSearch] = useState('')
   const [businessTask, setBusinessTask] = useState<BusinessTask>('QA')
   const [businessTaskExplicit, setBusinessTaskExplicit] = useState(false)
+  const [dirtyMeetingIds, setDirtyMeetingIds] = useState<Set<string>>(new Set())
+  const meetingDirtyChanged = useCallback((id: string, dirty: boolean) => {
+    setDirtyMeetingIds(previous => {
+      if (previous.has(id) === dirty) return previous
+      const next = new Set(previous)
+      if (dirty) next.add(id); else next.delete(id)
+      return next
+    })
+  }, [])
+  const [meetingTargetId, setMeetingTargetId] = useState<string>()
+  const [historyMeetings, setHistoryMeetings] = useState<{ id: string; title: string; conversationId: string }[]>([])
+  const [historyMeetingIds, setHistoryMeetingIds] = useState<string[]>([])
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const [distributionMaterial, setDistributionMaterial] = useState<ProductMaterial>()
@@ -1135,7 +1148,7 @@ export function ChatPage() {
     if (!query) return listedConversations
     return listedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
   }, [conversationSearch, listedConversations])
-  const switchLocked = sending || archiving || restoring
+  const switchLocked = sending || archiving || restoring || dirtyMeetingIds.size > 0
   const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
 
@@ -1284,9 +1297,9 @@ export function ChatPage() {
     answerProgressTrailRef.current = trail
     setAnswerProgressTrail(trail)
     setAnswerProgress(trail.at(-1))
-    setBusinessTask('SOLUTION_DRAFT')
+    setBusinessTask(run.skillId === 'MEETING_ANALYSIS' ? 'MEETING_ANALYSIS' : 'SOLUTION_DRAFT')
     setBusinessTaskExplicit(false)
-    setPendingQuestion(run.inputContent?.trim() || '正在恢复方案运行…')
+    setPendingQuestion(run.inputContent?.trim() || '正在恢复后台任务…')
     setAgentInterruptQuestion(normalizeInterrupt(run.interrupt, run.runId))
     setStreamedAnswer('')
     streamedAnswerRef.current = ''
@@ -1347,6 +1360,34 @@ export function ChatPage() {
     if (!conversationId || loadingWorkspace || loadingConversation) return
     void restoreActiveRun(conversationId, contextVersionRef.current)
   }, [conversation?.id, loadingConversation, loadingWorkspace, restoreActiveRun])
+
+  useEffect(() => {
+    setMeetingTargetId(undefined)
+    setHistoryMeetingIds([])
+  }, [conversation?.id])
+
+  async function loadMeetingHistory() {
+    try {
+      const response = await api<{ meetings: typeof historyMeetings }>('/api/chat/meetings')
+      setHistoryMeetings(response.meetings)
+    } catch { setErrorText('历史会议加载失败，请重试。') }
+  }
+
+  async function handleMeetingAction(action: 'revise' | 'retry', id: string) {
+    if (mutationLocked || archived) return
+    if (action === 'revise') {
+      setMeetingTargetId(id)
+      setBusinessTask('MEETING_ANALYSIS')
+      setBusinessTaskExplicit(true)
+      setDraft('@会议纪要 请按以下要求修改：')
+      return
+    }
+    try {
+      const response = await api<{ runId: string; conversationId: string }>(`/api/chat/meetings/${id}/retry`, { method: 'POST' })
+      restoredConversationIdsRef.current.delete(response.conversationId)
+      await restoreActiveRun(response.conversationId, contextVersionRef.current)
+    } catch (error) { setErrorText(error instanceof Error ? error.message : '重试失败') }
+  }
 
   function closeConversationList() {
     setConversationListOpen(false)
@@ -1462,7 +1503,11 @@ export function ChatPage() {
   async function send() {
     const content = draft.trim()
     if (!content || mutationLocked || archived) return
-    const resolvedBusinessTask = businessTaskExplicit ? businessTask : inferBusinessTask(content)
+    const lastMeeting = messages.filter(m => m.meeting?.result).at(-1)?.meeting
+    const inferred = inferBusinessTask(content)
+    const meetingFollowup = !attachments.length && !/https?:\/\//u.test(content)
+      && Boolean(meetingTargetId || (lastMeeting && /修改|改成|补充|调整|重写/u.test(content)))
+    const resolvedBusinessTask = businessTaskExplicit ? businessTask : meetingFollowup ? 'MEETING_ANALYSIS' : inferred
     const requestedSkillId = resolvedBusinessTask === 'QA' ? undefined : resolvedBusinessTask
     setBusinessTask(resolvedBusinessTask)
     setBusinessTaskExplicit(false)
@@ -1531,6 +1576,10 @@ export function ChatPage() {
         requestId: globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         ...(requestedSkillId ? { skillId: requestedSkillId } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(requestedSkillId === 'MEETING_ANALYSIS' ? {
+          ...(meetingFollowup ? { meetingId: meetingTargetId || lastMeeting?.id } : {}),
+          historyMeetingIds,
+        } : {}),
       })
       const result = await streamApi<SendResponse, ProductAnswerProgress>(
         `/api/chat/conversations/${target.id}/messages/stream`,
@@ -1590,10 +1639,12 @@ export function ChatPage() {
       if (contextVersionRef.current !== version) return
       if (!result) return
       applyAnswer(result)
+      setMeetingTargetId(undefined)
+      setHistoryMeetingIds([])
     } catch (error) {
       if (contextVersionRef.current !== version) return
       setAgentInterruptQuestion(undefined)
-      const preserveSolutionProgress = requestedSkillId === 'SOLUTION_DRAFT'
+      const preserveSolutionProgress = ['SOLUTION_DRAFT', 'MEETING_ANALYSIS'].includes(requestedSkillId || '')
         && !attachmentUploadFailed && !isAbortError(error)
       if (preserveSolutionProgress) {
         markProgressFailed(error instanceof ApiError ? error.message : '发送失败，请重试')
@@ -2261,6 +2312,8 @@ export function ChatPage() {
                     onMaterialPreview={openMaterialPreview}
                     onMaterialDownload={(material) => void downloadMaterial(material)}
                     onMaterialDistribute={openMaterialDistribution}
+                    onMeetingAction={(action, id) => void handleMeetingAction(action, id)}
+                    onMeetingDirtyChange={meetingDirtyChanged}
                     onDraftSave={updateSolutionDraft}
                     onDraftConfirm={confirmSolutionDraft}
                     onInterruptAnswer={(answer, action) => void resumeAgentRun(answer, action)}
@@ -2296,7 +2349,7 @@ export function ChatPage() {
                         )
                       })}
                     </div>
-                    <p className="prototype-skill-hint">需要查资料、做方案或分析会议时，AI 会自动调用合适技能；也可以输入 @ 手动选择。</p>
+                    <p className="prototype-skill-hint">需要查资料、做方案或整理会议纪要时，AI 会自动调用合适技能；也可以输入 @ 手动选择。</p>
                     <div className="prototype-example-prompts" aria-label="示例问题">
                       <span>可以这样问</span>
                       {exampleQuestions.map((question) => (
@@ -2341,6 +2394,16 @@ export function ChatPage() {
             ) : null}
 
             <div className="chat-composer-dock">
+              {businessTask === 'MEETING_ANALYSIS' || /@会议纪要|@分析会议/u.test(draft) ? <details className="meeting-history" onToggle={event => { if (event.currentTarget.open) void loadMeetingHistory() }}>
+                <summary>引用历史会议（可选，已选 {historyMeetingIds.length} 场）</summary>
+                <p>默认只分析当前会议。只有勾选的会议才会作为辅助材料。</p>
+                {historyMeetings.length ? historyMeetings.map(item => <label key={item.id}>
+                  <input type="checkbox" disabled={mutationLocked} checked={historyMeetingIds.includes(item.id)} onChange={event => setHistoryMeetingIds(ids => event.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />
+                  {item.title}
+                </label>) : <p>暂无已完成的历史会议。</p>}
+              </details> : null}
+              {meetingTargetId ? <p>正在修改所选会议 <button onClick={() => setMeetingTargetId(undefined)}>取消关联</button></p> : null}
+              {dirtyMeetingIds.size > 0 ? <p role="status">纪要修改尚未保存，保存完成后可继续发送或切换会话。</p> : null}
               <ChatComposer
                 value={draft}
                 mode={answerMode}
