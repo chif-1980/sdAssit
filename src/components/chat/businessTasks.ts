@@ -41,12 +41,12 @@ export const skillRegistry: BusinessTaskDefinition[] = [
   },
   {
     id: 'MEETING_ANALYSIS',
-    label: '分析会议',
-    description: '提炼摘要、待办和产品建议',
-    prompt: '请分析我上传的会议纪要，提炼摘要、待办和产品建议。',
+    label: '会议纪要',
+    description: '读取会议链接或文字，整理纪要、行动清单与业务分析',
+    prompt: '@会议纪要 请整理以下会议资料：\n',
     icon: ClipboardList,
-    triggerKeywords: ['会议', '纪要', '待办', '行动项'],
-    availability: 'PLANNED',
+    triggerKeywords: ['整理会议纪要', '生成会议纪要', '分析会议纪要', '总结会议纪要', '@会议纪要', '@分析会议'],
+    availability: 'AVAILABLE',
     stage: 3,
   },
 ]
@@ -68,6 +68,7 @@ export function taskDefinition(task: BusinessTask) {
 }
 
 export function inferBusinessTask(input: string): BusinessTask {
+  if (/@(?:会议纪要|分析会议)|(?:整理|总结|分析|生成|撰写).{0,14}(?:会议|讨论).{0,8}纪要/u.test(input)) return 'MEETING_ANALYSIS'
   const matched = skillRegistry
     .map((skill) => ({ skill, score: skill.triggerKeywords.reduce((score, keyword) => score + (input.includes(keyword) ? 1 : 0), 0) }))
     .sort((left, right) => right.score - left.score)[0]

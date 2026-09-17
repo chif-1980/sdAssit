@@ -32,6 +32,9 @@ export type ProductAnswerStage =
 export type ProductSkillId = 'MATERIAL_SEARCH' | 'SOLUTION_DRAFT' | 'MEETING_ANALYSIS'
 
 export interface ProductAnswerProgress {
+  updatedAt?: string
+  completed?: number | null
+  total?: number | null
   stage: ProductAnswerStage
   message: string
   runId?: string
@@ -160,7 +163,38 @@ export interface ProductMessage {
   materials?: ProductMaterial[]
   attachments?: ProductAttachment[]
   solutionDraft?: SolutionDraft
+  meeting?: MeetingRecord
   createdAt: string
+}
+
+export interface MeetingSource {
+  title: string
+  platform: string
+  url?: string | null
+  platformSummary: string
+  completeness: string
+  summaryNotice?: string
+  paragraphs: { id: string; text: string; speaker: string; startMs?: number | null; endMs?: number | null }[]
+}
+
+export interface MeetingRecord {
+  id: string
+  conversationId: string
+  state: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  version: number
+  updatedAt: string
+  progress: { message: string; completed?: number; total?: number; updatedAt?: string }
+  error?: { code: string; message: string } | null
+  result?: {
+    title: string
+    meetingType: string
+    body: string
+    coverage?: { processed: number; total: number; paragraphs: number }
+    formalEvidence?: { evidence_id: string; title: string; excerpt: string; source_url: string }[]
+    selectedHistoryIds?: string[]
+    selectedHistory?: { id: string; label?: string; title: string; body: string }[]
+  } | null
+  sources: MeetingSource[]
 }
 
 export interface SolutionDraft {

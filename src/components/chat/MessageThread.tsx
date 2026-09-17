@@ -20,6 +20,7 @@ import { ThinkingIndicator } from './ThinkingIndicator'
 import { taskDefinition } from './businessTasks'
 import { groupMessagePairs, messagePairAnchorId, type MessagePair } from './messagePairs.js'
 import { SolutionDraftCard } from './SolutionDraftCard'
+import { MeetingCard, type MeetingAction } from './MeetingCard'
 import { ClarificationCard, type ClarificationAnswer } from './ClarificationCard'
 
 interface MessageThreadProps {
@@ -44,6 +45,8 @@ interface MessageThreadProps {
   onMaterialPreview?: (material: ProductMaterial, trigger: HTMLButtonElement) => void
   onMaterialDownload?: (material: ProductMaterial) => void
   onMaterialDistribute?: (material: ProductMaterial) => void
+  onMeetingDirtyChange?: (id: string, dirty: boolean) => void
+  onMeetingAction?: MeetingAction
   onDraftSave?: (draftId: string, patch: SolutionDraftEditRequest) => Promise<void>
   onDraftConfirm?: (draftId: string) => Promise<void>
   onInterruptAnswer?: (answer: ClarificationAnswer, action: 'answer' | 'skip') => void
@@ -191,6 +194,8 @@ interface MessageBubbleProps {
   onMaterialPreview?: MessageThreadProps['onMaterialPreview']
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
+  onMeetingDirtyChange?: (id: string, dirty: boolean) => void
+  onMeetingAction?: MeetingAction
   onDraftSave?: MessageThreadProps['onDraftSave']
   onDraftConfirm?: MessageThreadProps['onDraftConfirm']
   onInterruptAnswer?: MessageThreadProps['onInterruptAnswer']
@@ -209,6 +214,8 @@ function MessageBubble({
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onMeetingDirtyChange,
+  onMeetingAction,
   onDraftSave,
   onDraftConfirm,
   onInterruptAnswer,
@@ -254,7 +261,7 @@ function MessageBubble({
           {skill.availability === 'PLANNED' ? <small>第 {skill.stage} 阶段开放</small> : null}
         </div>
       ) : null}
-      {message.answerStatus ? (
+      {message.answerStatus && !message.meeting ? (
         <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
           {statusLabels[message.answerStatus]}
         </span>
@@ -266,7 +273,7 @@ function MessageBubble({
         // duplicated answer (and placed feedback controls between two copies).
         // Keep the structured card as the single source of truth; ordinary
         // assistant answers retain the existing Markdown path.
-        message.solutionDraft ? null : (
+        message.solutionDraft || message.meeting ? null : (
           <AssistantMarkdown
             // Planned skills use INSUFFICIENT as their honest status, but their
             // response is still actionable (it explains the rollout boundary).
@@ -307,6 +314,7 @@ function MessageBubble({
           onDistribute={(material) => onMaterialDistribute?.(material)}
         />
       ) : null}
+      {message.role === 'ASSISTANT' && message.meeting ? <MeetingCard meeting={message.meeting} disabled={feedbackDisabled} onAction={onMeetingAction} onDirtyChange={onMeetingDirtyChange} /> : null}
       {message.role === 'ASSISTANT' && message.solutionDraft ? (
         <SolutionDraftCard
           draft={message.solutionDraft}
@@ -390,6 +398,8 @@ function MessagePairBlock({
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onMeetingDirtyChange,
+  onMeetingAction,
   onDraftSave,
   onDraftConfirm,
   onInterruptAnswer,
@@ -407,6 +417,8 @@ function MessagePairBlock({
   onMaterialPreview?: MessageThreadProps['onMaterialPreview']
   onMaterialDownload?: MessageThreadProps['onMaterialDownload']
   onMaterialDistribute?: MessageThreadProps['onMaterialDistribute']
+  onMeetingDirtyChange?: (id: string, dirty: boolean) => void
+  onMeetingAction?: MeetingAction
   onDraftSave?: MessageThreadProps['onDraftSave']
   onDraftConfirm?: MessageThreadProps['onDraftConfirm']
   onInterruptAnswer?: MessageThreadProps['onInterruptAnswer']
@@ -420,8 +432,8 @@ function MessagePairBlock({
       data-message-pair={pair.id}
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
-      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
+      {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
     </div>
   )
 }
@@ -443,6 +455,8 @@ export function MessageThread({
   onMaterialPreview,
   onMaterialDownload,
   onMaterialDistribute,
+  onMeetingDirtyChange,
+  onMeetingAction,
   onDraftSave,
   onDraftConfirm,
   onInterruptAnswer,
@@ -473,7 +487,7 @@ export function MessageThread({
           onMaterialPreview={onMaterialPreview}
           onMaterialDownload={onMaterialDownload}
           onMaterialDistribute={onMaterialDistribute}
-          onDraftSave={onDraftSave}
+          onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave}
           onDraftConfirm={onDraftConfirm}
           // Historical solution drafts can remain actionable after a refresh
           // even when there is no live interrupt object in memory.  Pass the

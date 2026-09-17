@@ -76,6 +76,7 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
             <span className="thinking-summary-copy">
               <strong>{failed ? '生成失败' : visibleProgress ? (stageByKey.get(visibleProgress.stage)?.label ?? visibleProgress.stage) : '正在准备'}</strong>
               <span>{visibleProgress?.message ?? '正在连接知识服务'}</span>
+              {visibleProgress?.updatedAt ? <small>最近更新 {new Date(visibleProgress.updatedAt).toLocaleTimeString('zh-CN')}</small> : null}
             </span>
           </div>
           <span className="thinking-elapsed"><Clock3 size={13} aria-hidden="true" />{formatElapsed(displayedElapsedMs)}</span>
@@ -117,7 +118,7 @@ export function ThinkingIndicator({ progress, progressTrail = [], streaming = fa
           </ol>
           {!terminal ? <p className="thinking-hint">
             {displayedElapsedMs >= 12_000
-              ? '资料较多，我还在逐条核对来源。完成后会显示可编辑的方案草稿。'
+              ? '资料较多，正在逐条核对来源；处理进度会持续更新。'
               : '执行过程会随 Agent 的实际动作更新，不会预先展示未执行的阶段。'}
           </p> : null}
         </div>

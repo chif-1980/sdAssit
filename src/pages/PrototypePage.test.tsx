@@ -40,7 +40,7 @@ describe('PrototypePage business workbench', () => {
     const user = userEvent.setup()
     render(<PrototypePage />)
 
-    await user.click(screen.getAllByRole('button', { name: /分析会议/u })[0])
+    await user.click(screen.getAllByRole('button', { name: /会议纪要/u })[0])
 
     expect(screen.getByText('内部产品讨论')).toBeInTheDocument()
     expect(screen.getByText('未关联客户')).toBeInTheDocument()

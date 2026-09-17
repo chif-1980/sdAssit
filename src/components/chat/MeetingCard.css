@@ -1,0 +1,21 @@
+.meeting-card { min-width: 0; line-height: 1.75; }
+.meeting-card header, .meeting-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.meeting-card header { justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; }
+.meeting-card header span, .meeting-status, .meeting-actions > span { color: #64748b; font-size: 12px; }
+.meeting-card button { border: 1px solid #dbe3ee; border-radius: 7px; background: #fff; color: #334155; padding: 5px 10px; cursor: pointer; }
+.meeting-card button:disabled { opacity: .5; cursor: default; }
+.meeting-card .meeting-reference { padding: 0 4px; color: #2563eb; font-size: 12px; vertical-align: baseline; }
+.meeting-card h2 { margin-top: 24px; font-size: 18px; }
+.meeting-card table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.meeting-card td, .meeting-card th { border: 1px solid #e2e8f0; padding: 8px; }
+.meeting-card details { margin: 12px 0; padding: 10px 12px; background: #f8fafc; border-radius: 8px; }
+.meeting-card summary { cursor: pointer; }
+.meeting-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.meeting-evidence { padding: 16px; border-left: 3px solid #3b82f6; background: #eff6ff; margin: 16px 0; }
+.meeting-evidence > button { float: right; }
+.meeting-editor label { display: block; margin-top: 12px; }
+.meeting-editor input, .meeting-editor textarea, .meeting-editor select { display: block; width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; font: inherit; }
+.meeting-editor textarea { min-height: 440px; resize: vertical; }
+.meeting-card [role=alert] { color: #b45309; }
+.meeting-history { margin: 8px 0; font-size: 13px; }
+.meeting-history label { display: block; padding: 4px 0; }
