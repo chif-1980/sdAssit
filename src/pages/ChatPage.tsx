@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowDown, BookOpen, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, History, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -943,6 +943,8 @@ export function ChatPage() {
   const [meetingTargetId, setMeetingTargetId] = useState<string>()
   const [historyMeetings, setHistoryMeetings] = useState<{ id: string; title: string; conversationId: string }[]>([])
   const [historyMeetingIds, setHistoryMeetingIds] = useState<string[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const [distributionMaterial, setDistributionMaterial] = useState<ProductMaterial>()
@@ -1367,10 +1369,13 @@ export function ChatPage() {
   }, [conversation?.id])
 
   async function loadMeetingHistory() {
+    setHistoryLoading(true)
+    setHistoryError(false)
     try {
       const response = await api<{ meetings: typeof historyMeetings }>('/api/chat/meetings')
       setHistoryMeetings(response.meetings)
-    } catch { setErrorText('历史会议加载失败，请重试。') }
+    } catch { setHistoryError(true) }
+    finally { setHistoryLoading(false) }
   }
 
   async function handleMeetingAction(action: 'revise' | 'retry', id: string) {
@@ -2395,12 +2400,22 @@ export function ChatPage() {
 
             <div className="chat-composer-dock">
               {businessTask === 'MEETING_ANALYSIS' || /@会议纪要|@分析会议/u.test(draft) ? <details className="meeting-history" onToggle={event => { if (event.currentTarget.open) void loadMeetingHistory() }}>
-                <summary>引用历史会议（可选，已选 {historyMeetingIds.length} 场）</summary>
-                <p>默认只分析当前会议。只有勾选的会议才会作为辅助材料。</p>
-                {historyMeetings.length ? historyMeetings.map(item => <label key={item.id}>
-                  <input type="checkbox" disabled={mutationLocked} checked={historyMeetingIds.includes(item.id)} onChange={event => setHistoryMeetingIds(ids => event.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />
-                  {item.title}
-                </label>) : <p>暂无已完成的历史会议。</p>}
+                <summary>
+                  <History size={16} aria-hidden="true" />
+                  <span className="meeting-history-title">引用历史会议</span>
+                  <span className={`meeting-history-count${historyMeetingIds.length ? ' has-selection' : ''}`}>
+                    {historyMeetingIds.length ? `已选 ${historyMeetingIds.length} 场` : '可选'}
+                  </span>
+                  <ChevronDown className="meeting-history-chevron" size={16} aria-hidden="true" />
+                </summary>
+                <div className="meeting-history-options" aria-busy={historyLoading}>
+                  {historyLoading ? <p className="meeting-history-status" role="status">正在加载历史会议…</p>
+                    : historyError ? <div className="meeting-history-status" role="alert">历史会议加载失败<button type="button" onClick={() => void loadMeetingHistory()}><RefreshCw size={14} aria-hidden="true" />重试</button></div>
+                    : historyMeetings.length ? historyMeetings.map(item => <label className="meeting-history-option" key={item.id}>
+                      <input type="checkbox" disabled={mutationLocked} checked={historyMeetingIds.includes(item.id)} onChange={event => setHistoryMeetingIds(ids => event.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />
+                      <span>{item.title}</span>
+                    </label>) : <p className="meeting-history-status">暂无已完成的历史会议</p>}
+                </div>
               </details> : null}
               {meetingTargetId ? <p>正在修改所选会议 <button onClick={() => setMeetingTargetId(undefined)}>取消关联</button></p> : null}
               {dirtyMeetingIds.size > 0 ? <p role="status">纪要修改尚未保存，保存完成后可继续发送或切换会话。</p> : null}
