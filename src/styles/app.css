@@ -1109,6 +1109,25 @@ tbody tr:last-child td { border-bottom: 0; }
   padding: 12px 24px 18px;
   background: #ffffff;
 }
+.meeting-history { width: min(820px, 100%); margin: 0 auto 8px; color: #64748b; font: inherit; font-size: 13px; line-height: 1.5; letter-spacing: 0; }
+.meeting-history summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; border-radius: 6px; list-style: none; cursor: pointer; }
+.meeting-history summary::-webkit-details-marker { display: none; }
+.meeting-history summary:hover { background: #f5f8fc; }
+.meeting-history summary:focus-visible { outline: 2px solid #3b74d7; outline-offset: 2px; }
+.meeting-history summary > svg { flex: 0 0 auto; }
+.meeting-history-title { color: #475569; font-weight: 500; }
+.meeting-history-count { margin-left: auto; color: #7c8798; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.meeting-history-count.has-selection { color: #245cae; font-weight: 600; }
+.meeting-history[open] .meeting-history-chevron { transform: rotate(180deg); }
+.meeting-history-options { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; margin: 4px 0 10px; padding: 4px; border: 1px solid #dce3ec; border-radius: 6px; background: #fff; }
+.meeting-history-option { display: flex; align-items: flex-start; gap: 10px; padding: 9px 8px; border-radius: 4px; cursor: pointer; }
+.meeting-history-option:hover { background: #f5f8fc; }
+.meeting-history-option:has(input:checked) { background: #eef4ff; color: #245cae; }
+.meeting-history-option:has(input:disabled) { cursor: default; opacity: .65; }
+.meeting-history-option input { flex: 0 0 16px; width: 16px; height: 16px; margin: 2px 0 0; accent-color: #3b74d7; }
+.meeting-history-option span { min-width: 0; overflow-wrap: anywhere; }
+.meeting-history-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0; padding: 12px 8px; color: #64748b; }
+.meeting-history-status button { display: inline-flex; align-items: center; gap: 4px; border: 0; padding: 2px 4px; background: transparent; color: #245cae; font: inherit; cursor: pointer; }
 .chat-composer { position: relative; width: min(820px, 100%); display: grid; grid-template-columns: minmax(0, 1fr) 38px; align-items: end; gap: 9px 10px; margin: 0 auto; padding: 12px; border: 1px solid #dce3ec; border-radius: 8px; background: #ffffff; box-shadow: 0 8px 24px rgb(30 56 92 / 12%); }
 .chat-composer:focus-within { border-color: #c8d7ea; }
 .chat-composer.is-dragging { border-color: #78a8e8; background: #f7fbff; box-shadow: 0 0 0 3px rgb(91 144 218 / 12%); }
