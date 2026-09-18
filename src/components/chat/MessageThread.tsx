@@ -255,10 +255,9 @@ function MessageBubble({
     <article className={`message-bubble message-${message.role.toLowerCase()}`}>
       <div className="message-role">{message.role === 'USER' ? '你' : '助手'}</div>
       {skill ? (
-        <div className={`message-skill-call${skill.availability === 'PLANNED' ? ' is-planned' : ''}`} role="status">
+        <div className="message-skill-call" role="status">
           <span>已调用技能</span>
           <strong>{skill.label}</strong>
-          {skill.availability === 'PLANNED' ? <small>第 {skill.stage} 阶段开放</small> : null}
         </div>
       ) : null}
       {message.answerStatus && !message.meeting ? (
