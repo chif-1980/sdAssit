@@ -181,6 +181,7 @@ export interface MeetingSource {
 export interface MeetingDirectoryUser {
   userId: string | null
   feishuUserId: string | null
+  feishuOpenId?: string | null
   englishName?: string
   departmentIds?: string[]
   displayName: string
@@ -191,12 +192,16 @@ export interface MeetingDepartment { id: string; parentId: string | null; name: 
 export interface MeetingFollowupTask {
   id: string
   title: string
+  content?: string
   assignee: MeetingDirectoryUser | null
   assigneeSuggestion?: string | null
   dueDate: string | null
   dueDateSuggestion?: string | null
   status: 'OPEN' | 'IN_PROGRESS' | 'DONE' | string
   sourceRefs: string[]
+  origin?: 'EXTRACTED' | 'MANUAL' | string
+  reviewStatus?: 'PENDING' | 'CONFIRMED' | 'IGNORED' | 'DELIVERY_FAILED' | string
+  delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; error?: string | null }
 }
 
 export interface MeetingKnowledgeSuggestion {

@@ -116,6 +116,33 @@ describe('meeting results', () => {
     expect(JSON.parse(call[1].body).tasks[0]).toMatchObject({ assigneeFeishuUserId: 'ou_2', dueDate: '2026-09-30' })
   })
 
+  it('adds a manual task and confirms one task for delivery', async () => {
+    const fetcher = vi.fn(async (_path, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const patch = JSON.parse(init.body as string)
+        return new Response(JSON.stringify({
+          meeting: {
+            ...followupMeeting, version: followupMeeting.version + 1,
+            result: { ...followupMeeting.result!, followup: { ...followupMeeting.result!.followup!, tasks: patch.tasks } },
+          },
+        }))
+      }
+      return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' }] }))
+    })
+    vi.stubGlobal('fetch', fetcher)
+    render(<MeetingCard meeting={followupMeeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '＋新增待办' }))
+    const manualTitle = screen.getByRole('textbox', { name: '待办标题：未填写' })
+    fireEvent.change(manualTitle, { target: { value: '补发会议资料' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
+    await waitFor(() => expect(fetcher).toHaveBeenCalled())
+    const saveCall = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    const savePayload = JSON.parse(saveCall[1]?.body as string) as { action: string; tasks: { id: string; title: string }[] }
+    expect(savePayload).toMatchObject({ action: 'SAVE' })
+    expect(savePayload.tasks.some(task => task.id.startsWith('manual-') && task.title === '补发会议资料')).toBe(true)
+    expect(savePayload.tasks.find(task => task.id.startsWith('manual-'))).toMatchObject({ content: '' })
+  })
+
   it('preserves a conflicting draft base across reloads until the user reloads the saved version', async () => {
     vi.useFakeTimers()
     sessionStorage.setItem('meeting-edit:MT-test', JSON.stringify({

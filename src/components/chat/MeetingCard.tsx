@@ -173,23 +173,54 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   function updateFollowupTask(taskId: string, patch: Partial<MeetingFollowup['tasks'][number]>) {
     setFollowup(current => current ? {
       ...current,
-      tasks: current.tasks.map(task => task.id === taskId ? { ...task, ...patch } : task),
+      tasks: current.tasks.map(task => {
+        if (task.id !== taskId) return task
+        const changedDeliveryField = ['title', 'content', 'assignee', 'dueDate'].some(field => field in patch)
+        return task.reviewStatus === 'CONFIRMED' || task.reviewStatus === 'IGNORED'
+          ? { ...task, ...patch, ...(changedDeliveryField ? {
+            reviewStatus: 'PENDING',
+            delivery: { notification: 'NOT_SENT', feishuTaskId: null, messageId: null, error: null },
+          } : {}) }
+          : { ...task, ...patch }
+      }),
     } : current)
     setFollowupError('')
   }
 
-  async function saveFollowup() {
+  function addFollowupTask() {
+    const id = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setFollowup(current => current ? {
+      ...current,
+      tasks: [...current.tasks, {
+        id, title: '', content: '', assignee: null, dueDate: null, status: 'OPEN', sourceRefs: [],
+        origin: 'MANUAL', reviewStatus: 'PENDING',
+        delivery: { notification: 'NOT_SENT', feishuTaskId: null, messageId: null, error: null },
+      }],
+    } : current)
+    setFollowupError('')
+  }
+
+  async function saveFollowup(action: 'SAVE' | 'CONFIRM' | 'IGNORE' = 'SAVE', taskId?: string) {
     if (!followup || dirty || followupSaving) return
+    const target = taskId ? followup.tasks.find(task => task.id === taskId) : undefined
+    if ((action === 'CONFIRM' || action === 'IGNORE') && !target) return
+    if (action === 'CONFIRM' && !target?.title.trim()) {
+      setFollowupError('请先填写待办标题，再确认并发送。')
+      return
+    }
     setFollowupSaving(true)
     setFollowupError('')
     try {
-      const response = await api<{ meeting: MeetingRecord }>(`/api/chat/meetings/${record.id}/followup`, {
+      const response = await api<{ meeting: MeetingRecord; deliveryError?: string }>(`/api/chat/meetings/${record.id}/followup`, {
         method: 'PATCH',
         body: JSON.stringify({
           version: recordRef.current.version,
+          action,
+          taskId,
           tasks: followup.tasks.map(task => ({
             id: task.id,
             title: task.title,
+            content: task.content ?? '',
             assigneeUserId: task.assignee?.userId ?? null,
             assigneeFeishuUserId: task.assignee?.feishuUserId ?? null,
             dueDate: task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
@@ -200,6 +231,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       recordRef.current = response.meeting
       setRecord(response.meeting)
       setFollowup(response.meeting.result?.followup)
+      if (response.deliveryError) setFollowupError(response.deliveryError)
     } catch (failure) {
       setFollowupError(failure instanceof Error ? failure.message : '跟进保存失败，请重试')
     } finally { setFollowupSaving(false) }
@@ -261,9 +293,20 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       {followup ? <details className="meeting-followup" open>
         <summary>会议跟进 · 负责人：{followup.coordinator.displayName}</summary>
         <p className="meeting-followup-note">你是本次会议跟进负责人。任务负责人可从飞书企业通讯录中选择；知识更新建议需由知识维护人员核对。</p>
+        <div className="meeting-followup-toolbar">
+          <strong>待办事项</strong>
+          <button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button>
+        </div>
         {followup.tasks.length ? <div className="meeting-followup-tasks">
-          {followup.tasks.map(task => <div className="meeting-followup-task" key={task.id}>
-            <strong>{task.title}</strong>
+          {followup.tasks.map(task => <article className={`meeting-followup-task meeting-followup-task-${task.reviewStatus || 'PENDING'}`} key={task.id}>
+            <div className="meeting-followup-task-heading">
+              <label>待办标题<input aria-label={`待办标题：${task.title || '未填写'}`} value={task.title} maxLength={1000} placeholder="填写待办事项" onChange={event => updateFollowupTask(task.id, { title: event.target.value })} disabled={disabled || followupSaving} /></label>
+              <label className="meeting-followup-content-field">待办内容（可选）<textarea aria-label={`待办内容：${task.title || '未填写'}`} value={task.content ?? ''} maxLength={5000} placeholder="补充执行要求、交付物或上下文" onChange={event => updateFollowupTask(task.id, { content: event.target.value })} disabled={disabled || followupSaving} /></label>
+              <span className="meeting-followup-origin">{task.origin === 'MANUAL' ? '人工补充' : '会议识别'}</span>
+              <span className={`meeting-followup-review review-${task.reviewStatus || 'PENDING'}`}>
+                {task.reviewStatus === 'CONFIRMED' ? '已确认并已发送' : task.reviewStatus === 'IGNORED' ? '已忽略' : task.reviewStatus === 'DELIVERY_FAILED' ? '发送失败，可重试' : '待确认'}
+              </span>
+            </div>
             {task.assigneeSuggestion ? <small>模型识别的负责人：{task.assigneeSuggestion}（请核对）</small> : null}
             <div className="meeting-field"><span>负责人</span><MeetingMemberPicker value={task.assignee} users={directory} departments={departments} loading={directoryLoading} error={directoryError} notice={directoryNotice} disabled={disabled || followupSaving} onRetry={() => setDirectoryAttempt(n => n + 1)} onChange={assignee => updateFollowupTask(task.id, { assignee })} /></div>
             <div className="meeting-field"><span>期限</span><MeetingDatePicker value={task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : ''} onChange={dueDate => updateFollowupTask(task.id, { dueDate })} disabled={disabled || followupSaving} />
@@ -273,12 +316,20 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving}>
               <option value="OPEN">待开始</option><option value="IN_PROGRESS">进行中</option><option value="DONE">已完成</option>
             </select></label>
-            {task.sourceRefs.length ? <small>依据：{task.sourceRefs.join('、')}</small> : null}
-          </div>)}
-          <button type="button" disabled={blocked || followupSaving} onClick={() => void saveFollowup()}>{followupSaving ? '保存中…' : '保存跟进'}</button>
-          {followupDirty ? <small role="status">跟进修改尚未保存</small> : null}
+            {task.sourceRefs?.length ? <small>依据：{task.sourceRefs.join('、')}</small> : null}
+            {task.delivery?.error ? <p className="meeting-followup-delivery-error" role="alert">{task.delivery.error}</p> : null}
+            <div className="meeting-followup-task-actions">
+              <button type="button" disabled={blocked || followupSaving || !task.title.trim()} onClick={() => void saveFollowup('CONFIRM', task.id)}>{followupSaving ? '处理中…' : task.reviewStatus === 'DELIVERY_FAILED' ? '重试发送' : '确认并发送'}</button>
+              <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving || !task.title.trim() || task.reviewStatus === 'IGNORED' || task.reviewStatus === 'CONFIRMED'} onClick={() => void saveFollowup('IGNORE', task.id)}>忽略</button>
+            </div>
+          </article>)}
+          <div className="meeting-followup-savebar">
+            <button type="button" disabled={blocked || followupSaving} onClick={() => void saveFollowup()}>{followupSaving ? '保存中…' : '保存跟进'}</button>
+            {followupDirty ? <small role="status">跟进修改尚未保存</small> : null}
+          </div>
           {followupError ? <div role="alert">{followupError}</div> : null}
         </div> : <p>会议中没有识别到明确行动项。后续事项可通过继续修改补充。</p>}
+        {!followup.tasks.length ? <div className="meeting-followup-empty-actions"><button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button></div> : null}
         {followup.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
           <h3>知识更新建议</h3>
           <p>以下建议来自会议内容，尚未逐条与正式知识对比，也未提交知识维护队列；需由知识维护人员核对后决定是否更新。</p>
