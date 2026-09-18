@@ -11,3 +11,7 @@
 
 - [企业知识助手使用手册](https://chif-1980.github.io/sdkb/guide/knowledge-assistant.html)
 - [善达知枢使用手册](https://chif-1980.github.io/sdkb/guide/zhishu-manual.html)
+
+## v0.4.0（2026-09-18）
+
+新增会议纪要技能、历史会议显式引用、正文自动保存和 Word 导出；优化会议入口与读取/分析失败提示。后端模型统一由善达知枢的模型供应商页面配置。
