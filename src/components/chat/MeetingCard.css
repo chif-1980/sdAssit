@@ -17,3 +17,19 @@
 .meeting-editor input, .meeting-editor textarea, .meeting-editor select { display: block; width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; font: inherit; }
 .meeting-editor textarea { min-height: 440px; resize: vertical; }
 .meeting-card [role=alert] { color: #b45309; }
+.meeting-followup-note { color: #475569; font-size: 13px; }
+.meeting-followup-tasks { display: grid; gap: 10px; }
+.meeting-followup-task { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(120px, .6fr) minmax(110px, .5fr); gap: 8px; align-items: center; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.meeting-followup-task > strong { grid-column: 1 / -1; }
+.meeting-followup-task > small { grid-column: 1 / -1; color: #64748b; }
+.meeting-followup-task label { display: grid; gap: 4px; color: #64748b; font-size: 12px; }
+.meeting-followup-task select, .meeting-followup-task input { min-width: 0; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font: inherit; color: #334155; }
+.meeting-knowledge-suggestions { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+.meeting-knowledge-suggestions h3 { margin: 0 0 6px; font-size: 15px; }
+.meeting-knowledge-suggestions article { margin-top: 8px; padding: 9px 10px; border-left: 3px solid #94a3b8; background: #fff; }
+.meeting-knowledge-suggestions article p { margin: 4px 0; }
+.meeting-knowledge-suggestions small { color: #64748b; }
+@media (max-width: 720px) {
+  .meeting-followup-task { grid-template-columns: 1fr; }
+  .meeting-followup-task > strong, .meeting-followup-task > small { grid-column: auto; }
+}

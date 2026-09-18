@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { MeetingRecord } from '../../../shared/api/product'
+import type { MeetingDirectoryUser, MeetingFollowup, MeetingRecord } from '../../../shared/api/product'
 import { api } from '../../api/client'
 import './MeetingCard.css'
 
@@ -37,6 +37,10 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const [evidence, setEvidence] = useState<string>()
   const [exporting, setExporting] = useState(false)
   const [saveAttempt, setSaveAttempt] = useState(0)
+  const [followup, setFollowup] = useState<MeetingFollowup | undefined>(meeting.result?.followup)
+  const [directory, setDirectory] = useState<MeetingDirectoryUser[]>([])
+  const [followupSaving, setFollowupSaving] = useState(false)
+  const [followupError, setFollowupError] = useState('')
   const recordRef = useRef(record)
   const savingRef = useRef(false)
   const editRef = useRef({ body, title, meetingType })
@@ -62,7 +66,17 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     setBody(meeting.result?.body ?? '')
     setTitle(meeting.result?.title ?? '')
     setMeetingType(meeting.result?.meetingType ?? '其他')
+    setFollowup(meeting.result?.followup)
   }, [meeting.id, meeting.version, meeting.state])
+
+  useEffect(() => {
+    if (record.state !== 'completed' || !record.result?.followup) return
+    let active = true
+    void api<{ users: MeetingDirectoryUser[] }>(`/api/chat/meetings/${record.id}/followup-directory`)
+      .then(response => { if (active) setDirectory(response.users) })
+      .catch(() => { if (active) setDirectory([]) })
+    return () => { active = false }
+  }, [record.id, record.state, record.version, record.result?.followup])
 
   const dirty = Boolean(record.result && (body !== record.result.body || title !== record.result.title || meetingType !== record.result.meetingType))
   useEffect(() => {
@@ -145,6 +159,40 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     finally { setExporting(false) }
   }
 
+  function updateFollowupTask(taskId: string, patch: Partial<MeetingFollowup['tasks'][number]>) {
+    setFollowup(current => current ? {
+      ...current,
+      tasks: current.tasks.map(task => task.id === taskId ? { ...task, ...patch } : task),
+    } : current)
+    setFollowupError('')
+  }
+
+  async function saveFollowup() {
+    if (!followup || dirty || followupSaving) return
+    setFollowupSaving(true)
+    setFollowupError('')
+    try {
+      const response = await api<{ meeting: MeetingRecord }>(`/api/chat/meetings/${record.id}/followup`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          version: recordRef.current.version,
+          tasks: followup.tasks.map(task => ({
+            id: task.id,
+            title: task.title,
+            assigneeUserId: task.assignee?.userId ?? null,
+            dueDate: task.dueDate,
+            status: task.status,
+          })),
+        }),
+      })
+      recordRef.current = response.meeting
+      setRecord(response.meeting)
+      setFollowup(response.meeting.result?.followup)
+    } catch (failure) {
+      setFollowupError(failure instanceof Error ? failure.message : '跟进保存失败，请重试')
+    } finally { setFollowupSaving(false) }
+  }
+
   const references = record.sources.flatMap((source, i) => source.paragraphs.map(p => ({
     ...p, id: `S${i + 1}-${p.id}`, sourceTitle: source.title,
   })))
@@ -198,6 +246,35 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
         <strong>[{e.evidence_id}] {e.title}</strong><p>{e.excerpt}</p>
         {e.source_url ? <a href={e.source_url} target="_blank" rel="noreferrer">打开正式资料</a> : null}
       </article>)}</details> : null}
+      {followup ? <details className="meeting-followup" open>
+        <summary>会议跟进 · 负责人：{followup.coordinator.displayName}</summary>
+        <p className="meeting-followup-note">你是本次会议跟进负责人。任务负责人只能从已授权的飞书企业成员中选择；知识更新建议由知识维护人员在善达知枢统一处理。</p>
+        {followup.tasks.length ? <div className="meeting-followup-tasks">
+          {followup.tasks.map(task => <div className="meeting-followup-task" key={task.id}>
+            <strong>{task.title}</strong>
+            {task.assigneeSuggestion ? <small>模型识别的负责人：{task.assigneeSuggestion}（请核对）</small> : null}
+            <label>负责人<select value={task.assignee?.userId ?? ''} onChange={event => {
+              const assignee = directory.find(item => item.userId === event.target.value) ?? null
+              updateFollowupTask(task.id, { assignee })
+            }} disabled={disabled || followupSaving}>
+              <option value="">待分配</option>
+              {directory.map(item => <option key={item.userId} value={item.userId}>{item.displayName}</option>)}
+            </select></label>
+            <label>期限<input type="text" placeholder="期限待定" value={task.dueDate ?? ''} onChange={event => updateFollowupTask(task.id, { dueDate: event.target.value || null })} disabled={disabled || followupSaving} /></label>
+            <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving}>
+              <option value="OPEN">待开始</option><option value="IN_PROGRESS">进行中</option><option value="DONE">已完成</option>
+            </select></label>
+            {task.sourceRefs.length ? <small>依据：{task.sourceRefs.join('、')}</small> : null}
+          </div>)}
+          <button type="button" disabled={blocked || followupSaving} onClick={() => void saveFollowup()}>{followupSaving ? '保存中…' : '保存跟进'}</button>
+          {followupError ? <div role="alert">{followupError}</div> : null}
+        </div> : <p>会议中没有识别到明确行动项。后续事项可通过继续修改补充。</p>}
+        {followup.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
+          <h3>知识更新建议</h3>
+          <p>以下内容仅供知识维护人员审核，不会由会议跟进负责人直接纳入知识库。</p>
+          {followup.knowledgeSuggestions.map(item => <article key={item.id}><strong>{item.title}</strong><p>{item.reason}</p><small>状态：待知识维护人员处理{item.sourceRefs.length ? ` · 依据：${item.sourceRefs.join('、')}` : ''}</small></article>)}
+        </section> : null}
+      </details> : null}
     </> : null}
     {record.sources.map((source, index) => <details key={index}>
       <summary>{source.platform} · {source.title} · {source.paragraphs.length} 段</summary>

@@ -177,6 +177,36 @@ export interface MeetingSource {
   paragraphs: { id: string; text: string; speaker: string; startMs?: number | null; endMs?: number | null }[]
 }
 
+export interface MeetingDirectoryUser {
+  userId: string
+  feishuUserId: string | null
+  displayName: string
+}
+
+export interface MeetingFollowupTask {
+  id: string
+  title: string
+  assignee: MeetingDirectoryUser | null
+  assigneeSuggestion?: string | null
+  dueDate: string | null
+  status: 'OPEN' | 'IN_PROGRESS' | 'DONE' | string
+  sourceRefs: string[]
+}
+
+export interface MeetingKnowledgeSuggestion {
+  id: string
+  title: string
+  reason: string
+  sourceRefs: string[]
+  status: 'PENDING_MAINTAINER' | string
+}
+
+export interface MeetingFollowup {
+  coordinator: { userId: string; displayName: string }
+  tasks: MeetingFollowupTask[]
+  knowledgeSuggestions: MeetingKnowledgeSuggestion[]
+}
+
 export interface MeetingRecord {
   id: string
   conversationId: string
@@ -193,6 +223,7 @@ export interface MeetingRecord {
     formalEvidence?: { evidence_id: string; title: string; excerpt: string; source_url: string }[]
     selectedHistoryIds?: string[]
     selectedHistory?: { id: string; label?: string; title: string; body: string }[]
+    followup?: MeetingFollowup
   } | null
   sources: MeetingSource[]
 }

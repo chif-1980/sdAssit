@@ -1,7 +1,7 @@
 {
   "name": "knowledge-platform-v1",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "",
   "main": "index.js",
   "directories": {

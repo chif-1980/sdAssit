@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MeetingCard } from './MeetingCard'
 import type { MeetingRecord } from '../../../shared/api/product'
@@ -8,6 +8,18 @@ const meeting: MeetingRecord = {
   progress: { message: '完成' }, updatedAt: '2026-09-17T01:00:00Z',
   result: { title: '讨论会议', meetingType: '内部管理', body: '负责人待确认 [S1-P1]' },
   sources: [{ title: '转写', platform: '文字资料', platformSummary: '', completeness: 'COMPLETE', paragraphs: [{ id: 'P1', text: '建议下周继续讨论。', speaker: '未提供' }] }],
+}
+
+const followupMeeting: MeetingRecord = {
+  ...meeting,
+  result: {
+    ...meeting.result!,
+    followup: {
+      coordinator: { userId: '1', displayName: '会议上传者' },
+      tasks: [{ id: 'task-1', title: '补充测试方案', assignee: null, assigneeSuggestion: '张工', dueDate: null, status: 'OPEN', sourceRefs: ['S1-P1'] }],
+      knowledgeSuggestions: [{ id: 'knowledge-1', title: '更新部署限制', reason: '会议提出了新的限制条件', sourceRefs: ['S1-P1'], status: 'PENDING_MAINTAINER' }],
+    },
+  },
 }
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); sessionStorage.clear() })
@@ -80,6 +92,21 @@ describe('meeting results', () => {
     expect(screen.getByRole('button', { name: '导出 Word' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '重试保存' })).toBeEnabled()
   })
+
+  it('shows follow-up ownership and saves a tenant directory assignee', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_path, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return new Response(JSON.stringify({ meeting: { ...followupMeeting, version: 2 } }))
+      return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', displayName: '张工' }] }))
+    }))
+    render(<MeetingCard meeting={followupMeeting} />)
+    expect(screen.getByText('会议跟进 · 负责人：会议上传者')).toBeInTheDocument()
+    expect(screen.getByText('知识更新建议')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('option', { name: '张工' })).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('负责人'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
+    await waitFor(() => expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+  })
+
   it('preserves a conflicting draft base across reloads until the user reloads the saved version', async () => {
     vi.useFakeTimers()
     sessionStorage.setItem('meeting-edit:MT-test', JSON.stringify({
