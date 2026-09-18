@@ -98,3 +98,19 @@ describe('meeting results', () => {
   })
 
 })
+
+it.each(['MODEL_OUTPUT_INVALID', 'MODEL_OUTPUT_TRUNCATED', 'ANALYSIS_FAILED'])('does not suggest replacing the source for %s', code => {
+  render(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
+    error: { code, message: '分析失败，可重试继续' },
+  }} />)
+  expect(screen.getByRole('alert')).toHaveTextContent('分析失败，可重试继续')
+  expect(screen.queryByText(/替换链接/)).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '重试' })).toBeEnabled()
+})
+
+it('offers replacement input when the source is incomplete', () => {
+  render(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
+    error: { code: 'PARTIAL', message: '原文读取不完整' },
+  }} />)
+  expect(screen.getByRole('alert')).toHaveTextContent('替换链接')
+})

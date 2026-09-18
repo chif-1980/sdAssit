@@ -155,7 +155,11 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   return <section className="meeting-card" aria-label="会议纪要">
     <header><strong>{record.result?.title || '会议纪要'}</strong><span>{record.result ? `版本 ${record.version}` : record.progress.message}</span></header>
     <p className="meeting-status">{record.progress.message} · 最近更新 {new Date(record.updatedAt).toLocaleString('zh-CN')}</p>
-    {record.error ? <div role="alert">{record.error.message}<p>可在下方输入框替换链接、上传文件或粘贴完整文字。</p></div> : null}
+    {record.error ? <div role="alert">{record.error.message}
+      {['EMPTY', 'SUMMARY_ONLY', 'PARTIAL', 'EXPIRED', 'ACCESS_REQUIRED', 'PARSE_FAILED', 'MISSING_BODY',
+        'ATTACHMENT_MISSING', 'UNSUPPORTED_FILE', 'UNSAFE_ADDRESS', 'TOO_LARGE', 'REDIRECT_LIMIT', 'MULTIPLE_MEETINGS',
+      ].includes(record.error.code) ? <p>可在下方输入框替换链接、上传文件或粘贴完整文字。</p> : null}
+    </div> : null}
     {record.state === 'cancelled' ? <p>任务已取消，之前的成功结果保留在会话中。</p> : null}
     {record.result ? <>
       <div className="meeting-actions">
