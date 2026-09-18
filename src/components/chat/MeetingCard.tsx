@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { MeetingDirectoryUser, MeetingFollowup, MeetingRecord } from '../../../shared/api/product'
+import type { MeetingDepartment, MeetingDirectoryUser, MeetingFollowup, MeetingRecord } from '../../../shared/api/product'
 import { api } from '../../api/client'
 import './MeetingCard.css'
+import { MeetingMemberPicker } from './MeetingMemberPicker'
+import { MeetingDatePicker } from './MeetingDatePicker'
 
 export type MeetingAction = (action: 'revise' | 'retry', id: string) => void
 
@@ -39,6 +41,11 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const [saveAttempt, setSaveAttempt] = useState(0)
   const [followup, setFollowup] = useState<MeetingFollowup | undefined>(meeting.result?.followup)
   const [directory, setDirectory] = useState<MeetingDirectoryUser[]>([])
+  const [departments, setDepartments] = useState<MeetingDepartment[]>([])
+  const [directoryLoading, setDirectoryLoading] = useState(false)
+  const [directoryError, setDirectoryError] = useState('')
+  const [directoryNotice, setDirectoryNotice] = useState('')
+  const [directoryAttempt, setDirectoryAttempt] = useState(0)
   const [followupSaving, setFollowupSaving] = useState(false)
   const [followupError, setFollowupError] = useState('')
   const recordRef = useRef(record)
@@ -72,11 +79,14 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   useEffect(() => {
     if (record.state !== 'completed' || !record.result?.followup) return
     let active = true
-    void api<{ users: MeetingDirectoryUser[] }>(`/api/chat/meetings/${record.id}/followup-directory`)
-      .then(response => { if (active) setDirectory(response.users) })
-      .catch(() => { if (active) setDirectory([]) })
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    void api<{ users: MeetingDirectoryUser[]; departments?: MeetingDepartment[]; scopeNotice?: string }>(`/api/chat/meetings/${record.id}/followup-directory`)
+      .then(response => { if (active) { setDirectory(response.users); setDepartments(response.departments ?? []); setDirectoryNotice(response.scopeNotice ?? '') } })
+      .catch(failure => { if (active) { setDirectory([]); setDirectoryError(failure instanceof Error ? failure.message : '企业通讯录加载失败') } })
+      .finally(() => { if (active) setDirectoryLoading(false) })
     return () => { active = false }
-  }, [record.id, record.state, record.version, record.result?.followup])
+  }, [record.id, record.state, directoryAttempt])
 
   const dirty = Boolean(record.result && (body !== record.result.body || title !== record.result.title || meetingType !== record.result.meetingType))
   useEffect(() => {
@@ -85,7 +95,8 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       else if (editing) sessionStorage.removeItem(`meeting-edit:${meeting.id}`)
     } catch { /* beforeunload and the unsaved indicator remain active. */ }
   }, [body, title, meetingType, dirty, editing, meeting.id, record.version, draftToRestore])
-  useEffect(() => { onDirtyChange?.(meeting.id, dirty) }, [dirty, meeting.id, onDirtyChange])
+  const followupDirty = JSON.stringify(followup) !== JSON.stringify(record.result?.followup)
+  useEffect(() => { onDirtyChange?.(meeting.id, dirty || followupDirty) }, [dirty, followupDirty, meeting.id, onDirtyChange])
   useEffect(() => () => { onDirtyChange?.(meeting.id, false) }, [meeting.id, onDirtyChange])
   useEffect(() => {
     if (!dirty || disabled || !editing) return
@@ -123,11 +134,11 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   }, [body, title, meetingType, dirty, editing, disabled, meeting.id, meeting.version, draftToRestore, saveAttempt])
 
   useEffect(() => {
-    if (!dirty) return
+    if (!dirty && !followupDirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault() }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty])
+  }, [dirty, followupDirty])
 
   async function reloadSaved() {
     try {
@@ -180,7 +191,8 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             id: task.id,
             title: task.title,
             assigneeUserId: task.assignee?.userId ?? null,
-            dueDate: task.dueDate,
+            assigneeFeishuUserId: task.assignee?.feishuUserId ?? null,
+            dueDate: task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
             status: task.status,
           })),
         }),
@@ -248,31 +260,29 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       </article>)}</details> : null}
       {followup ? <details className="meeting-followup" open>
         <summary>会议跟进 · 负责人：{followup.coordinator.displayName}</summary>
-        <p className="meeting-followup-note">你是本次会议跟进负责人。任务负责人只能从已授权的飞书企业成员中选择；知识更新建议由知识维护人员在善达知枢统一处理。</p>
+        <p className="meeting-followup-note">你是本次会议跟进负责人。任务负责人可从飞书企业通讯录中选择；知识更新建议需由知识维护人员核对。</p>
         {followup.tasks.length ? <div className="meeting-followup-tasks">
           {followup.tasks.map(task => <div className="meeting-followup-task" key={task.id}>
             <strong>{task.title}</strong>
             {task.assigneeSuggestion ? <small>模型识别的负责人：{task.assigneeSuggestion}（请核对）</small> : null}
-            <label>负责人<select value={task.assignee?.userId ?? ''} onChange={event => {
-              const assignee = directory.find(item => item.userId === event.target.value) ?? null
-              updateFollowupTask(task.id, { assignee })
-            }} disabled={disabled || followupSaving}>
-              <option value="">待分配</option>
-              {directory.map(item => <option key={item.userId} value={item.userId}>{item.displayName}</option>)}
-            </select></label>
-            <label>期限<input type="text" placeholder="期限待定" value={task.dueDate ?? ''} onChange={event => updateFollowupTask(task.id, { dueDate: event.target.value || null })} disabled={disabled || followupSaving} /></label>
+            <div className="meeting-field"><span>负责人</span><MeetingMemberPicker value={task.assignee} users={directory} departments={departments} loading={directoryLoading} error={directoryError} notice={directoryNotice} disabled={disabled || followupSaving} onRetry={() => setDirectoryAttempt(n => n + 1)} onChange={assignee => updateFollowupTask(task.id, { assignee })} /></div>
+            <div className="meeting-field"><span>期限</span><MeetingDatePicker value={task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : ''} onChange={dueDate => updateFollowupTask(task.id, { dueDate })} disabled={disabled || followupSaving} />
+              {!task.dueDate ? <span>待确认，可稍后补充</span> : null}
+              {task.dueDateSuggestion || (task.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate)) ? <span>原文期限：{task.dueDateSuggestion || task.dueDate}（请选择具体日期）</span> : null}
+            </div>
             <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving}>
               <option value="OPEN">待开始</option><option value="IN_PROGRESS">进行中</option><option value="DONE">已完成</option>
             </select></label>
             {task.sourceRefs.length ? <small>依据：{task.sourceRefs.join('、')}</small> : null}
           </div>)}
           <button type="button" disabled={blocked || followupSaving} onClick={() => void saveFollowup()}>{followupSaving ? '保存中…' : '保存跟进'}</button>
+          {followupDirty ? <small role="status">跟进修改尚未保存</small> : null}
           {followupError ? <div role="alert">{followupError}</div> : null}
         </div> : <p>会议中没有识别到明确行动项。后续事项可通过继续修改补充。</p>}
         {followup.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
           <h3>知识更新建议</h3>
-          <p>以下内容仅供知识维护人员审核，不会由会议跟进负责人直接纳入知识库。</p>
-          {followup.knowledgeSuggestions.map(item => <article key={item.id}><strong>{item.title}</strong><p>{item.reason}</p><small>状态：待知识维护人员处理{item.sourceRefs.length ? ` · 依据：${item.sourceRefs.join('、')}` : ''}</small></article>)}
+          <p>以下建议来自会议内容，尚未逐条与正式知识对比，也未提交知识维护队列；需由知识维护人员核对后决定是否更新。</p>
+          {followup.knowledgeSuggestions.map(item => <article key={item.id}><strong>{item.title}</strong><p>{item.reason}</p><small>核对状态：尚未逐条核对正式知识{item.sourceRefs.length ? ` · 依据：${item.sourceRefs.join('、')}` : ''}</small></article>)}
         </section> : null}
       </details> : null}
     </> : null}

@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, History, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, History, Info, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -24,6 +24,7 @@ import { ChatComposer } from '../components/chat/ChatComposer'
 import type { ComposerAttachment, ComposerMention } from '../components/chat/ChatComposer'
 import { businessTasks, composerMentions, inferBusinessTask, type BusinessTask } from '../components/chat/businessTasks'
 import { ConversationOutline } from '../components/chat/ConversationOutline'
+import { MeetingActivity, type MeetingActivityTask } from '../components/chat/MeetingActivity'
 import { MessageThread } from '../components/chat/MessageThread'
 import { enrichClarificationQuestion, type ClarificationAnswer } from '../components/chat/ClarificationCard'
 import { clarificationQuestionsForDraft } from '../components/chat/SolutionDraftCard'
@@ -902,7 +903,7 @@ interface ActiveRunResponse {
 }
 
 export function ChatPage() {
-  const { reload: reloadSession } = useSession()
+  const { reload: reloadSession, user: sessionUser } = useSession()
   const [conversations, setConversations] = useState<ProductConversation[]>([])
   const [conversation, setConversation] = useState<ProductConversation>()
   const [messages, setMessages] = useState<ProductMessage[]>([])
@@ -919,6 +920,7 @@ export function ChatPage() {
   const [loadingConversation, setLoadingConversation] = useState(false)
   const [sending, setSending] = useState(false)
   const [currentRunId, setCurrentRunId] = useState<string>()
+  const [meetingActivityTasks, setMeetingActivityTasks] = useState<MeetingActivityTask[]>([])
   const [archiving, setArchiving] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
@@ -1112,6 +1114,10 @@ export function ChatPage() {
   }, [streamedAnswer])
 
   const recordProgress = useCallback((progress: ProductAnswerProgress) => {
+    if (progress.resetAnswer) {
+      streamedAnswerRef.current = ''
+      setStreamedAnswer('')
+    }
     const normalized = {
       ...progress,
       ...(progress.runId || !currentRunIdRef.current ? {} : { runId: currentRunIdRef.current }),
@@ -1150,8 +1156,9 @@ export function ChatPage() {
     if (!query) return listedConversations
     return listedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
   }, [conversationSearch, listedConversations])
-  const switchLocked = sending || archiving || restoring || dirtyMeetingIds.size > 0
-  const mutationLocked = switchLocked || loadingWorkspace || loadingConversation
+  const backgroundMeeting = sending && currentRunId?.startsWith('MT-')
+  const switchLocked = (sending && !backgroundMeeting) || archiving || restoring || dirtyMeetingIds.size > 0
+  const mutationLocked = sending || switchLocked || loadingWorkspace || loadingConversation
   const archived = conversation?.status === 'ARCHIVED'
 
   const applyAnswer = useCallback((
@@ -1190,7 +1197,10 @@ export function ChatPage() {
     setConversation(conversation)
     setConversations((current) => upsertConversation(current, conversation))
     setMessages((current) => {
-      if (!answeredIds.size) return [...current, userMessage, assistantMessage]
+      if (!answeredIds.size) {
+        const ids = new Set([userMessage.id, assistantMessage.id])
+        return [...current.filter(message => !ids.has(message.id)), userMessage, assistantMessage]
+      }
 
       // The blocked draft that produced the interrupt remains in the
       // transcript while a resume run is executing.  Once that batch has
@@ -1320,8 +1330,9 @@ export function ChatPage() {
           onProgress: (progress) => {
             if (contextVersionRef.current === version) recordProgress({ ...progress, runId: progress.runId ?? run.runId })
           },
-          onEventId: (eventId) => { lastEventIdRef.current = eventId },
+          onEventId: (eventId) => { if (contextVersionRef.current === version) lastEventIdRef.current = eventId },
           onRunStarted: (value) => {
+            if (contextVersionRef.current !== version) return
             const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
             const nextRunId = typeof payload.runId === 'string' ? payload.runId : run.runId
             currentRunIdRef.current = nextRunId
@@ -1425,6 +1436,9 @@ export function ChatPage() {
   function startConversation() {
     if (switchLocked) return
     contextVersionRef.current += 1
+    sendAbortControllerRef.current?.abort()
+    sendAbortControllerRef.current = undefined
+    setSending(false)
     citationVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
@@ -1457,10 +1471,14 @@ export function ChatPage() {
   }
 
   async function selectConversation(item: ProductConversation) {
-    if (switchLocked) return
+    if (switchLocked) return false
     restoredConversationIdsRef.current.delete(item.id)
     const version = ++contextVersionRef.current
+    sendAbortControllerRef.current?.abort()
+    sendAbortControllerRef.current = undefined
+    setSending(false)
     citationVersionRef.current += 1
+    setDraft('')
     setErrorText(undefined)
     setPendingQuestion(undefined)
     setAgentInterruptQuestion(undefined)
@@ -1486,7 +1504,7 @@ export function ChatPage() {
     closeConversationList()
     try {
       const detail = await api<ConversationDetail>(`/api/chat/conversations/${item.id}`)
-      if (contextVersionRef.current !== version) return
+      if (contextVersionRef.current !== version) return false
       const historicalMessages = normalizeHistoricalMessages(detail.messages)
       setConversation(normalizeConversation(detail.conversation))
       setMessages(historicalMessages)
@@ -1496,10 +1514,12 @@ export function ChatPage() {
       setAgentInterruptQuestion(historicalInterrupt)
       currentRunIdRef.current = historicalInterrupt?.runId
       setCurrentRunId(historicalInterrupt?.runId)
+      return true
     } catch (error) {
-      if (contextVersionRef.current !== version) return
+      if (contextVersionRef.current !== version) return false
       if (await recoverExpiredSession(error)) return
       setErrorText('会话加载失败，请重试')
+      return false
     } finally {
       if (contextVersionRef.current === version) setLoadingConversation(false)
     }
@@ -1616,7 +1636,7 @@ export function ChatPage() {
             currentRunIdRef.current = runId
             setCurrentRunId(runId)
           },
-          onEventId: (eventId) => { lastEventIdRef.current = eventId },
+          onEventId: (eventId) => { if (contextVersionRef.current === version) lastEventIdRef.current = eventId },
           onDraft: (value) => {
             if (contextVersionRef.current !== version) return
             if (value && typeof value === 'object') {
@@ -1665,7 +1685,9 @@ export function ChatPage() {
       if (!isAbortError(error)) {
         setDraft(content)
         if (!attachmentUploadFailed) {
-          setErrorText(preserveSolutionProgress && error instanceof ApiError ? error.message : '发送失败，请重试')
+          const specificAnswerFailure = error instanceof ApiError
+            && ['ANSWER_GENERATION_FAILED', 'ANSWER_CITATION_INVALID'].includes(error.code)
+          setErrorText((preserveSolutionProgress || specificAnswerFailure) && error instanceof ApiError ? error.message : '发送失败，请重试')
         }
       }
     } finally {
@@ -1757,7 +1779,7 @@ export function ChatPage() {
               setCurrentRunId(nextRunId)
             }
           },
-          onEventId: (eventId) => { lastEventIdRef.current = eventId },
+          onEventId: (eventId) => { if (contextVersionRef.current === version) lastEventIdRef.current = eventId },
           onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
             streamedAnswerRef.current += delta
@@ -2230,6 +2252,10 @@ export function ChatPage() {
                 ) : null}
               </div>
             </div>
+            {sessionUser ? <MeetingActivity userId={sessionUser.id} disabled={switchLocked} onTasksChange={setMeetingActivityTasks} onOpen={async task => {
+              const detail = await api<ConversationDetail>(`/api/chat/conversations/${task.conversationId}`)
+              if (!await selectConversation(normalizeConversation(detail.conversation))) throw new Error('会话未打开')
+            }} /> : null}
             <ul className="conversation-list">
               {filteredConversations.map((item) => (
                 <li key={item.id}>
@@ -2240,7 +2266,13 @@ export function ChatPage() {
                     disabled={switchLocked}
                     onClick={() => void selectConversation(item)}
                   >
-                    {item.title || FALLBACK_CONVERSATION_TITLE}
+                    <span className="conversation-link-title">{item.title || FALLBACK_CONVERSATION_TITLE}</span>
+                    {(meetingActivityTasks.some(task => task.conversationId === item.id && ['pending', 'running'].includes(task.state))
+                      || (sending && conversation?.id === item.id)) ? (
+                      <span className="conversation-running" role="status" aria-label="正在运行" title="任务正在运行">
+                        <span className="conversation-running-indicator" aria-hidden="true" />
+                      </span>
+                    ) : null}
                   </button>
                 </li>
               ))}
@@ -2301,6 +2333,7 @@ export function ChatPage() {
                   <MessageThread
                     messages={messages}
                     pendingQuestion={pendingQuestion}
+                    activeMeetingRunId={backgroundMeeting ? currentRunId : undefined}
                     agentInterruptQuestion={agentInterruptQuestion}
                     answerProgress={answerProgress}
                     answerProgressTrail={answerProgressTrail}
@@ -2399,6 +2432,7 @@ export function ChatPage() {
             ) : null}
 
             <div className="chat-composer-dock">
+              {backgroundMeeting ? <p className="meeting-background-hint" role="status">会议正在后台处理。你可以新建或切换其他会话，完成后会在“后台任务”提醒。</p> : null}
               {businessTask === 'MEETING_ANALYSIS' || /@会议纪要|@分析会议/u.test(draft) ? <details className="meeting-history" onToggle={event => { if (event.currentTarget.open) void loadMeetingHistory() }}>
                 <summary>
                   <History size={16} aria-hidden="true" />
@@ -2418,7 +2452,12 @@ export function ChatPage() {
                 </div>
               </details> : null}
               {meetingTargetId ? <p>正在修改所选会议 <button onClick={() => setMeetingTargetId(undefined)}>取消关联</button></p> : null}
-              {dirtyMeetingIds.size > 0 ? <p role="status">纪要修改尚未保存，保存完成后可继续发送或切换会话。</p> : null}
+              {dirtyMeetingIds.size > 0 ? (
+                <p className="meeting-unsaved-hint" role="status">
+                  <Info size={16} aria-hidden="true" />
+                  <span>纪要修改尚未保存，保存完成后可继续发送或切换会话。</span>
+                </p>
+              ) : null}
               <ChatComposer
                 value={draft}
                 mode={answerMode}

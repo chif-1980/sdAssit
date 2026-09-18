@@ -592,10 +592,9 @@ describe('ChatPage product workspace', () => {
 
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
     const close = within(screen.getByLabelText('对话列表')).getByRole('button', { name: '关闭对话列表' })
-    const search = screen.getByRole('searchbox', { name: '搜索历史会话' })
     await waitFor(() => expect(close).toHaveFocus())
     await user.tab({ shift: true })
-    expect(search).toHaveFocus()
+    expect(screen.getByRole('button', { name: '后台任务' })).toHaveFocus()
     await user.tab()
     expect(close).toHaveFocus()
     await user.keyboard('{Escape}')
@@ -786,7 +785,7 @@ describe('ChatPage product workspace', () => {
 
     expect(await screen.findByRole('heading', { level: 2, name: '结论' })).toBeInTheDocument()
     expect(screen.getByText('支持')).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('正在生成')
+    expect(within(screen.getByLabelText('消息线程')).getByRole('status')).toHaveTextContent('正在生成')
     await user.click(screen.getByRole('button', { name: '查看执行过程' }))
     expect([...document.querySelectorAll('.message-streaming .thinking-step strong')].map((item) => item.textContent)).toEqual([
       '理解问题', '检索资料', '核对依据', '检索资料', '组织答案',
@@ -2040,4 +2039,99 @@ describe('ChatPage product workspace', () => {
     fireEvent.scroll(messageScroll)
     expect(screen.queryByRole('button', { name: '滚动到最新消息' })).not.toBeInTheDocument()
   })
+})
+
+
+it('allows switching and a new conversation during a durable meeting without cancelling it or mixing late results', async () => {
+  const user = userEvent.setup()
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  let signal: AbortSignal | undefined
+  const fetcher = mockFetch((path, init) => {
+    if (path === '/api/chat/meeting-activity') return jsonResponse({ tasks: [] })
+    if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
+    if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+    if (path === '/api/chat/conversations/CVS-B') return jsonResponse(detail(conversationB, []))
+    if (path === '/api/chat/conversations/CVS-A/messages/stream') {
+      signal = init?.signal as AbortSignal
+      return new Response(new ReadableStream<Uint8Array>({ start(c) {
+        controller = c
+        c.enqueue(new TextEncoder().encode('event: run_started\ndata: {"runId":"MT-background","skillId":"MEETING_ANALYSIS"}\n\n'))
+      } }), { headers: { 'content-type': 'text/event-stream' } })
+    }
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  render(<ChatPage />)
+  await screen.findByText('原有回答')
+  await user.type(screen.getByRole('textbox', { name: '问题' }), '@会议纪要 整理本次讨论')
+  await user.click(screen.getByRole('button', { name: '发送问题' }))
+  await screen.findByText(/会议正在后台处理/)
+  expect(screen.getByRole('button', { name: '新对话' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '项目 B' })).toBeEnabled()
+  expect(screen.getByRole('textbox', { name: '问题' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: '项目 B' }))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled())
+  expect(signal?.aborted).toBe(true)
+  expect(fetcher.mock.calls.some(([path]) => String(path).includes('/cancel'))).toBe(false)
+  // Switching releases the stream reader; late server events cannot enter the new conversation.
+  expect(() => controller.enqueue(new TextEncoder().encode('late event'))).toThrow()
+  expect(screen.queryByText('整理本次讨论')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '新对话' }))
+  expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
+})
+
+it('restores the running indicator on the matching background conversation and keeps it after switching', async () => {
+  const user = userEvent.setup()
+  mockFetch((path) => {
+    if (path === '/api/chat/meeting-activity') return jsonResponse({ tasks: [{
+      id: 'MT-other', conversationId: 'CVS-B', title: '后台会议', state: 'running',
+      progress: { message: '提炼纪要' }, updatedAt: '2026-09-18T07:00:00Z',
+    }] })
+    if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
+    if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+    if (path === '/api/chat/conversations/CVS-B') return jsonResponse(detail(conversationB, []))
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  render(<ChatPage />)
+  await screen.findByText('原有回答')
+  const running = await screen.findByRole('status', { name: '正在运行' })
+  const row = screen.getByRole('button', { name: /项目 B/ })
+  expect(row).toContainElement(running)
+  expect(screen.getAllByRole('status', { name: '正在运行' })).toHaveLength(1)
+  await user.click(row)
+  await waitFor(() => expect(row).toHaveAttribute('aria-current', 'page'))
+  expect(within(row).getByRole('status', { name: '正在运行' })).toBeInTheDocument()
+})
+
+it('clears rejected previews before retry and shows validation failure instead of insufficient knowledge', async () => {
+  const user = userEvent.setup()
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const encoder = new TextEncoder()
+  mockFetch((path, init) => {
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+    if (path === '/api/chat/conversations/CVS-A' && !init?.method) return jsonResponse(detail(conversationA))
+    if (path.endsWith('/messages/stream')) return new Response(new ReadableStream<Uint8Array>({
+      start(c) { controller = c },
+    }), { headers: { 'content-type': 'text/event-stream' } })
+    if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+    if (path === '/api/chat/meeting-activity') return jsonResponse({ tasks: [] })
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  render(<ChatPage />)
+  await screen.findByText('原有回答')
+  await user.type(screen.getByRole('textbox', { name: '问题' }), '系统架构图')
+  await user.click(screen.getByRole('button', { name: '发送问题' }))
+  await act(async () => controller.enqueue(encoder.encode('event: delta\ndata: {"content":"未核验旧预览"}\n\n')))
+  expect(await screen.findByText('未核验旧预览')).toBeInTheDocument()
+  await act(async () => controller.enqueue(encoder.encode('event: progress\ndata: {"stage":"COMPOSING","message":"正在重新生成","resetAnswer":true}\n\nevent: delta\ndata: {"content":"重新生成预览"}\n\n')))
+  expect(await screen.findByText('重新生成预览')).toBeInTheDocument()
+  expect(screen.queryByText('未核验旧预览')).not.toBeInTheDocument()
+  await act(async () => {
+    controller.enqueue(encoder.encode('event: progress\ndata: {"stage":"COMPOSING","message":"引用校验失败","resetAnswer":true}\n\nevent: error\ndata: {"code":"ANSWER_CITATION_INVALID","message":"回答引用校验未通过，请重试。"}\n\n'))
+    controller.close()
+  })
+  expect(await screen.findByRole('alert')).toHaveTextContent('回答引用校验未通过')
+  expect(screen.queryByText('重新生成预览')).not.toBeInTheDocument()
+  expect(screen.queryByText('暂无足够可靠资料')).not.toBeInTheDocument()
 })

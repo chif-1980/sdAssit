@@ -101,10 +101,19 @@ describe('meeting results', () => {
     render(<MeetingCard meeting={followupMeeting} />)
     expect(screen.getByText('会议跟进 · 负责人：会议上传者')).toBeInTheDocument()
     expect(screen.getByText('知识更新建议')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('option', { name: '张工' })).toBeInTheDocument())
-    fireEvent.change(screen.getByLabelText('负责人'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '负责人：待分配' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '张工' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '张工' }))
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-18T12:00:00'))
+    fireEvent.click(screen.getByRole('button', { name: '期限：待确认' }))
+    fireEvent.click(screen.getByRole('button', { name: '2026-09-30' }))
+    vi.useRealTimers()
+    expect(screen.getByText(/尚未逐条与正式知识对比/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
     await waitFor(() => expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(call[1].body).tasks[0]).toMatchObject({ assigneeFeishuUserId: 'ou_2', dueDate: '2026-09-30' })
   })
 
   it('preserves a conflicting draft base across reloads until the user reloads the saved version', async () => {

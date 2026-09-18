@@ -26,6 +26,7 @@ import { ClarificationCard, type ClarificationAnswer } from './ClarificationCard
 interface MessageThreadProps {
   messages: ProductMessage[]
   pendingQuestion?: string
+  activeMeetingRunId?: string
   agentInterruptQuestion?: ProductAgentInterrupt | string
   answerProgress?: ProductAnswerProgress
   answerProgressTrail?: readonly ProductAnswerProgress[]
@@ -440,6 +441,7 @@ function MessagePairBlock({
 export function MessageThread({
   messages,
   pendingQuestion,
+  activeMeetingRunId,
   agentInterruptQuestion,
   answerProgress,
   answerProgressTrail,
@@ -463,7 +465,12 @@ export function MessageThread({
 }: MessageThreadProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastMessageId = messages.at(-1)?.id
-  const pairs = groupMessagePairs(messages)
+  // The live block replaces the persisted placeholder on refresh. Keep any
+  // previous successful result visible while a new analysis is running.
+  const pairs = groupMessagePairs(messages).filter(pair => !(
+    pendingQuestion && activeMeetingRunId &&
+    pair.assistant?.meeting?.id === activeMeetingRunId && !pair.assistant.meeting.result
+  ))
   const hideDraftClarifications = Boolean(pendingQuestion && agentInterruptQuestion)
 
   useEffect(() => {

@@ -31,6 +31,22 @@ afterEach(() => {
 })
 
 describe('MessageThread', () => {
+  it('replaces a restored meeting placeholder with one live question and preserves successful results', () => {
+    const assistant: ProductMessage = {
+      ...firstMessage, id: 'MSG-MEETING', role: 'ASSISTANT', content: '',
+      meeting: { id: 'MT-live', conversationId: 'C', state: 'running', version: 0,
+        progress: { message: '读取资料' }, updatedAt: firstMessage.createdAt, sources: [] },
+    }
+    const view = render(<MessageThread messages={[firstMessage, assistant]}
+      pendingQuestion={firstMessage.content} activeMeetingRunId="MT-live" onCitation={vi.fn()} />)
+    expect(screen.getAllByText(firstMessage.content)).toHaveLength(1)
+    expect(screen.queryByText('读取资料')).not.toBeInTheDocument()
+    view.rerender(<MessageThread messages={[firstMessage, { ...assistant,
+      meeting: { ...assistant.meeting!, result: { title: '上次纪要', meetingType: '内部', body: '保留已保存内容' } },
+    }]} pendingQuestion="重新分析" activeMeetingRunId="MT-live" onCitation={vi.fn()} />)
+    expect(screen.getByText('保留已保存内容')).toBeInTheDocument()
+  })
+
   it('renders material cards only for assistant messages and routes card actions', async () => {
     const user = userEvent.setup()
     const material = {

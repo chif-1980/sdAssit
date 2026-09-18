@@ -410,11 +410,13 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 .conversation-sidebar {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   padding: 16px 12px;
   overflow: hidden;
 }
+.conversation-sidebar:has(> .meeting-activity) { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .sidebar-heading, .chat-conversation-header, .chat-conversation-title, .drawer-heading { display: flex; align-items: center; }
 .sidebar-heading, .chat-conversation-header, .drawer-heading { justify-content: space-between; gap: 10px; }
 .sidebar-heading { min-height: 30px; padding: 0 5px; }
@@ -472,6 +474,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .conversation-sidebar ul { min-height: 0; display: grid; align-content: start; gap: 3px; margin: 0; padding: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
 .conversation-link { width: 100%; overflow: hidden; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: #697586; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-link:hover, .conversation-link.active { color: #1f2937; background: #e6effc; font-weight: 650; }
+.conversation-sidebar .conversation-list { grid-template-columns: minmax(0, 1fr); }
+.conversation-list .conversation-link { display: flex; align-items: center; gap: 8px; }
+.conversation-link-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-running { flex: 0 0 24px; height: 24px; display: inline-grid; place-items: center; border: 1px solid #cbdaf0; border-radius: 6px; background: #f8fbff; }
+.conversation-running-indicator { width: 12px; height: 12px; border: 2px solid #d8e5f7; border-top-color: #3b74d7; border-radius: 50%; animation: conversation-running-spin 1s linear infinite; }
+@keyframes conversation-running-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .conversation-running-indicator { animation: none; } }
 .conversation-outline {
   position: absolute;
   inset: 22px auto 118px 8px;
@@ -1109,6 +1118,9 @@ tbody tr:last-child td { border-bottom: 0; }
   padding: 12px 24px 18px;
   background: #ffffff;
 }
+.meeting-unsaved-hint { display: flex; align-items: flex-start; gap: 8px; width: min(820px, 100%); margin: 0 auto 8px; padding: 9px 12px; border: 1px solid #f0dfb8; border-radius: 8px; background: #fffbf2; color: #856021; font-size: 13px; line-height: 1.6; }
+.meeting-unsaved-hint > svg { flex: 0 0 auto; margin-top: 2px; }
+.meeting-unsaved-hint > span { min-width: 0; overflow-wrap: anywhere; }
 .meeting-history { width: min(820px, 100%); margin: 0 auto 8px; color: #64748b; font: inherit; font-size: 13px; line-height: 1.5; letter-spacing: 0; }
 .meeting-history summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; border-radius: 6px; list-style: none; cursor: pointer; }
 .meeting-history summary::-webkit-details-marker { display: none; }

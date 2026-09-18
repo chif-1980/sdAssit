@@ -32,6 +32,7 @@ export type ProductAnswerStage =
 export type ProductSkillId = 'MATERIAL_SEARCH' | 'SOLUTION_DRAFT' | 'MEETING_ANALYSIS'
 
 export interface ProductAnswerProgress {
+  resetAnswer?: boolean
   updatedAt?: string
   completed?: number | null
   total?: number | null
@@ -178,10 +179,14 @@ export interface MeetingSource {
 }
 
 export interface MeetingDirectoryUser {
-  userId: string
+  userId: string | null
   feishuUserId: string | null
+  englishName?: string
+  departmentIds?: string[]
   displayName: string
 }
+
+export interface MeetingDepartment { id: string; parentId: string | null; name: string }
 
 export interface MeetingFollowupTask {
   id: string
@@ -189,6 +194,7 @@ export interface MeetingFollowupTask {
   assignee: MeetingDirectoryUser | null
   assigneeSuggestion?: string | null
   dueDate: string | null
+  dueDateSuggestion?: string | null
   status: 'OPEN' | 'IN_PROGRESS' | 'DONE' | string
   sourceRefs: string[]
 }

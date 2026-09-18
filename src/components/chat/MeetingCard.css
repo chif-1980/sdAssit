@@ -19,7 +19,7 @@
 .meeting-card [role=alert] { color: #b45309; }
 .meeting-followup-note { color: #475569; font-size: 13px; }
 .meeting-followup-tasks { display: grid; gap: 10px; }
-.meeting-followup-task { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(120px, .6fr) minmax(110px, .5fr); gap: 8px; align-items: center; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.meeting-followup-task { display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(160px, 1fr) minmax(120px, .8fr); gap: 8px; align-items: center; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
 .meeting-followup-task > strong { grid-column: 1 / -1; }
 .meeting-followup-task > small { grid-column: 1 / -1; color: #64748b; }
 .meeting-followup-task label { display: grid; gap: 4px; color: #64748b; font-size: 12px; }
@@ -33,3 +33,39 @@
   .meeting-followup-task { grid-template-columns: 1fr; }
   .meeting-followup-task > strong, .meeting-followup-task > small { grid-column: auto; }
 }
+
+.meeting-field { display: grid; gap: 4px; color: #64748b; font-size: 12px; align-self: start; }
+.meeting-followup-task > label { align-self: start; }
+.meeting-member-picker { position: relative; min-width: 0; }
+.meeting-card .member-trigger { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 34px; font: inherit; text-align: left; }
+.member-trigger span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-panel { position: fixed; z-index: 100; max-height: calc(100dvh - 24px); overflow: auto; font-size: 13px; line-height: 1.5; padding: 12px; border: 1px solid #dbe3ee; border-radius: 12px; background: #fff; box-shadow: 0 12px 36px #1e3a5f24; color: #334155; }
+.member-search { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
+.member-panel .member-search input { flex: 1; width: 0; border: 0; font-size: 13px; }
+.member-directory { display: grid; grid-template-columns: minmax(130px, .85fr) minmax(170px, 1.3fr); height: 260px; margin-top: 10px; }
+.member-directory nav { overflow: auto; border-right: 1px solid #e2e8f0; padding-right: 8px; }
+.member-panel .member-directory nav button { border: 0; text-align: left; padding: 6px; font: inherit; }
+.member-panel .member-directory button[aria-pressed=true] { background: #eff6ff; color: #2563eb; }
+.member-panel .member-directory details { margin: 0; padding: 0; background: none; }
+.member-tree-children { padding-left: 12px; }
+.member-results { overflow: auto; padding-left: 8px; }
+.member-panel .member-option { display: grid; width: 100%; text-align: left; border: 0; gap: 3px; margin-bottom: 3px; font: inherit; }
+.member-panel .member-option:hover { background: #eff6ff; }
+.member-option small, .member-scope { color: #64748b; font-size: 11px; }
+.member-panel .member-scope { margin: 10px 0 0; line-height: 1.5; }
+.member-panel :focus-visible, .meeting-member-picker :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+@media (max-width: 720px) { .member-directory { grid-template-columns: 110px 1fr; } }
+
+.member-panel button { border: 1px solid #dbe3ee; border-radius: 7px; background: #fff; color: #334155; padding: 5px 10px; cursor: pointer; font: inherit; }
+.member-panel input { font: inherit; padding: 6px; min-width: 0; }
+
+.meeting-card .meeting-date-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 34px; font: inherit; }
+.meeting-calendar { position: fixed; z-index: 100; width: 280px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; padding: 12px; border: 1px solid #dbe3ee; border-radius: 12px; background: white; box-shadow: 0 12px 36px #1e3a5f24; color: #334155; font-size: 13px; }
+.calendar-header, .calendar-footer { display: flex; align-items: center; justify-content: space-between; }
+.meeting-calendar button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: white; color: inherit; cursor: pointer; font: inherit; min-height: 32px; padding: 5px; }
+.meeting-calendar button:hover { background: #eff6ff; }
+.meeting-calendar button:focus-visible { outline: 2px solid #2563eb; }
+.calendar-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin: 10px 0; }
+.calendar-days small { text-align: center; padding: 5px 0; color: #64748b; }
+.calendar-days button[aria-pressed=true] { background: #2563eb; color: white; }
+.calendar-footer { border-top: 1px solid #e2e8f0; padding-top: 8px; }
