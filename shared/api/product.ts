@@ -199,9 +199,10 @@ export interface MeetingFollowupTask {
   dueDateSuggestion?: string | null
   status: 'OPEN' | 'IN_PROGRESS' | 'DONE' | string
   sourceRefs: string[]
+  sourceMeetingId?: string
   origin?: 'EXTRACTED' | 'MANUAL' | string
   reviewStatus?: 'PENDING' | 'CONFIRMED' | 'IGNORED' | 'DELIVERY_FAILED' | string
-  delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; error?: string | null }
+  delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; chatId?: string | null; error?: string | null; pendingUpdate?: boolean; syncStatus?: string; syncError?: string | null; lastSyncedAt?: string }
 }
 
 export interface MeetingKnowledgeSuggestion {
@@ -210,6 +211,12 @@ export interface MeetingKnowledgeSuggestion {
   reason: string
   sourceRefs: string[]
   status: 'PENDING_MAINTAINER' | string
+  decisionReason?: string
+  draftContent?: string
+  comparisonStatus?: 'COVERED' | 'NEEDS_UPDATE' | 'NEW_TOPIC' | 'UNVERIFIED' | string
+  comparison?: string
+  formalEvidenceIds?: string[]
+  formalEvidence?: { evidence_id: string; title: string; excerpt: string; source_url: string }[]
 }
 
 export interface MeetingFollowup {
@@ -303,4 +310,24 @@ export interface SolutionDraftConfirmResponse {
 
 export interface ProductCapabilityIndexResponse {
   capabilities: CapabilityIndexEntry[]
+}
+
+
+export interface MeetingHistoryItem {
+  id: string
+  conversationId: string
+  groupId: string
+  title: string
+  createdAt: string
+  meetingDate?: string | null
+  platforms: string[]
+  sourceUrls: string[]
+  preview: string
+  versionCount: number
+}
+
+export interface MeetingHistoryPage {
+  meetings: MeetingHistoryItem[]
+  total: number
+  nextOffset: number | null
 }

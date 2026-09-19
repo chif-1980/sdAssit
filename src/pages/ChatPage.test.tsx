@@ -1830,7 +1830,16 @@ describe('ChatPage product workspace', () => {
     const archiveFilter = screen.getByRole('button', { name: /已归档/ })
     expect(archiveFilter).toHaveTextContent('1')
     await user.click(archiveFilter)
-    expect(screen.getByRole('button', { name: '已归档项目' })).toBeInTheDocument()
+    const archivedDrawer = screen.getByRole('region', { name: '已归档会话抽屉' })
+    expect(archivedDrawer).toHaveAttribute('aria-hidden', 'false')
+    expect(archivedDrawer).toHaveTextContent('仅供查看，可恢复')
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+    expect(within(archivedDrawer).getByRole('button', { name: '已归档项目' })).toBeInTheDocument()
+
+    await user.click(within(archivedDrawer).getByRole('button', { name: '收起已归档会话' }))
+    expect(archivedDrawer).toHaveAttribute('aria-hidden', 'true')
+    await user.click(screen.getByRole('button', { name: '展开已归档会话' }))
+    expect(archivedDrawer).toHaveAttribute('aria-hidden', 'false')
 
     await user.click(screen.getByRole('button', { name: '已归档项目' }))
     expect(await screen.findByRole('button', { name: '恢复当前会话' })).toBeInTheDocument()
@@ -1842,6 +1851,46 @@ describe('ChatPage product workspace', () => {
     ))
     expect(screen.getByRole('button', { name: '归档当前对话' })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
+  })
+
+  it('keeps archive and background tasks mutually exclusive and hides the archive entry while open', async () => {
+    const user = userEvent.setup()
+    const archives = Array.from({ length: 80 }, (_, index) => ({
+      ...conversationA, id: `ARCHIVE-${index}`, title: `归档会话 ${index + 1}`, status: 'ARCHIVED' as const,
+    }))
+    mockFetch(path => {
+      if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, ...archives] })
+      if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<ChatPage />)
+    await screen.findByText('原有回答')
+    const archiveTrigger = screen.getByRole('button', { name: '展开已归档会话' })
+    const activityTrigger = screen.getByRole('button', { name: '后台任务' })
+    await user.click(activityTrigger)
+    expect(activityTrigger).toHaveAttribute('aria-expanded', 'true')
+    await user.click(archiveTrigger)
+    expect(activityTrigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByLabelText('后台会议任务')).not.toBeInTheDocument()
+    let drawer = screen.getByRole('region', { name: '已归档会话抽屉' })
+    expect(within(drawer).getAllByRole('button')).toHaveLength(81)
+    expect(within(drawer).getByRole('button', { name: '归档会话 80' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '项目 A' })).toBeInTheDocument()
+    await user.click(activityTrigger)
+    expect(screen.queryByRole('region', { name: '已归档会话抽屉' })).not.toBeInTheDocument()
+    expect(activityTrigger).toHaveAttribute('aria-expanded', 'true')
+    expect(archiveTrigger).toBeVisible()
+    await user.click(archiveTrigger)
+    expect(archiveTrigger).not.toBeVisible()
+    drawer = screen.getByRole('region', { name: '已归档会话抽屉' })
+    await user.click(within(drawer).getByRole('button', { name: '收起已归档会话' }))
+    expect(archiveTrigger).toBeVisible()
+    expect(archiveTrigger).toHaveFocus()
+    await user.click(archiveTrigger)
+    await user.keyboard('{Escape}')
+    expect(archiveTrigger).toHaveAttribute('aria-expanded', 'false')
+    expect(archiveTrigger).toBeVisible()
+    expect(archiveTrigger).toHaveFocus()
   })
 
   it('fetches citation detail before opening the drawer and restores trigger focus on close', async () => {
@@ -2078,6 +2127,67 @@ it('allows switching and a new conversation during a durable meeting without can
   expect(screen.queryByText('整理本次讨论')).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: '新对话' }))
   expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled()
+})
+
+it('opens background task entries without restarting the current stream and targets the selected meeting', async () => {
+  const user = userEvent.setup()
+  const encoder = new TextEncoder()
+  const streams: Array<{ signal: AbortSignal; controller: ReadableStreamDefaultController<Uint8Array> }> = []
+  const tasks = [
+    { id: 'MT-current', conversationId: 'CVS-A', title: '正在核对的会议', state: 'running', progress: { message: '核对原文：第 3/7 部分' }, updatedAt: '2026-09-19T14:00:00Z' },
+    { id: 'MT-old', conversationId: 'CVS-A', title: '此前取消的会议', state: 'cancelled', progress: { message: '已取消' }, updatedAt: '2026-09-19T13:00:00Z' },
+  ]
+  const oldMessage: ProductMessage = { ...priorMessage, meeting: {
+    id: 'MT-old', conversationId: 'CVS-A', state: 'cancelled', version: 0,
+    progress: { message: '已取消' }, updatedAt: tasks[1].updatedAt, sources: [],
+  } }
+  const fetcher = mockFetch((path, init) => {
+    if (path === '/api/chat/meeting-activity') return jsonResponse({ tasks })
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA, conversationB] })
+    if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA, [oldMessage]))
+    if (path === '/api/chat/conversations/CVS-B') return jsonResponse(detail(conversationB, []))
+    if (path === '/api/chat/conversations/CVS-B/active-run') return jsonResponse({ run: null })
+    if (path === '/api/chat/conversations/CVS-A/active-run') return jsonResponse({ run: {
+      runId: 'MT-current', status: 'running', skillId: 'MEETING_ANALYSIS', inputContent: '@会议纪要 当前会议',
+    } })
+    if (path === '/api/chat/runs/MT-current/events?afterSeq=0') return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      streams.push({ signal: init?.signal as AbortSignal, controller })
+      controller.enqueue(encoder.encode('event: progress\ndata: {"stage":"VERIFYING","message":"核对原文：第 3/7 部分","runId":"MT-current"}\n\n'))
+    } }), { headers: { 'content-type': 'text/event-stream' } })
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  const view = render(<ChatPage />)
+  await screen.findByText(/会议正在后台处理/)
+  const live = document.querySelector<HTMLElement>('[data-meeting-id="MT-current"]')!
+  const old = document.querySelector<HTMLElement>('[data-meeting-id="MT-old"]')!
+  live.scrollIntoView = vi.fn()
+  old.scrollIntoView = vi.fn()
+  const requestsBeforeOpen = fetcher.mock.calls.length
+  for (const title of ['正在核对的会议', '此前取消的会议']) {
+    await user.click(screen.getByRole('button', { name: /后台任务/ }))
+    await user.click(within(screen.getByLabelText('后台会议任务')).getByRole('button', { name: new RegExp(title) }))
+    await waitFor(() => expect(screen.queryByLabelText('后台会议任务')).not.toBeInTheDocument())
+  }
+  expect(live.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+  expect(old.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+  expect(fetcher.mock.calls).toHaveLength(requestsBeforeOpen)
+  expect(streams).toHaveLength(1)
+  expect(streams[0].signal.aborted).toBe(false)
+  expect(document.querySelector('[data-meeting-id="MT-current"]')).toBe(live)
+  await act(async () => streams[0].controller.enqueue(encoder.encode('event: progress\ndata: {"stage":"VERIFYING","message":"核对原文：第 4/7 部分","runId":"MT-current"}\n\n')))
+  expect(screen.getAllByText('核对原文：第 4/7 部分').length).toBeGreaterThan(0)
+  await user.click(screen.getByRole('button', { name: /项目 A/ }))
+  expect(streams[0].signal.aborted).toBe(false)
+  // Switching away and back only reconnects to the existing run through GET.
+  await user.click(screen.getByRole('button', { name: '项目 B' }))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: '问题' })).toBeEnabled())
+  expect(streams[0].signal.aborted).toBe(true)
+  await user.click(screen.getByRole('button', { name: /项目 A/ }))
+  await waitFor(() => expect(streams).toHaveLength(2))
+  expect(document.querySelector('.chat-main')).toHaveAttribute('data-agent-run-id', 'MT-current')
+  expect(fetcher.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+  expect(fetcher.mock.calls.some(([path]) => /\/(retry|cancel|resume)(\?|$)/.test(String(path)))).toBe(false)
+  view.unmount()
 })
 
 it('restores the running indicator on the matching background conversation and keeps it after switching', async () => {

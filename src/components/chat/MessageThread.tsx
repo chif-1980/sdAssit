@@ -521,7 +521,7 @@ export function MessageThread({
               )}
             </article>
           ) : (
-            <article className={`message-bubble message-assistant message-pending${streamedAnswer ? ' message-streaming' : ''}`}>
+            <article data-meeting-id={activeMeetingRunId} className={`message-bubble message-assistant message-pending${streamedAnswer ? ' message-streaming' : ''}`}>
               <div className="message-role">助手</div>
               <ThinkingIndicator
                 progress={answerProgress}

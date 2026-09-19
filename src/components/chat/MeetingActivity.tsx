@@ -9,13 +9,13 @@ export interface MeetingActivityTask {
 }
 const isRunning = (task: MeetingActivityTask) => ['pending', 'running'].includes(task.state)
 
-export function MeetingActivity({ userId, disabled, onOpen, onTasksChange }: {
+export function MeetingActivity({ userId, disabled, onOpen, onTasksChange, open, onOpenChange }: {
   userId: string; disabled: boolean; onOpen: (task: MeetingActivityTask) => Promise<void>
+  open: boolean; onOpenChange: (open: boolean) => void
   onTasksChange?: (tasks: MeetingActivityTask[]) => void
 }) {
   const [tasks, setTasks] = useState<MeetingActivityTask[]>([])
   const [read, setRead] = useState<Record<string, string>>({})
-  const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
   const [opening, setOpening] = useState(false)
   const [announcement, setAnnouncement] = useState('')
@@ -67,18 +67,18 @@ export function MeetingActivity({ userId, disabled, onOpen, onTasksChange }: {
       const next = { ...read, [task.id]: task.updatedAt }
       setRead(next)
       try { localStorage.setItem(storageKey, JSON.stringify(next)) } catch { /* Keep in memory. */ }
-      setOpen(false)
+      onOpenChange(false)
       setAnnouncement('')
     } catch { setError('打开任务失败，请重试') }
     finally { setOpening(false) }
   }
   return <div className="meeting-activity">
-    <button type="button" className="meeting-activity-trigger" aria-expanded={open} onClick={() => setOpen(!open)}>
+    <button type="button" className="meeting-activity-trigger" aria-expanded={open} onClick={() => onOpenChange(!open)}>
       <Bell size={15} aria-hidden="true" /><span>后台任务</span>
       {running.length ? <span>{running.length} 进行中</span> : null}
       {unread.length ? <b aria-label={`${unread.length} 条未读通知`}>{unread.length}</b> : null}
     </button>
-    {announcement ? <div className="meeting-notification" role="status"><span>{announcement}</span><button type="button" onClick={() => { setOpen(true); setAnnouncement('') }}>查看</button></div> : null}
+    {announcement ? <div className="meeting-notification" role="status"><span>{announcement}</span><button type="button" onClick={() => { onOpenChange(true); setAnnouncement('') }}>查看</button></div> : null}
     {open ? <div className="meeting-activity-panel" aria-label="后台会议任务">
       <p>会议在后台继续处理，可以新建或切换其他会话。</p>
       {error ? <p role="alert">{error}</p> : null}

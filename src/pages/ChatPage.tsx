@@ -1,4 +1,5 @@
-import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, History, Info, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { MeetingHistoryPicker } from '../components/chat/MeetingHistoryPicker'
+import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, ChevronUp, Info, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -921,6 +922,7 @@ export function ChatPage() {
   const [sending, setSending] = useState(false)
   const [currentRunId, setCurrentRunId] = useState<string>()
   const [meetingActivityTasks, setMeetingActivityTasks] = useState<MeetingActivityTask[]>([])
+  const [meetingNavigationTarget, setMeetingNavigationTarget] = useState<MeetingActivityTask>()
   const [archiving, setArchiving] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
@@ -929,7 +931,8 @@ export function ChatPage() {
   const [highlightedPairId, setHighlightedPairId] = useState<string>()
   const [errorText, setErrorText] = useState<string>()
   const [conversationListOpen, setConversationListOpen] = useState(false)
-  const [showArchived, setShowArchived] = useState(false)
+  const [sidebarPanel, setSidebarPanel] = useState<'archived' | 'activity' | null>(null)
+  const showArchived = sidebarPanel === 'archived'
   const [conversationSearch, setConversationSearch] = useState('')
   const [businessTask, setBusinessTask] = useState<BusinessTask>('QA')
   const [businessTaskExplicit, setBusinessTaskExplicit] = useState(false)
@@ -943,10 +946,7 @@ export function ChatPage() {
     })
   }, [])
   const [meetingTargetId, setMeetingTargetId] = useState<string>()
-  const [historyMeetings, setHistoryMeetings] = useState<{ id: string; title: string; conversationId: string }[]>([])
   const [historyMeetingIds, setHistoryMeetingIds] = useState<string[]>([])
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState(false)
   const [selectedCitation, setSelectedCitation] = useState<ProductCitation>()
   const [sourceDrawerModal, setSourceDrawerModal] = useState(false)
   const [distributionMaterial, setDistributionMaterial] = useState<ProductMaterial>()
@@ -963,6 +963,9 @@ export function ChatPage() {
   const conversationSidebarRef = useRef<HTMLElement>(null)
   const conversationTriggerRef = useRef<HTMLButtonElement>(null)
   const conversationCloseRef = useRef<HTMLButtonElement>(null)
+  const archivedConversationTriggerRef = useRef<HTMLButtonElement>(null)
+  const restoreArchiveTriggerFocusRef = useRef(false)
+  const archivedConversationCloseRef = useRef<HTMLButtonElement>(null)
   const toastTimerRef = useRef<number>()
   const sendAbortControllerRef = useRef<AbortController>()
   const currentRunIdRef = useRef<string>()
@@ -991,7 +994,7 @@ export function ChatPage() {
       const items = sortConversations(result.conversations)
       setConversations(items)
       const initialConversation = items.find((item) => item.status === 'ACTIVE') ?? items[0]
-      setShowArchived(initialConversation?.status === 'ARCHIVED')
+      setSidebarPanel(initialConversation?.status === 'ARCHIVED' ? 'archived' : null)
       if (initialConversation) {
         const detail = await api<ConversationDetail>(`/api/chat/conversations/${initialConversation.id}`)
         if (contextVersionRef.current !== version) return
@@ -1031,6 +1034,14 @@ export function ChatPage() {
   useEffect(() => {
     if (conversationListOpen) conversationCloseRef.current?.focus()
   }, [conversationListOpen])
+
+  useEffect(() => {
+    if (showArchived) archivedConversationCloseRef.current?.focus()
+    else if (restoreArchiveTriggerFocusRef.current) {
+      archivedConversationTriggerRef.current?.focus()
+      restoreArchiveTriggerFocusRef.current = false
+    }
+  }, [showArchived])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
@@ -1150,12 +1161,17 @@ export function ChatPage() {
 
   const visibleConversations = useMemo(() => sortConversations(conversations), [conversations])
   const archivedConversations = visibleConversations.filter((item) => item.status === 'ARCHIVED')
-  const listedConversations = visibleConversations.filter((item) => item.status === (showArchived ? 'ARCHIVED' : 'ACTIVE'))
+  const listedConversations = visibleConversations.filter((item) => item.status === 'ACTIVE')
   const filteredConversations = useMemo(() => {
     const query = conversationSearch.trim().toLocaleLowerCase()
     if (!query) return listedConversations
     return listedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
   }, [conversationSearch, listedConversations])
+  const filteredArchivedConversations = useMemo(() => {
+    const query = conversationSearch.trim().toLocaleLowerCase()
+    if (!query) return archivedConversations
+    return archivedConversations.filter((item) => item.title.toLocaleLowerCase().includes(query))
+  }, [conversationSearch, archivedConversations])
   const backgroundMeeting = sending && currentRunId?.startsWith('MT-')
   const switchLocked = (sending && !backgroundMeeting) || archiving || restoring || dirtyMeetingIds.size > 0
   const mutationLocked = sending || switchLocked || loadingWorkspace || loadingConversation
@@ -1379,15 +1395,15 @@ export function ChatPage() {
     setHistoryMeetingIds([])
   }, [conversation?.id])
 
-  async function loadMeetingHistory() {
-    setHistoryLoading(true)
-    setHistoryError(false)
-    try {
-      const response = await api<{ meetings: typeof historyMeetings }>('/api/chat/meetings')
-      setHistoryMeetings(response.meetings)
-    } catch { setHistoryError(true) }
-    finally { setHistoryLoading(false) }
-  }
+  useEffect(() => {
+    if (!meetingNavigationTarget || loadingConversation || loadingWorkspace) return
+    if (conversation?.id !== meetingNavigationTarget.conversationId) return
+    const target = Array.from(messageScrollRef.current?.querySelectorAll<HTMLElement>('[data-meeting-id]') ?? [])
+      .find(element => element.dataset.meetingId === meetingNavigationTarget.id)
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setMeetingNavigationTarget(undefined)
+  }, [meetingNavigationTarget, conversation?.id, loadingConversation, loadingWorkspace, messages, pendingQuestion])
 
   async function handleMeetingAction(action: 'revise' | 'retry', id: string) {
     if (mutationLocked || archived) return
@@ -1410,7 +1426,17 @@ export function ChatPage() {
     if (conversationListOpen) conversationTriggerRef.current?.focus()
   }
 
+  function closeArchivedDrawer() {
+    restoreArchiveTriggerFocusRef.current = true
+    setSidebarPanel(null)
+  }
+
   function handleConversationDrawerKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    if (showArchived && event.key === 'Escape') {
+      event.preventDefault()
+      closeArchivedDrawer()
+      return
+    }
     if (!conversationListOpen) return
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -1455,7 +1481,7 @@ export function ChatPage() {
     setCurrentRunId(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
-    setShowArchived(false)
+    setSidebarPanel(null)
     setConversationSearch('')
     setBusinessTask('QA')
     setBusinessTaskExplicit(false)
@@ -1472,6 +1498,11 @@ export function ChatPage() {
 
   async function selectConversation(item: ProductConversation) {
     if (switchLocked) return false
+    // Opening the current conversation is navigation, not a stream restart.
+    if (item.id === conversation?.id && !loadingConversation) {
+      closeConversationList()
+      return true
+    }
     restoredConversationIdsRef.current.delete(item.id)
     const version = ++contextVersionRef.current
     sendAbortControllerRef.current?.abort()
@@ -1492,7 +1523,7 @@ export function ChatPage() {
     setCurrentRunId(undefined)
     setActivePairId(undefined)
     setHighlightedPairId(undefined)
-    setShowArchived(item.status === 'ARCHIVED')
+    setSidebarPanel(item.status === 'ARCHIVED' ? 'archived' : null)
     setBusinessTask('QA')
     setBusinessTaskExplicit(false)
     setSelectedCitation(undefined)
@@ -1916,7 +1947,7 @@ export function ChatPage() {
       const restoredConversation: ProductConversation = { ...target, status: 'ACTIVE' }
       setConversation(restoredConversation)
       setConversations((current) => upsertConversation(current, restoredConversation))
-      setShowArchived(false)
+      setSidebarPanel(null)
     } catch {
       if (contextVersionRef.current !== version) return
       setErrorText('恢复会话失败，请重试')
@@ -2219,17 +2250,6 @@ export function ChatPage() {
                 <Plus aria-hidden="true" size={17} />
                 新对话
               </button>
-              <button
-                type="button"
-                className={`archived-conversations-button${showArchived ? ' active' : ''}`}
-                aria-pressed={showArchived}
-                disabled={switchLocked}
-                onClick={() => setShowArchived((current) => !current)}
-              >
-                <ArchiveRestore aria-hidden="true" size={15} />
-                <span>已归档</span>
-                <span className="archived-conversations-count">{archivedConversations.length}</span>
-              </button>
               <div className="conversation-search">
                 <Search aria-hidden="true" size={15} />
                 <input
@@ -2252,36 +2272,111 @@ export function ChatPage() {
                 ) : null}
               </div>
             </div>
-            {sessionUser ? <MeetingActivity userId={sessionUser.id} disabled={switchLocked} onTasksChange={setMeetingActivityTasks} onOpen={async task => {
-              const detail = await api<ConversationDetail>(`/api/chat/conversations/${task.conversationId}`)
-              if (!await selectConversation(normalizeConversation(detail.conversation))) throw new Error('会话未打开')
-            }} /> : null}
-            <ul className="conversation-list">
-              {filteredConversations.map((item) => (
-                <li key={item.id}>
+            <div className="conversation-list-area">
+              <ul className="conversation-list">
+                {filteredConversations.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className={`conversation-link${conversation?.id === item.id ? ' active' : ''}`}
+                      aria-current={conversation?.id === item.id ? 'page' : undefined}
+                      disabled={switchLocked}
+                      onClick={() => void selectConversation(item)}
+                    >
+                      <span className="conversation-link-title" title={item.title || FALLBACK_CONVERSATION_TITLE}>{item.title || FALLBACK_CONVERSATION_TITLE}</span>
+                      {(meetingActivityTasks.some(task => task.conversationId === item.id && ['pending', 'running'].includes(task.state))
+                        || (sending && conversation?.id === item.id)) ? (
+                        <span className="conversation-running" role="status" aria-label="正在运行" title="任务正在运行">
+                          <span className="conversation-running-indicator" aria-hidden="true" />
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                ))}
+                {!filteredConversations.length ? (
+                  <li className="conversation-list-empty">
+                    {conversationSearch.trim() ? '未找到匹配的会话' : '暂无进行中会话'}
+                  </li>
+                ) : null}
+              </ul>
+              <section
+                id="archived-conversation-drawer"
+                className={`archived-conversation-drawer${showArchived ? ' is-open' : ''}`}
+                aria-label="已归档会话抽屉"
+                aria-hidden={!showArchived}
+              >
+                <div className="archived-conversation-drawer-heading">
+                  <div className="archived-conversation-drawer-title">
+                    <Archive aria-hidden="true" size={15} />
+                    <div>
+                      <strong>已归档会话</strong>
+                      <span>{archivedConversations.length} 个会话 · 仅供查看，可恢复</span>
+                    </div>
+                  </div>
                   <button
+                    ref={archivedConversationCloseRef}
                     type="button"
-                    className={`conversation-link${conversation?.id === item.id ? ' active' : ''}`}
-                    aria-current={conversation?.id === item.id ? 'page' : undefined}
-                    disabled={switchLocked}
-                    onClick={() => void selectConversation(item)}
+                    className="archived-conversation-drawer-close"
+                    aria-label="收起已归档会话"
+                    title="收起已归档会话"
+                    disabled={!showArchived}
+                    onClick={closeArchivedDrawer}
                   >
-                    <span className="conversation-link-title">{item.title || FALLBACK_CONVERSATION_TITLE}</span>
-                    {(meetingActivityTasks.some(task => task.conversationId === item.id && ['pending', 'running'].includes(task.state))
-                      || (sending && conversation?.id === item.id)) ? (
-                      <span className="conversation-running" role="status" aria-label="正在运行" title="任务正在运行">
-                        <span className="conversation-running-indicator" aria-hidden="true" />
-                      </span>
-                    ) : null}
+                    <ChevronDown aria-hidden="true" size={16} />
                   </button>
-                </li>
-              ))}
-              {!filteredConversations.length ? (
-                <li className="conversation-list-empty">
-                  {conversationSearch.trim() ? '未找到匹配的会话' : showArchived ? '暂无已归档会话' : '暂无进行中会话'}
-                </li>
-              ) : null}
-            </ul>
+                </div>
+                <div className="archived-conversation-drawer-body">
+                  <ul className="conversation-list archived-conversation-list">
+                    {filteredArchivedConversations.map((item) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          className={`conversation-link${conversation?.id === item.id ? ' active' : ''}`}
+                          aria-current={conversation?.id === item.id ? 'page' : undefined}
+                          disabled={!showArchived || switchLocked}
+                          onClick={() => void selectConversation(item)}
+                        >
+                          <span className="conversation-link-title" title={item.title || FALLBACK_CONVERSATION_TITLE}>{item.title || FALLBACK_CONVERSATION_TITLE}</span>
+                          <span className="conversation-archived-badge" aria-hidden="true">已归档</span>
+                        </button>
+                      </li>
+                    ))}
+                    {!filteredArchivedConversations.length ? (
+                      <li className="conversation-list-empty">
+                        {conversationSearch.trim() ? '未找到匹配的已归档会话' : '暂无已归档会话'}
+                      </li>
+                    ) : null}
+                  </ul>
+                </div>
+              </section>
+            </div>
+            <div className="conversation-sidebar-footer">
+              <button
+                type="button"
+                ref={archivedConversationTriggerRef}
+                hidden={showArchived}
+                aria-controls="archived-conversation-drawer"
+                className={`archived-conversations-button${showArchived ? ' active' : ''}`}
+                aria-label={showArchived ? '收起已归档会话' : '展开已归档会话'}
+                title={showArchived ? '收起已归档会话' : '展开已归档会话'}
+                aria-expanded={showArchived}
+                aria-pressed={showArchived}
+                disabled={switchLocked}
+                onClick={() => setSidebarPanel(current => current === 'archived' ? null : 'archived')}
+              >
+                <ArchiveRestore aria-hidden="true" size={15} />
+                <span>已归档</span>
+                <span className="archived-conversations-count">{archivedConversations.length}</span>
+                {showArchived ? <ChevronDown className="archived-conversations-chevron" aria-hidden="true" size={14} /> : <ChevronUp className="archived-conversations-chevron" aria-hidden="true" size={14} />}
+              </button>
+              {sessionUser ? <MeetingActivity open={sidebarPanel === 'activity'} onOpenChange={open => setSidebarPanel(current => open ? 'activity' : current === 'activity' ? null : current)} userId={sessionUser.id} disabled={switchLocked} onTasksChange={setMeetingActivityTasks} onOpen={async task => {
+                const item = conversations.find(item => item.id === task.conversationId)
+                  ?? normalizeConversation((await api<ConversationDetail>(`/api/chat/conversations/${task.conversationId}`)).conversation)
+                if (!await selectConversation(item)) throw new Error('会话未打开')
+                setMeetingNavigationTarget(task)
+              }} /> : null}
+            </div>
+
           </aside>
 
           <main
@@ -2433,24 +2528,12 @@ export function ChatPage() {
 
             <div className="chat-composer-dock">
               {backgroundMeeting ? <p className="meeting-background-hint" role="status">会议正在后台处理。你可以新建或切换其他会话，完成后会在“后台任务”提醒。</p> : null}
-              {businessTask === 'MEETING_ANALYSIS' || /@会议纪要|@分析会议/u.test(draft) ? <details className="meeting-history" onToggle={event => { if (event.currentTarget.open) void loadMeetingHistory() }}>
-                <summary>
-                  <History size={16} aria-hidden="true" />
-                  <span className="meeting-history-title">引用历史会议</span>
-                  <span className={`meeting-history-count${historyMeetingIds.length ? ' has-selection' : ''}`}>
-                    {historyMeetingIds.length ? `已选 ${historyMeetingIds.length} 场` : '可选'}
-                  </span>
-                  <ChevronDown className="meeting-history-chevron" size={16} aria-hidden="true" />
-                </summary>
-                <div className="meeting-history-options" aria-busy={historyLoading}>
-                  {historyLoading ? <p className="meeting-history-status" role="status">正在加载历史会议…</p>
-                    : historyError ? <div className="meeting-history-status" role="alert">历史会议加载失败<button type="button" onClick={() => void loadMeetingHistory()}><RefreshCw size={14} aria-hidden="true" />重试</button></div>
-                    : historyMeetings.length ? historyMeetings.map(item => <label className="meeting-history-option" key={item.id}>
-                      <input type="checkbox" disabled={mutationLocked} checked={historyMeetingIds.includes(item.id)} onChange={event => setHistoryMeetingIds(ids => event.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />
-                      <span>{item.title}</span>
-                    </label>) : <p className="meeting-history-status">暂无已完成的历史会议</p>}
-                </div>
-              </details> : null}
+              {businessTask === 'MEETING_ANALYSIS' || /@会议纪要|@分析会议/u.test(draft) ? <MeetingHistoryPicker
+                key={conversation?.id ?? 'new'}
+                selectedIds={historyMeetingIds}
+                onChange={setHistoryMeetingIds}
+                disabled={mutationLocked}
+              /> : null}
               {meetingTargetId ? <p>正在修改所选会议 <button onClick={() => setMeetingTargetId(undefined)}>取消关联</button></p> : null}
               {dirtyMeetingIds.size > 0 ? (
                 <p className="meeting-unsaved-hint" role="status">

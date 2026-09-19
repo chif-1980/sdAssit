@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MeetingCard } from './MeetingCard'
 import type { MeetingRecord } from '../../../shared/api/product'
@@ -25,6 +25,44 @@ const followupMeeting: MeetingRecord = {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); sessionStorage.clear() })
 
 describe('meeting results', () => {
+  it('opens task evidence from the correct source with timestamp and original link, without saving or sending', () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ users: [] })))
+    vi.stubGlobal('fetch', fetcher)
+    render(<MeetingCard meeting={{ ...followupMeeting,
+      sources: [...meeting.sources, { ...meeting.sources[0], title: '第二份转写', url: 'https://bncloud.ieasetek.com/share/example',
+        paragraphs: [{ id: 'P1', text: '把一体机带来演示。', speaker: '肖总', startMs: 934000 }],
+      }],
+      result: { ...followupMeeting.result!, followup: { ...followupMeeting.result!.followup!,
+        tasks: [{ ...followupMeeting.result!.followup!.tasks[0], sourceRefs: ['S1-P1', 'S2-P1'] }],
+      } },
+    }} />)
+    const button = screen.getByRole('button', { name: '查看待办依据 S2-P1' })
+    fireEvent.click(button)
+    const panel = screen.getByRole('region', { name: '待办原文依据' })
+    expect(panel).toHaveTextContent('第二份转写')
+    expect(panel).toHaveTextContent('肖总 · 00:15:34')
+    expect(panel).toHaveTextContent('把一体机带来演示。')
+    expect(within(panel).getByRole('link', { name: '查看原始会议' })).toHaveAttribute('href', 'https://bncloud.ieasetek.com/share/example')
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '查看待办依据 S1-P1' }))
+    expect(panel).toHaveTextContent('段落 P1')
+    expect(panel).toHaveTextContent('建议下周继续讨论。')
+    expect(within(panel).queryByRole('link')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看待办依据 S1-P1' }))
+    expect(screen.queryByRole('region', { name: '待办原文依据' })).not.toBeInTheDocument()
+    expect(fetcher.mock.calls.every((args: unknown[]) => !(args[1] as RequestInit | undefined)?.method)).toBe(true)
+  })
+
+  it('explains a missing task paragraph instead of showing unrelated evidence', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ users: [] }))))
+    render(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!,
+      followup: { ...followupMeeting.result!.followup!, tasks: [{ ...followupMeeting.result!.followup!.tasks[0], sourceRefs: ['S1-P999'] }] },
+    } }} />)
+    fireEvent.click(screen.getByRole('button', { name: '查看待办依据 S1-P999' }))
+    expect(screen.getByRole('region', { name: '待办原文依据' })).toHaveTextContent('此依据对应的原文片段暂不可用。')
+    expect(screen.queryByText('建议下周继续讨论。')).not.toBeInTheDocument()
+  })
+
   it('shows exact evidence and paragraph locator without inventing a timestamp', () => {
     render(<MeetingCard meeting={meeting} />)
     fireEvent.click(screen.getByRole('button', { name: 'S1-P1' }))
@@ -109,11 +147,33 @@ describe('meeting results', () => {
     fireEvent.click(screen.getByRole('button', { name: '期限：待确认' }))
     fireEvent.click(screen.getByRole('button', { name: '2026-09-30' }))
     vi.useRealTimers()
-    expect(screen.getByText(/尚未逐条与正式知识对比/)).toBeInTheDocument()
+    expect(screen.getByText(/此版本未记录逐条比对结果/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
     await waitFor(() => expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([, init]) => init?.method === 'PATCH')!
     expect(JSON.parse(call[1].body).tasks[0]).toMatchObject({ assigneeFeishuUserId: 'ou_2', dueDate: '2026-09-30' })
+  })
+
+  it('shows formal knowledge comparison status and evidence for each suggestion', () => {
+    render(<MeetingCard meeting={{
+      ...followupMeeting,
+      result: {
+        ...followupMeeting.result!,
+        formalEvidence: [{ evidence_id: 'E1', title: '交付规范', excerpt: '交付限制说明', source_url: '' }],
+        followup: {
+          ...followupMeeting.result!.followup!,
+          knowledgeSuggestions: [
+            { id: 'knowledge-1', title: '更新部署限制', reason: '会议补充了限制条件', sourceRefs: ['S1-P1'], status: 'PENDING_MAINTAINER', comparisonStatus: 'NEEDS_UPDATE', comparison: '已有知识但需要补充。', formalEvidenceIds: ['E1'] },
+            { id: 'knowledge-2', title: '新增验收说明', reason: '正式知识未提及', sourceRefs: [], status: 'PENDING_MAINTAINER', comparisonStatus: 'NEW_TOPIC', comparison: '未找到对应内容。', formalEvidenceIds: [] },
+          ],
+        },
+      },
+    }} />)
+    expect(screen.getByText('已有知识，建议修改')).toBeInTheDocument()
+    expect(screen.getByText('正式知识未覆盖，建议新增')).toBeInTheDocument()
+    expect(screen.getByText('已有知识但需要补充。')).toBeInTheDocument()
+    expect(screen.getAllByText('[E1] 交付规范')).toHaveLength(2)
+    expect(screen.getAllByText('交付限制说明')).toHaveLength(2)
   })
 
   it('adds a manual task and confirms one task for delivery', async () => {
@@ -141,6 +201,76 @@ describe('meeting results', () => {
     expect(savePayload).toMatchObject({ action: 'SAVE' })
     expect(savePayload.tasks.some(task => task.id.startsWith('manual-') && task.title === '补发会议资料')).toBe(true)
     expect(savePayload.tasks.find(task => task.id.startsWith('manual-'))).toMatchObject({ content: '' })
+  })
+
+  it('offers an explicit resend for an already delivered task', async () => {
+    const confirmedMeeting: MeetingRecord = {
+      ...followupMeeting,
+      result: {
+        ...followupMeeting.result!,
+        followup: {
+          ...followupMeeting.result!.followup!,
+          tasks: [{
+            ...followupMeeting.result!.followup!.tasks[0],
+            assignee: { userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' },
+            reviewStatus: 'CONFIRMED',
+            delivery: { notification: 'SENT', feishuTaskId: 'task_1', messageId: 'om_old', error: null },
+          }],
+        },
+      },
+    }
+    const fetcher = vi.fn(async (_path, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const patch = JSON.parse(init.body as string)
+        return new Response(JSON.stringify({ meeting: {
+          ...confirmedMeeting, version: 2,
+          result: { ...confirmedMeeting.result!, followup: { ...confirmedMeeting.result!.followup!, tasks: patch.tasks } },
+        } }))
+      }
+      return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' }] }))
+    })
+    vi.stubGlobal('fetch', fetcher)
+    render(<MeetingCard meeting={confirmedMeeting} />)
+    expect(screen.getByText(/飞书已接收发给张工通知/u)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重新发送通知' }))
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const call = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(call[1]?.body as string)).toMatchObject({ action: 'RESEND', taskId: 'task-1' })
+  })
+
+  it('allows correcting a delivered task owner before sending it again', async () => {
+    const confirmedTask = {
+      ...followupMeeting.result!.followup!.tasks[0],
+      assignee: { userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' },
+      reviewStatus: 'CONFIRMED' as const,
+      delivery: { notification: 'SENT' as const, feishuTaskId: 'task_1', messageId: 'om_old', error: null },
+    }
+    const confirmedMeeting: MeetingRecord = {
+      ...followupMeeting,
+      result: { ...followupMeeting.result!, followup: { ...followupMeeting.result!.followup!, tasks: [confirmedTask] } },
+    }
+    const fetcher = vi.fn(async (_path, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const patch = JSON.parse(init.body as string)
+        const savedTask = { ...confirmedTask, title: patch.tasks[0].title, assignee: { userId: '3', feishuUserId: 'ou_3', displayName: '王工' }, reviewStatus: 'CONFIRMED', delivery: { ...confirmedTask.delivery, pendingUpdate: true } }
+        return new Response(JSON.stringify({ meeting: { ...confirmedMeeting, version: 2, result: { ...confirmedMeeting.result!, followup: { ...confirmedMeeting.result!.followup!, tasks: [savedTask] } } } }))
+      }
+      return new Response(JSON.stringify({ users: [
+        { userId: '2', feishuUserId: 'ou_2', displayName: '张工' },
+        { userId: '3', feishuUserId: 'ou_3', displayName: '王工' },
+      ] }))
+    })
+    vi.stubGlobal('fetch', fetcher)
+    render(<MeetingCard meeting={confirmedMeeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '修改' }))
+    fireEvent.click(screen.getByRole('button', { name: '负责人：张工' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '王工' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '王工' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const call = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(call[1]?.body as string)).toMatchObject({ action: 'SAVE', tasks: [{ assigneeUserId: '3', assigneeFeishuUserId: 'ou_3' }] })
+    expect(screen.getByRole('button', { name: '同步修改到飞书' })).toBeInTheDocument()
   })
 
   it('preserves a conflicting draft base across reloads until the user reloads the saved version', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { MeetingDepartment, MeetingDirectoryUser, MeetingFollowup, MeetingRecord } from '../../../shared/api/product'
@@ -22,6 +22,48 @@ function timeLabel(ms?: number | null) {
   if (ms == null) return ''
   const seconds = Math.floor(ms / 1000)
   return `${Math.floor(seconds / 3600).toString().padStart(2, '0')}:${Math.floor(seconds / 60 % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`
+}
+
+function TaskEvidence({ sourceRefs, sources, sourceMeetingId }: { sourceRefs: string[]; sources: MeetingRecord['sources']; sourceMeetingId?: string }) {
+  const [activeRef, setActiveRef] = useState<string>()
+  const panelId = useId()
+  const [originalSources, setOriginalSources] = useState<MeetingRecord['sources']>()
+  const [sourceError, setSourceError] = useState('')
+  useEffect(() => {
+    if (!activeRef || !sourceMeetingId || originalSources) return
+    let cancelled = false
+    void api<{ meeting: MeetingRecord }>(`/api/chat/meetings/${encodeURIComponent(sourceMeetingId)}`)
+      .then(response => { if (!cancelled) setOriginalSources(response.meeting.sources) })
+      .catch(() => { if (!cancelled) setSourceError('原始分析版本暂不可访问，请稍后重试。') })
+    return () => { cancelled = true }
+  }, [activeRef, sourceMeetingId, originalSources])
+  const evidenceSources = sourceMeetingId ? originalSources || [] : sources
+  const match = activeRef?.match(/^S(\d+)-(P\d+)$/u)
+  const source = match ? evidenceSources[Number(match[1]) - 1] : undefined
+  const paragraph = source?.paragraphs.find(item => item.id === match?.[2])
+  const sourceUrl = source?.url && /^https?:\/\//iu.test(source.url) ? source.url : undefined
+  return <div className="meeting-task-evidence">
+    <div className="meeting-task-evidence-links"><span>依据：</span>{[...new Set(sourceRefs)].map(ref =>
+      <button key={ref} type="button" className="meeting-reference" aria-label={`查看待办依据 ${ref}`}
+        aria-expanded={activeRef === ref} aria-controls={panelId}
+        onClick={() => setActiveRef(current => current === ref ? undefined : ref)}>{ref}</button>,
+    )}</div>
+    {activeRef ? <section id={panelId} className="meeting-evidence" aria-label="待办原文依据">
+      <strong>{activeRef}{source ? ` · ${source.title}` : ''}</strong>
+      {paragraph ? <>
+        <p className="meeting-task-evidence-meta">发言人：{paragraph.speaker || '未提供'} · {timeLabel(paragraph.startMs) || `段落 ${paragraph.id}`}</p>
+        <p className="meeting-task-evidence-text">{paragraph.text}</p>
+      </> : <p>{sourceError || (sourceMeetingId && !originalSources ? '正在读取原始分析版本…' : '此依据对应的原文片段暂不可用。')}</p>}
+      {sourceUrl ? <a href={sourceUrl} target="_blank" rel="noreferrer">查看原始会议</a> : null}
+    </section> : null}
+  </div>
+}
+
+const knowledgeComparisonLabels: Record<string, string> = {
+  COVERED: '正式知识已覆盖',
+  NEEDS_UPDATE: '已有知识，建议修改',
+  NEW_TOPIC: '正式知识未覆盖，建议新增',
+  UNVERIFIED: '暂无法核对正式知识',
 }
 
 export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
@@ -48,6 +90,8 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const [directoryAttempt, setDirectoryAttempt] = useState(0)
   const [followupSaving, setFollowupSaving] = useState(false)
   const [followupError, setFollowupError] = useState('')
+  const [editingFollowupTasks, setEditingFollowupTasks] = useState<Set<string>>(() => new Set())
+  const [followupTaskSnapshots, setFollowupTaskSnapshots] = useState<Record<string, MeetingFollowup['tasks'][number]>>({})
   const recordRef = useRef(record)
   const savingRef = useRef(false)
   const editRef = useRef({ body, title, meetingType })
@@ -176,14 +220,37 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       tasks: current.tasks.map(task => {
         if (task.id !== taskId) return task
         const changedDeliveryField = ['title', 'content', 'assignee', 'dueDate'].some(field => field in patch)
-        return task.reviewStatus === 'CONFIRMED' || task.reviewStatus === 'IGNORED'
-          ? { ...task, ...patch, ...(changedDeliveryField ? {
-            reviewStatus: 'PENDING',
-            delivery: { notification: 'NOT_SENT', feishuTaskId: null, messageId: null, error: null },
-          } : {}) }
-          : { ...task, ...patch }
+        if (task.delivery?.feishuTaskId && (changedDeliveryField || 'status' in patch)) {
+          return { ...task, ...patch, delivery: { ...task.delivery, pendingUpdate: true } }
+        }
+        return { ...task, ...patch, ...(task.reviewStatus === 'IGNORED' && changedDeliveryField ? { reviewStatus: 'PENDING' } : {}) }
       }),
     } : current)
+    setFollowupError('')
+  }
+
+  function startFollowupTaskEdit(task: MeetingFollowup['tasks'][number]) {
+    setFollowupTaskSnapshots(current => current[task.id] ? current : { ...current, [task.id]: task })
+    setEditingFollowupTasks(current => new Set(current).add(task.id))
+    setFollowupError('')
+  }
+
+  function cancelFollowupTaskEdit(taskId: string) {
+    const snapshot = followupTaskSnapshots[taskId]
+    if (snapshot) setFollowup(current => current ? {
+      ...current,
+      tasks: current.tasks.map(task => task.id === taskId ? snapshot : task),
+    } : current)
+    setFollowupTaskSnapshots(current => {
+      const next = { ...current }
+      delete next[taskId]
+      return next
+    })
+    setEditingFollowupTasks(current => {
+      const next = new Set(current)
+      next.delete(taskId)
+      return next
+    })
     setFollowupError('')
   }
 
@@ -200,11 +267,11 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     setFollowupError('')
   }
 
-  async function saveFollowup(action: 'SAVE' | 'CONFIRM' | 'IGNORE' = 'SAVE', taskId?: string) {
+  async function saveFollowup(action: 'SAVE' | 'CONFIRM' | 'RESEND' | 'IGNORE' = 'SAVE', taskId?: string) {
     if (!followup || dirty || followupSaving) return
     const target = taskId ? followup.tasks.find(task => task.id === taskId) : undefined
-    if ((action === 'CONFIRM' || action === 'IGNORE') && !target) return
-    if (action === 'CONFIRM' && !target?.title.trim()) {
+    if ((action === 'CONFIRM' || action === 'RESEND' || action === 'IGNORE') && !target) return
+    if ((action === 'CONFIRM' || action === 'RESEND') && !target?.title.trim()) {
       setFollowupError('请先填写待办标题，再确认并发送。')
       return
     }
@@ -231,6 +298,10 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       recordRef.current = response.meeting
       setRecord(response.meeting)
       setFollowup(response.meeting.result?.followup)
+      if (action === 'SAVE') {
+        setEditingFollowupTasks(new Set())
+        setFollowupTaskSnapshots({})
+      }
       if (response.deliveryError) setFollowupError(response.deliveryError)
     } catch (failure) {
       setFollowupError(failure instanceof Error ? failure.message : '跟进保存失败，请重试')
@@ -243,8 +314,9 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const selected = references.find(p => p.id === evidence)
   const selectedHistory = record.result?.selectedHistory?.find(item => item.label === evidence)
   const markdown = body.replace(/\[(S\d+-P\d+|H\d+)\]/gu, '[$1](#meeting-evidence-$1)')
+  const formalEvidenceById = new Map((record.result?.formalEvidence ?? []).map(item => [item.evidence_id, item]))
   const blocked = disabled || dirty || saveStatus === '保存中…'
-  return <section className="meeting-card" aria-label="会议纪要">
+  return <section className="meeting-card" aria-label="会议纪要" data-meeting-id={meeting.id}>
     <header><strong>{record.result?.title || '会议纪要'}</strong><span>{record.result ? `版本 ${record.version}` : record.progress.message}</span></header>
     <p className="meeting-status">{record.progress.message} · 最近更新 {new Date(record.updatedAt).toLocaleString('zh-CN')}</p>
     {record.error ? <div role="alert">{record.error.message}
@@ -298,31 +370,59 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
           <button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button>
         </div>
         {followup.tasks.length ? <div className="meeting-followup-tasks">
-          {followup.tasks.map(task => <article className={`meeting-followup-task meeting-followup-task-${task.reviewStatus || 'PENDING'}`} key={task.id}>
+          {followup.tasks.map(task => {
+            const taskEditing = editingFollowupTasks.has(task.id)
+            const taskLocked = (task.reviewStatus === 'CONFIRMED' || task.reviewStatus === 'IGNORED') && !taskEditing
+            return <article className={`meeting-followup-task meeting-followup-task-${task.reviewStatus || 'PENDING'}`} key={task.id}>
             <div className="meeting-followup-task-heading">
-              <label>待办标题<input aria-label={`待办标题：${task.title || '未填写'}`} value={task.title} maxLength={1000} placeholder="填写待办事项" onChange={event => updateFollowupTask(task.id, { title: event.target.value })} disabled={disabled || followupSaving} /></label>
-              <label className="meeting-followup-content-field">待办内容（可选）<textarea aria-label={`待办内容：${task.title || '未填写'}`} value={task.content ?? ''} maxLength={5000} placeholder="补充执行要求、交付物或上下文" onChange={event => updateFollowupTask(task.id, { content: event.target.value })} disabled={disabled || followupSaving} /></label>
+              <label>待办标题<input aria-label={`待办标题：${task.title || '未填写'}`} value={task.title} maxLength={1000} placeholder="填写待办事项" onChange={event => updateFollowupTask(task.id, { title: event.target.value })} disabled={disabled || followupSaving || taskLocked} /></label>
+              <label className="meeting-followup-content-field">待办内容（可选）<textarea aria-label={`待办内容：${task.title || '未填写'}`} value={task.content ?? ''} maxLength={5000} placeholder="补充执行要求、交付物或上下文" onChange={event => updateFollowupTask(task.id, { content: event.target.value })} disabled={disabled || followupSaving || taskLocked} /></label>
               <span className="meeting-followup-origin">{task.origin === 'MANUAL' ? '人工补充' : '会议识别'}</span>
               <span className={`meeting-followup-review review-${task.reviewStatus || 'PENDING'}`}>
-                {task.reviewStatus === 'CONFIRMED' ? '已确认并已发送' : task.reviewStatus === 'IGNORED' ? '已忽略' : task.reviewStatus === 'DELIVERY_FAILED' ? '发送失败，可重试' : '待确认'}
+                {task.reviewStatus === 'CONFIRMED' ? '已确认' : task.reviewStatus === 'IGNORED' ? '已忽略' : task.reviewStatus === 'DELIVERY_FAILED' ? '发送失败，可重试' : '待确认'}
               </span>
             </div>
             {task.assigneeSuggestion ? <small>模型识别的负责人：{task.assigneeSuggestion}（请核对）</small> : null}
-            <div className="meeting-field"><span>负责人</span><MeetingMemberPicker value={task.assignee} users={directory} departments={departments} loading={directoryLoading} error={directoryError} notice={directoryNotice} disabled={disabled || followupSaving} onRetry={() => setDirectoryAttempt(n => n + 1)} onChange={assignee => updateFollowupTask(task.id, { assignee })} /></div>
-            <div className="meeting-field"><span>期限</span><MeetingDatePicker value={task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : ''} onChange={dueDate => updateFollowupTask(task.id, { dueDate })} disabled={disabled || followupSaving} />
+            <div className="meeting-field"><span>负责人</span><MeetingMemberPicker value={task.assignee} users={directory} departments={departments} loading={directoryLoading} error={directoryError} notice={directoryNotice} disabled={disabled || followupSaving || taskLocked} onRetry={() => setDirectoryAttempt(n => n + 1)} onChange={assignee => updateFollowupTask(task.id, { assignee })} /></div>
+            <div className="meeting-field"><span>期限</span><MeetingDatePicker value={task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : ''} onChange={dueDate => updateFollowupTask(task.id, { dueDate })} disabled={disabled || followupSaving || taskLocked} />
               {!task.dueDate ? <span>待确认，可稍后补充</span> : null}
               {task.dueDateSuggestion || (task.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate)) ? <span>原文期限：{task.dueDateSuggestion || task.dueDate}（请选择具体日期）</span> : null}
             </div>
-            <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving}>
+            <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving || taskLocked}>
               <option value="OPEN">待开始</option><option value="IN_PROGRESS">进行中</option><option value="DONE">已完成</option>
             </select></label>
-            {task.sourceRefs?.length ? <small>依据：{task.sourceRefs.join('、')}</small> : null}
+            {task.sourceRefs?.length ? <TaskEvidence sourceRefs={task.sourceRefs} sources={record.sources} sourceMeetingId={task.sourceMeetingId !== record.id ? task.sourceMeetingId : undefined} /> : null}
+            {task.delivery?.notification === 'SENT' && task.delivery.messageId ? <small role="status">飞书已接收发给{task.assignee?.displayName || '负责人的'}通知{task.delivery.feishuTaskId ? '，待办已创建' : ''}。如未看到消息，请在飞书中查看应用机器人会话。{task.delivery.chatId ? <a className="meeting-feishu-chat-link" href={`https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(task.delivery.chatId)}`} target="_blank" rel="noreferrer">打开对应会话</a> : null}</small> : null}
+            {task.delivery?.pendingUpdate ? <small role="status">本地修改已保存，待同步到飞书。</small> : null}
+            {task.delivery?.syncError ? <small role="status">最近读取飞书状态失败：{task.delivery.syncError}</small> : null}
             {task.delivery?.error ? <p className="meeting-followup-delivery-error" role="alert">{task.delivery.error}</p> : null}
             <div className="meeting-followup-task-actions">
-              <button type="button" disabled={blocked || followupSaving || !task.title.trim()} onClick={() => void saveFollowup('CONFIRM', task.id)}>{followupSaving ? '处理中…' : task.reviewStatus === 'DELIVERY_FAILED' ? '重试发送' : '确认并发送'}</button>
-              <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving || !task.title.trim() || task.reviewStatus === 'IGNORED' || task.reviewStatus === 'CONFIRMED'} onClick={() => void saveFollowup('IGNORE', task.id)}>忽略</button>
+              {taskEditing ? <>
+                <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving} onClick={() => cancelFollowupTaskEdit(task.id)}>取消修改</button>
+                <button type="button" disabled={blocked || followupSaving || !task.title.trim()} onClick={() => void saveFollowup('SAVE')}>
+                  {followupSaving ? '保存中…' : '保存修改'}
+                </button>
+              </> : taskLocked ? <>
+                <button type="button" disabled={blocked || followupSaving} onClick={() => startFollowupTaskEdit(task)}>修改</button>
+                {task.reviewStatus === 'CONFIRMED' ? <button
+                  type="button"
+                  disabled={blocked || followupSaving || !task.title.trim()}
+                  onClick={() => void saveFollowup(task.delivery?.feishuTaskId && !task.delivery.pendingUpdate && task.delivery.syncStatus !== 'FAILED' ? 'RESEND' : 'CONFIRM', task.id)}
+                >
+                  {task.delivery?.syncStatus === 'FAILED' ? '重试飞书同步' : task.delivery?.pendingUpdate ? '同步修改到飞书' : task.delivery?.feishuTaskId ? '重新发送通知' : '确认并发送'}
+                </button> : null}
+              </> : <button
+                type="button"
+                disabled={blocked || followupSaving || !task.title.trim()}
+                onClick={() => void saveFollowup(task.reviewStatus === 'CONFIRMED' && task.delivery?.feishuTaskId ? 'RESEND' : 'CONFIRM', task.id)}
+              >
+                {followupSaving ? '处理中…' : task.reviewStatus === 'DELIVERY_FAILED' ? '重试发送' : task.reviewStatus === 'CONFIRMED' && task.delivery?.feishuTaskId ? '重新发送通知' : '确认并发送'}
+              </button>}
+              {!taskEditing && !taskLocked ? <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving || !task.title.trim() || task.reviewStatus === 'IGNORED' || task.reviewStatus === 'CONFIRMED'} onClick={() => void saveFollowup('IGNORE', task.id)}>忽略</button> : null}
             </div>
-          </article>)}
+            {taskEditing ? <small className="meeting-followup-edit-hint">修改保存后，请同步到飞书；已发送待办会更新原任务。</small> : null}
+          </article>
+          })}
           <div className="meeting-followup-savebar">
             <button type="button" disabled={blocked || followupSaving} onClick={() => void saveFollowup()}>{followupSaving ? '保存中…' : '保存跟进'}</button>
             {followupDirty ? <small role="status">跟进修改尚未保存</small> : null}
@@ -332,8 +432,31 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
         {!followup.tasks.length ? <div className="meeting-followup-empty-actions"><button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button></div> : null}
         {followup.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
           <h3>知识更新建议</h3>
-          <p>以下建议来自会议内容，尚未逐条与正式知识对比，也未提交知识维护队列；需由知识维护人员核对后决定是否更新。</p>
-          {followup.knowledgeSuggestions.map(item => <article key={item.id}><strong>{item.title}</strong><p>{item.reason}</p><small>核对状态：尚未逐条核对正式知识{item.sourceRefs.length ? ` · 依据：${item.sourceRefs.join('、')}` : ''}</small></article>)}
+          <p>以下判断仅供知识维护人员核对，平台不会自动修改正式知识。会议依据、正式知识依据和助手建议分开呈现。</p>
+          {followup.knowledgeSuggestions.map(item => {
+            const comparisonStatus = item.comparisonStatus || 'UNVERIFIED'
+            const evidence = item.formalEvidence ?? (item.formalEvidenceIds ?? []).map(id => formalEvidenceById.get(id)).filter(Boolean)
+            return <article key={item.id}>
+              <div className="meeting-knowledge-suggestion-heading">
+                <strong>{item.title}</strong>
+                <span className={`meeting-knowledge-status status-${comparisonStatus}`}>
+                  {!item.comparisonStatus ? '未记录比对结果' : knowledgeComparisonLabels[comparisonStatus] || '暂无法核对正式知识'}
+                </span>
+              </div>
+              <p><b>会议提出：</b>{item.reason}</p>
+              {item.status !== 'PENDING_MAINTAINER' ? <p><b>维护处理：</b>{({ COVERED: '已有知识覆盖', PROCESSING: '建议草稿处理中', DEFERRED: '暂缓处理', REJECTED: '不采纳' } as Record<string, string>)[item.status] || item.status}{item.decisionReason ? ` · ${item.decisionReason}` : ''}</p> : null}
+              <div className="meeting-knowledge-comparison"><b>比对结论</b><span>{item.comparison || '此版本未记录逐条比对结果，无法据此判断正式知识是否已覆盖。'}</span></div>
+              {item.sourceRefs.length ? <small>会议依据：{item.sourceRefs.join('、')}</small> : null}
+              <div className="meeting-knowledge-evidence">
+                <b>正式知识依据</b>
+                {evidence.length ? <details><summary>{evidence.map(value => value!.evidence_id).join('、')}</summary>{evidence.map(value => <div key={value!.evidence_id}>
+                  <strong>[{value!.evidence_id}] {value!.title}</strong>
+                  <p>{value!.excerpt}</p>
+                  {value!.source_url ? <a href={value!.source_url} target="_blank" rel="noreferrer">打开正式资料</a> : null}
+                </div>)}</details> : <span>{item.comparisonStatus ? '本条建议没有可引用的正式知识依据' : '此版本没有逐条正式知识引用记录'}</span>}
+              </div>
+            </article>
+          })}
         </section> : null}
       </details> : null}
     </> : null}
