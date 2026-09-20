@@ -226,7 +226,7 @@ export interface MeetingKnowledgeSuggestion {
 }
 
 export interface MeetingFollowup {
-  coordinator: { userId: string; displayName: string }
+  coordinator?: { userId: string; displayName: string } | null
   tasks: MeetingFollowupTask[]
   knowledgeSuggestions: MeetingKnowledgeSuggestion[]
 }

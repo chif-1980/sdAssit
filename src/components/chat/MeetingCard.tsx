@@ -383,7 +383,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
           : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
       }}>{beforeTasks}</ReactMarkdown>}
       {followup ? <section className="meeting-followup" aria-label="待办事项">
-        <p className="meeting-followup-note">跟进负责人：{followup.coordinator.displayName}。在此核对、修改和确认待办，确认后才会发送飞书。</p>
+        <p className="meeting-followup-note">跟进负责人：{followup.coordinator?.displayName || '未提供'}。在此核对、修改和确认待办，确认后才会发送飞书。</p>
         <div className="meeting-followup-toolbar">
           <h2>待办事项</h2>
           <button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button>

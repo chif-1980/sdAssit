@@ -31,6 +31,23 @@ function renderExpanded(ui: Parameters<typeof render>[0]) {
 }
 
 describe('meeting results', () => {
+  it.each([undefined, null])('renders historical follow-up without a coordinator (%s)', async coordinator => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ users: [], departments: [] })))
+    vi.stubGlobal('fetch', fetcher)
+    const view = render(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!,
+      followup: { ...followupMeeting.result!.followup!, coordinator, tasks: [], knowledgeSuggestions: [] },
+    } }} />)
+    expect(screen.getByRole('region', { name: '会议纪要' })).toHaveTextContent('讨论会议')
+    expect(screen.getByText(/跟进负责人：未提供/)).toBeInTheDocument()
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+    view.rerender(<MeetingCard meeting={{ ...followupMeeting, version: 2, result: { ...followupMeeting.result!,
+      followup: { ...followupMeeting.result!.followup!, coordinator },
+    } }} />)
+    expect(screen.getByText('补充测试方案')).toBeInTheDocument()
+    expect(screen.getByText('更新部署限制')).toBeInTheDocument()
+    expect(fetcher.mock.calls.every((args: unknown[]) => !(args[1] as RequestInit | undefined)?.method)).toBe(true)
+  })
+
   it('opens task evidence from the correct source with timestamp and original link, without saving or sending', () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ users: [] })))
     vi.stubGlobal('fetch', fetcher)
