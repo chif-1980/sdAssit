@@ -14,6 +14,7 @@ export function MeetingDatePicker({ value, disabled, onChange }: {
   const [position, setPosition] = useState({ top: 0, left: 0 })
   const trigger = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
+  const today = iso(new Date())
   const first = new Date(month.getFullYear(), month.getMonth(), 1)
   const offset = (first.getDay() + 6) % 7
   const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
@@ -22,7 +23,7 @@ export function MeetingDatePicker({ value, disabled, onChange }: {
     const rect = trigger.current!.getBoundingClientRect()
     setPosition({ left: Math.max(12, Math.min(rect.left, window.innerWidth - 292)),
       top: Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - (panel.current?.offsetHeight || 350) - 12)) })
-    panel.current?.querySelector<HTMLButtonElement>('[aria-pressed=true], .calendar-days button')?.focus()
+    panel.current?.querySelector<HTMLButtonElement>('[aria-pressed=true]:not(:disabled), [aria-current=date], .calendar-days button:not(:disabled)')?.focus()
   }, [open])
   useEffect(() => {
     if (!open) return
@@ -56,7 +57,7 @@ export function MeetingDatePicker({ value, disabled, onChange }: {
         {Array.from({ length: days }, (_, index) => {
           const day = new Date(month.getFullYear(), month.getMonth(), index + 1)
           const date = iso(day)
-          return <button type="button" key={date} aria-label={date} aria-pressed={date === value} onClick={() => choose(date)}>{index + 1}</button>
+          return <button type="button" key={date} aria-label={date} disabled={date < today} aria-current={date === today ? 'date' : undefined} aria-pressed={date === value} onClick={() => choose(date)}>{index + 1}</button>
         })}
       </div>
       <div className="calendar-footer"><button type="button" onClick={() => choose(null)}>清空日期</button><button type="button" onClick={() => choose(iso(new Date()))}>今天</button></div>

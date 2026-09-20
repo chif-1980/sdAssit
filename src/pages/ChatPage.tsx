@@ -1,5 +1,5 @@
 import { MeetingHistoryPicker } from '../components/chat/MeetingHistoryPicker'
-import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, ChevronUp, Info, MessageCircle, PanelLeft, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowDown, BookOpen, ChevronDown, ChevronUp, Info, MessageCircle, PanelLeft, PencilLine, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
@@ -56,6 +56,7 @@ interface FeedbackResponse {
 }
 
 const MAX_COMPOSER_ATTACHMENTS = 5
+const MEETING_REVISION_PROMPT = '@会议纪要 请按以下要求修改：'
 
 const exampleQuestions = [
   '投标一体机定价体系',
@@ -1411,7 +1412,7 @@ export function ChatPage() {
       setMeetingTargetId(id)
       setBusinessTask('MEETING_ANALYSIS')
       setBusinessTaskExplicit(true)
-      setDraft('@会议纪要 请按以下要求修改：')
+      setDraft(MEETING_REVISION_PROMPT)
       return
     }
     try {
@@ -1419,6 +1420,15 @@ export function ChatPage() {
       restoredConversationIdsRef.current.delete(response.conversationId)
       await restoreActiveRun(response.conversationId, contextVersionRef.current)
     } catch (error) { setErrorText(error instanceof Error ? error.message : '重试失败') }
+  }
+
+  function exitMeetingRevision() {
+    setMeetingTargetId(undefined)
+    setBusinessTask('QA')
+    setBusinessTaskExplicit(false)
+    setDraft(current => current.startsWith(MEETING_REVISION_PROMPT)
+      ? current.slice(MEETING_REVISION_PROMPT.length).trimStart()
+      : current)
   }
 
   function closeConversationList() {
@@ -2218,6 +2228,7 @@ export function ChatPage() {
 
   const sourceBackgroundInert = Boolean(selectedCitation && sourceDrawerModal)
   const sourceBackgroundProps = sourceBackgroundInert ? { inert: '' } : {}
+  const revisionMeetingTitle = messages.find(message => message.meeting?.id === meetingTargetId)?.meeting?.result?.title || '所选会议'
   const showEmptyState = !loadingWorkspace && !loadingConversation && !messages.length && !pendingQuestion
 
   return (
@@ -2534,7 +2545,19 @@ export function ChatPage() {
                 onChange={setHistoryMeetingIds}
                 disabled={mutationLocked}
               /> : null}
-              {meetingTargetId ? <p>正在修改所选会议 <button onClick={() => setMeetingTargetId(undefined)}>取消关联</button></p> : null}
+              {meetingTargetId ? (
+                <section className="meeting-revision-context" aria-label="AI 修改纪要">
+                  <PencilLine size={17} aria-hidden="true" />
+                  <div className="meeting-revision-copy">
+                    <strong>AI 修改纪要</strong>
+                    <span title={revisionMeetingTitle}>{revisionMeetingTitle}</span>
+                    <small>在下方填写修改要求，发送后生效</small>
+                  </div>
+                  <button type="button" onClick={exitMeetingRevision} title="退出本次修改，保留已输入的要求，原纪要不变">
+                    <X size={14} aria-hidden="true" />退出修改
+                  </button>
+                </section>
+              ) : null}
               {dirtyMeetingIds.size > 0 ? (
                 <p className="meeting-unsaved-hint" role="status">
                   <Info size={16} aria-hidden="true" />
