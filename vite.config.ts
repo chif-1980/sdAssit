@@ -1,8 +1,13 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import packageJson from './package.json' with { type: 'json' };
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // A release must not reuse URLs cached from a failed previous deployment.
+    assetsDir: `assets/${packageJson.version}`,
+  },
   server: {
     host: '127.0.0.1',
     proxy: {
