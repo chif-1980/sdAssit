@@ -166,3 +166,13 @@
 
 .meeting-task-summary-status.status-PENDING { color: #a15b12; }
 .meeting-task-summary-status.status-DELIVERY_FAILED { color: #b91c1c; }
+
+.meeting-schedule-comparison { grid-column: 1 / -1; padding: 12px 16px; border-left: 3px solid #d9dee5; background: #f8fafc; border-radius: 4px; font-size: 13px; }
+.meeting-schedule-comparison small { display: block; margin-top: 4px; color: #655d50; }
+.meeting-schedule-comparison dl { margin: 12px 0; display: grid; gap: 10px; }
+.meeting-schedule-comparison dl > div { display: grid; grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.meeting-schedule-comparison dd { margin: 0; overflow-wrap: anywhere; }
+.meeting-schedule-comparison p { margin: 8px 0; }
+@media (max-width: 640px) { .meeting-schedule-comparison dl > div { grid-template-columns: 1fr; gap: 4px; } }
+
+.meeting-schedule-comparison.is-different { border-left-color: #e2bb70; background: #fffbf2; }

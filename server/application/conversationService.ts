@@ -11,6 +11,7 @@ import type {
 } from '../../shared/domain/models.js'
 import type { ConversationScope } from '../../shared/domain/enums.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
+import { appendAuditLogToDraft } from './auditService.js'
 import { deriveApplicability } from './crossDocumentService.js'
 import type { PlatformRepository } from './ports.js'
 
@@ -131,7 +132,13 @@ function eligibleKnowledge(snapshot: PlatformSnapshot, scope: ConversationScope)
   const actor = snapshot.users.find((user) => user.id === snapshot.session.userId && user.role === snapshot.session.role)
   if (!actor) return []
   return snapshot.knowledge.filter((knowledge) => knowledge.status === 'ACTIVE'
-    && knowledge.aiEnabled && knowledge.indexStatus === 'INDEXED')
+    && knowledge.aiEnabled && knowledge.indexStatus === 'INDEXED'
+    && validEnterpriseSource(snapshot, knowledge))
+}
+
+function validEnterpriseSource(snapshot: PlatformSnapshot, knowledge: Knowledge) {
+  const source = snapshot.assets.find((asset) => asset.id === knowledge.primaryAssetId)
+  return Boolean(source && !source.isSessionAsset && source.processStatus === 'PROCESSED')
 }
 
 function eligibleSessionAssets(snapshot: PlatformSnapshot, conversation: Conversation, scope: ConversationScope) {
@@ -146,8 +153,7 @@ function eligibleSessionAssets(snapshot: PlatformSnapshot, conversation: Convers
 
 function evidenceForKnowledge(knowledge: Knowledge, snapshot: PlatformSnapshot): Evidence | undefined {
   const asset = snapshot.assets.find((item) => item.id === knowledge.primaryAssetId)
-    ?? (knowledge.aliasAssetIds ?? []).map((id) => snapshot.assets.find((item) => item.id === id)).find(Boolean)
-  if (!asset) return undefined
+  if (!asset || asset.isSessionAsset || asset.processStatus !== 'PROCESSED') return undefined
   return {
     title: knowledge.title,
     content: knowledge.content,
@@ -290,6 +296,10 @@ export class ConversationService {
         lastActiveAt: timestamp,
       }
       draft.conversations.push(conversation)
+      appendAuditLogToDraft(draft, {
+        action: 'conversation.create', resourceType: 'conversation', resourceId: conversation.id,
+        metadata: { scope: conversation.scope },
+      })
       return structuredClone(conversation)
     })
   }
@@ -348,6 +358,10 @@ export class ConversationService {
         citations: answer.citations, createdAt: now(),
       }
       draft.messages.push(userMessage, assistantMessage)
+      appendAuditLogToDraft(draft, {
+        action: 'conversation.message_add', resourceType: 'conversation', resourceId: id,
+        metadata: { answerStatus: answer.confidence, messageCount: target.messageCount },
+      })
       return {
         conversation: structuredClone({ ...target, title: displayConversationTitle(target.title) }),
         userMessage: structuredClone(userMessage),
@@ -364,6 +378,9 @@ export class ConversationService {
       assertConversationOwner(draft, target)
       target.status = 'ARCHIVED'
       target.lastActiveAt = now()
+      appendAuditLogToDraft(draft, {
+        action: 'conversation.archive', resourceType: 'conversation', resourceId: id,
+      })
       return structuredClone(target)
     })
     return { conversation }
@@ -376,6 +393,9 @@ export class ConversationService {
       assertConversationOwner(draft, target)
       target.status = 'ACTIVE'
       target.lastActiveAt = now()
+      appendAuditLogToDraft(draft, {
+        action: 'conversation.restore', resourceType: 'conversation', resourceId: id,
+      })
       return structuredClone(target)
     })
     return { conversation }

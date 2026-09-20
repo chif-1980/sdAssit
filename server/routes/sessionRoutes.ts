@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { PlatformSnapshot } from '../../shared/domain/models.js'
 import type { PlatformRepository } from '../application/ports.js'
 import { seedSnapshot } from '../seed.js'
+import { appendAuditLogToDraft } from '../application/auditService.js'
 
 const switchRoleBody = z.object({
   role: z.enum(['EMPLOYEE', 'OWNER', 'ADMIN']),
@@ -27,9 +28,19 @@ export function registerSessionRoutes(app: FastifyInstance, repository: Platform
     if (!parsed.success) throw invalidRequest()
 
     await repository.transact((draft) => {
+      const actorId = draft.session.userId
+      const actorRole = draft.session.role
       const user = draft.users.find((item) => item.role === parsed.data.role)
       if (!user) throw new Error('USER_NOT_FOUND')
       draft.session = { userId: user.id, role: user.role }
+      appendAuditLogToDraft(draft, {
+        actorId,
+        actorRole,
+        action: 'session.role_switch',
+        resourceType: 'session',
+        outcome: 'SUCCESS',
+        metadata: { targetRole: user.role, targetUserId: user.id },
+      })
     })
     return sessionPayload(await repository.read())
   })

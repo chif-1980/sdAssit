@@ -204,7 +204,11 @@ export interface MeetingFollowupTask {
   origin?: 'EXTRACTED' | 'MANUAL' | string
   aiProposal?: { title: string; content?: string; assigneeSuggestion?: string | null; dueDate?: string | null; dueDateSuggestion?: string | null; sourceRefs?: string[]; sourceMeetingId?: string }
   reviewStatus?: 'PENDING' | 'CONFIRMED' | 'IGNORED' | 'DELIVERY_FAILED' | string
-  delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; chatId?: string | null; error?: string | null; pendingUpdate?: boolean; syncStatus?: string; syncError?: string | null; lastSyncedAt?: string }
+  delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; chatId?: string | null; error?: string | null; pendingUpdate?: boolean; syncStatus?: string; syncError?: string | null; lastSyncedAt?: string; scheduleCheckedAt?: string; scheduleComparison?: {
+    status: 'MATCH' | 'DIFFERENT' | 'UNVERIFIED'; error?: string; differences?: string[];
+    localAssignees?: { id: string; name: string }[]; remoteAssignees?: { id: string; name: string }[];
+    localDueDate?: string | null; remoteDueDate?: string | null;
+  } }
 }
 
 export interface MeetingKnowledgeSuggestion {

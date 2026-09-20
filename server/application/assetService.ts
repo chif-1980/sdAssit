@@ -5,6 +5,7 @@ import { DeterministicAi, parseTextSections, summarizeSections } from '../adapte
 import { LocalRetrieval, normalizeKnowledgeText } from '../adapters/localRetrieval.js'
 import { compareCandidateAcrossDocuments, deriveApplicability } from './crossDocumentService.js'
 import { createBusinessId } from '../../shared/domain/ids.js'
+import { appendAuditLogToDraft } from './auditService.js'
 import type {
   Asset,
   AssetSection,
@@ -112,6 +113,10 @@ export class AssetService {
       }
       draft.assets.push(asset)
       draft.assetInputs[id] = { content: input.content, mimeType: input.mimeType }
+      appendAuditLogToDraft(draft, {
+        action: 'asset.create', resourceType: 'asset', resourceId: id,
+        metadata: { isSessionAsset: sessionAsset, businessType: asset.businessType },
+      })
       return structuredClone(asset)
     })
   }
@@ -176,6 +181,10 @@ export class AssetService {
         if (previousStatus === 'PROCESSED' && previousContentHash === contentHash) {
           asset.processStatus = previousStatus
           asset.updatedAt = previousUpdatedAt
+          appendAuditLogToDraft(draft, {
+            action: 'asset.process', resourceType: 'asset', resourceId: id,
+            metadata: { status: 'UNCHANGED' },
+          })
           return
         }
 
@@ -287,6 +296,10 @@ export class AssetService {
         asset.processStatus = 'PROCESSED'
         asset.processedAt = timestamp
         asset.updatedAt = now()
+        appendAuditLogToDraft(draft, {
+          action: 'asset.process', resourceType: 'asset', resourceId: id,
+          metadata: { status: asset.processStatus, candidateCount: extracted.length },
+        })
       })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'INTERNAL_ERROR'
@@ -306,6 +319,10 @@ export class AssetService {
         asset.processStatus = 'FAILED'
         asset.errorMessage = errorMessage
         asset.updatedAt = timestamp
+        appendAuditLogToDraft(draft, {
+          action: 'asset.process', resourceType: 'asset', resourceId: id,
+          outcome: 'FAILURE', metadata: { status: asset.processStatus, errorCode: errorMessage },
+        })
       })
     }
 
@@ -337,6 +354,10 @@ export class AssetService {
       for (const conversation of draft.conversations) {
         conversation.sessionAssetIds = conversation.sessionAssetIds.filter((assetId) => assetId !== asset.id)
       }
+      appendAuditLogToDraft(draft, {
+        action: 'asset.promote', resourceType: 'asset', resourceId: id,
+        metadata: { ownerId: asset.ownerId, businessType: asset.businessType },
+      })
     })
 
     return this.processAsset(id, true)

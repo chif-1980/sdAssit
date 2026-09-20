@@ -12,6 +12,7 @@ import type {
   Risk,
 } from '../../shared/domain/enums.js'
 import { comparisonForReview } from './crossDocumentService.js'
+import { appendAuditLog, appendAuditLogToDraft } from './auditService.js'
 import { allowedReviewActions, assertApplicabilityScope, assertReviewAction, validateKnowledgeAuthority } from '../../shared/domain/rules.js'
 import type { KnowledgeIndexer, PlatformRepository } from './ports.js'
 
@@ -78,6 +79,7 @@ function targetFor(snapshot: PlatformSnapshot, review: Review) {
 function sourceAssetFor(snapshot: PlatformSnapshot, candidate: Candidate) {
   const asset = snapshot.assets.find((item) => item.id === candidate.sourceAssetId)
   if (!asset) throw new Error('ASSET_NOT_FOUND')
+  if (asset.isSessionAsset || asset.processStatus !== 'PROCESSED') throw new Error('ASSET_NOT_PROCESSED')
   validateKnowledgeAuthority(candidate.authority, asset.authority)
   return asset
 }
@@ -441,7 +443,19 @@ export class ReviewService {
       }
     })
 
-    if (transition.shouldIndex && transition.knowledgeId) await this.indexKnowledge(transition.knowledgeId)
+    const indexed = transition.shouldIndex && transition.knowledgeId
+      ? await this.indexKnowledge(transition.knowledgeId)
+      : true
+    await appendAuditLog(this.repository, {
+      action: 'review.resolve', resourceType: 'review', resourceId: id,
+      outcome: indexed ? 'SUCCESS' : 'FAILURE',
+      metadata: {
+        decision: input.decision ?? null,
+        action: input.action,
+        knowledgeId: transition.knowledgeId ?? null,
+        indexStatus: indexed ? 'INDEXED' : 'FAILED',
+      },
+    })
     return this.resolutionResult(id, transition.candidateId, transition.knowledgeId)
   }
 
@@ -555,6 +569,10 @@ export class ReviewService {
         createdAt,
       }
       draft.reviews.push(created)
+      appendAuditLogToDraft(draft, {
+        action: 'knowledge.update_request', resourceType: 'knowledge', resourceId: id,
+        metadata: { intent },
+      })
       return structuredClone(created)
     })
   }
@@ -566,12 +584,16 @@ export class ReviewService {
       assertFactoryActor(draft, target.ownerId)
       target.indexStatus = 'PENDING'
       target.updatedAt = now()
+      appendAuditLogToDraft(draft, {
+        action: 'knowledge.reindex', resourceType: 'knowledge', resourceId: id,
+      })
     })
-    await this.indexKnowledge(id)
+    const indexed = await this.indexKnowledge(id)
+    if (!indexed) throw new Error('INDEX_FAILED')
     return this.knowledgeDetail(id)
   }
 
-  private async indexKnowledge(id: string) {
+  private async indexKnowledge(id: string): Promise<boolean> {
     const before = await this.repository.read()
     const knowledge = before.knowledge.find((item) => item.id === id)
     if (!knowledge) throw new Error('KNOWLEDGE_NOT_FOUND')
@@ -584,6 +606,7 @@ export class ReviewService {
           target.updatedAt = now()
         }
       })
+      return true
     } catch {
       await this.repository.transact((draft) => {
         const target = draft.knowledge.find((item) => item.id === id)
@@ -592,6 +615,7 @@ export class ReviewService {
           target.updatedAt = now()
         }
       })
+      return false
     }
   }
 

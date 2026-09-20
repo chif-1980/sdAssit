@@ -2,7 +2,9 @@ import Fastify from 'fastify'
 
 import { LocalIndexer } from './adapters/localIndexer.js'
 import type { KnowledgeIndexer, PlatformRepository } from './application/ports.js'
+import { appendAuditLog } from './application/auditService.js'
 import { ReviewService } from './application/reviewService.js'
+import { registerAuditRoutes } from './routes/auditRoutes.js'
 import { registerAssetRoutes } from './routes/assetRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
 import { registerKnowledgeRoutes } from './routes/knowledgeRoutes.js'
@@ -82,6 +84,7 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
   registerReviewRoutes(app, reviewService)
   registerKnowledgeRoutes(app, reviewService)
   registerSessionRoutes(app, repository)
+  registerAuditRoutes(app, repository)
 
   app.setNotFoundHandler((_request, reply) => {
     reply.status(404).send({
@@ -93,7 +96,7 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
     })
   })
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler(async (error, _request, reply) => {
     const { code, status } = classifyError(error)
     const value = error && typeof error === 'object' ? error as Record<string, unknown> : {}
     const message = typeof value.code === 'string' && typeof value.status === 'number'
@@ -101,6 +104,14 @@ export function buildApp(repository: PlatformRepository, indexer: KnowledgeIndex
       ? error.message
       : code
     const details = value.details && typeof value.details === 'object' ? value.details : {}
+
+    await appendAuditLog(repository, {
+      action: 'request.error',
+      resourceType: 'http',
+      resourceId: _request.url.split('?', 1)[0],
+      outcome: 'FAILURE',
+      metadata: { method: _request.method, errorCode: code, status },
+    }).catch(() => undefined)
 
     reply.status(status).send({
       error: {

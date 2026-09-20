@@ -411,6 +411,18 @@ const distributionTaskSchema = z.object({
   completedAt: isoSchema.optional(),
 }).strict()
 
+const auditLogSchema = z.object({
+  id: z.string(),
+  actorId: z.string(),
+  actorRole: z.enum(['EMPLOYEE', 'OWNER', 'ADMIN']),
+  action: z.string().min(1).max(120),
+  resourceType: z.string().min(1).max(80),
+  resourceId: z.string().optional(),
+  outcome: z.enum(['SUCCESS', 'FAILURE']),
+  metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+  createdAt: isoSchema,
+}).strict()
+
 export const platformSnapshotSchema = z.object({
   version: z.literal(1),
   session: z.object({
@@ -438,6 +450,7 @@ export const platformSnapshotSchema = z.object({
   distributionTasks: z.array(distributionTaskSchema).optional(),
   solutionDrafts: z.array(solutionDraftSchema).optional(),
   capabilityIndex: z.array(capabilityIndexSchema).optional(),
+  auditLogs: z.array(auditLogSchema).optional(),
 }).strict()
 
 export function parseSnapshot(input: unknown): PlatformSnapshot {

@@ -17,5 +17,6 @@ export function seedSnapshot(): PlatformSnapshot {
     messages: [],
     assetInputs: {},
     distributionTasks: [],
+    auditLogs: [],
   }
 }

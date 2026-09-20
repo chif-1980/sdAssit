@@ -444,6 +444,20 @@ export interface DistributionTask {
   completedAt?: string
 }
 
+export type AuditOutcome = 'SUCCESS' | 'FAILURE'
+
+export interface AuditLog {
+  id: string
+  actorId: string
+  actorRole: UserRole
+  action: string
+  resourceType: string
+  resourceId?: string
+  outcome: AuditOutcome
+  metadata?: Record<string, string | number | boolean | null>
+  createdAt: string
+}
+
 export interface PlatformSnapshot {
   version: 1
   session: { userId: string; role: UserRole }
@@ -460,4 +474,5 @@ export interface PlatformSnapshot {
   distributionTasks?: DistributionTask[]
   solutionDrafts?: SolutionDraft[]
   capabilityIndex?: CapabilityIndexEntry[]
+  auditLogs?: AuditLog[]
 }

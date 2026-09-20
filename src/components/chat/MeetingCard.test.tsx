@@ -407,3 +407,25 @@ describe('unified meeting tasks', () => {
     expect(fetcher.mock.calls.some(([, init]) => typeof init?.body === 'string' && /"(CONFIRM|RESEND)"/.test(init.body))).toBe(false)
   })
 })
+
+it('shows both schedule snapshots and marks a failed read as historical without writing', () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ users: [] })))
+  vi.stubGlobal('fetch', fetcher)
+  const task = { ...followupMeeting.result!.followup!.tasks[0], delivery: {
+    notification: 'SENT', feishuTaskId: 'remote-1', syncStatus: 'FAILED', syncError: '读取超时',
+    scheduleCheckedAt: '2026-09-20T01:00:00Z', scheduleComparison: {
+      status: 'DIFFERENT' as const, differences: ['assignee', 'dueDate'],
+      localAssignees: [{ id: 'local', name: '张工' }], remoteAssignees: [{ id: 'remote', name: '王工' }],
+      localDueDate: '2026-09-21', remoteDueDate: '2026-09-22',
+    },
+  } }
+  renderExpanded(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!, followup: { ...followupMeeting.result!.followup!, tasks: [task] } } }} />)
+  const panel = screen.getByRole('region', { name: '飞书安排核对' })
+  expect(panel).toHaveTextContent('上次核对记录 · 当前尚未重新核实')
+  expect(panel).toHaveTextContent('本地：张工')
+  expect(panel).toHaveTextContent('飞书：王工')
+  expect(panel).toHaveTextContent('本地：2026-09-21')
+  expect(panel).toHaveTextContent('飞书：2026-09-22')
+  expect(within(panel).getByRole('link')).toHaveAttribute('href', 'https://applink.feishu.cn/client/todo/detail?guid=remote-1')
+  expect(fetcher.mock.calls.every((args: unknown[]) => !(args[1] as RequestInit | undefined)?.method)).toBe(true)
+})

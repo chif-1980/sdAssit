@@ -404,7 +404,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
                   return next
                 })
               }}>
-                <span className="meeting-task-summary-title">{task.title || '未填写待办'}{task.aiProposal ? <small>AI 修改待核对</small> : null}</span>
+                <span className="meeting-task-summary-title">{task.title || '未填写待办'}{task.aiProposal ? <small>AI 修改待核对</small> : null}{task.delivery?.scheduleComparison?.status === 'DIFFERENT' ? <small>飞书安排待核对</small> : null}</span>
                 <span>{task.assignee?.displayName || '待分配'}</span>
                 <span>{dateValue || '期限待确认'}</span>
                 <span className={`meeting-task-summary-status status-${task.reviewStatus === 'CONFIRMED' ? task.status : task.reviewStatus || 'PENDING'}`}>
@@ -434,6 +434,19 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             {task.delivery?.notification === 'SENT' && task.delivery.messageId ? <small role="status">飞书已接收发给{task.assignee?.displayName || '负责人的'}通知{task.delivery.feishuTaskId ? '，待办已创建' : ''}。如未看到消息，请在飞书中查看应用机器人会话。{task.delivery.chatId ? <a className="meeting-feishu-chat-link" href={`https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(task.delivery.chatId)}`} target="_blank" rel="noreferrer">打开对应会话</a> : null}</small> : null}
             {task.delivery?.pendingUpdate ? <small role="status">本地修改已保存，待同步到飞书。</small> : null}
             {task.delivery?.syncError ? <small role="status">最近读取飞书状态失败：{task.delivery.syncError}</small> : null}
+            {task.delivery?.scheduleComparison ? <section className={`meeting-schedule-comparison${task.delivery.scheduleComparison.status !== 'MATCH' ? ' is-different' : ''}`} aria-label="飞书安排核对">
+              <strong>{task.delivery.pendingUpdate || task.delivery.syncStatus === 'FAILED' ? '上次核对记录 · 当前尚未重新核实' : task.delivery.scheduleComparison.status === 'DIFFERENT' ? '安排有差异' : task.delivery.scheduleComparison.status === 'MATCH' ? '负责人、期限一致' : '安排未核实'}</strong>
+              <small>核对时间：{task.delivery.scheduleCheckedAt ? new Date(task.delivery.scheduleCheckedAt).toLocaleString('zh-CN', { hour12: false }) : '未提供'}</small>
+              {task.delivery.scheduleComparison.error ? <p>{task.delivery.scheduleComparison.error}</p> : null}
+              {task.delivery.scheduleComparison.status === 'DIFFERENT' ? <>
+                <dl>
+                  {task.delivery.scheduleComparison.differences?.includes('assignee') ? <div><dt>负责人</dt><dd>本地：{task.delivery.scheduleComparison.localAssignees?.map(member => member.name).join('、') || '未分配'}</dd><dd>飞书：{task.delivery.scheduleComparison.remoteAssignees?.map(member => member.name).join('、') || '未分配'}</dd></div> : null}
+                  {task.delivery.scheduleComparison.differences?.includes('dueDate') ? <div><dt>截止日期</dt><dd>本地：{task.delivery.scheduleComparison.localDueDate || '未设期限'}</dd><dd>飞书：{task.delivery.scheduleComparison.remoteDueDate || '未设期限'}</dd></div> : null}
+                </dl>
+                <p>仅提示差异，未改动双方安排。请核对原任务后决定如何调整。</p>
+              </> : null}
+              {task.delivery.feishuTaskId ? <a href={`https://applink.feishu.cn/client/todo/detail?guid=${encodeURIComponent(task.delivery.feishuTaskId)}`} target="_blank" rel="noreferrer">查看飞书原任务 ↗</a> : null}
+            </section> : null}
             {task.delivery?.error ? <p className="meeting-followup-delivery-error" role="alert">{task.delivery.error}</p> : null}
             {task.aiProposal ? <aside className="meeting-task-proposal" aria-label="AI 待办修改建议">
               <strong>AI 修改建议 · 待核对</strong>

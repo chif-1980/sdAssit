@@ -8,6 +8,7 @@ const prefixes = {
   relation: 'REL',
   conversation: 'CVS',
   distribution: 'DST',
+  audit: 'AUD',
 } as const
 
 export type IdKind = keyof typeof prefixes
