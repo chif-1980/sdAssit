@@ -35,7 +35,16 @@ export function messagePairAnchorId(pairId: string) {
 }
 
 export function truncatePreview(value: string | undefined, length: number) {
-  const normalized = value?.replace(/\s+/gu, ' ').trim() ?? ''
+  // Preview text has no Markdown renderer; strip presentation syntax before
+  // truncation so the cutoff cannot leave half of a bold marker or link.
+  const normalized = (value ?? '')
+    .replace(/^\s*(`{3,}|~{3,}).*$/gmu, '')
+    .replace(/!?\[([^\]]*)\]\([^\n)]*\)/gu, '$1')
+    .replace(/\[(?:\d+|S\d+-P\d+|H\d+)\]/gu, '')
+    .replace(/^\s*(?:#{1,6}\s+|>\s*|[-+*]\s+|\d+[.)]\s+)/gmu, '')
+    .replace(/\*\*|__|~~|`/gu, '')
+    .replace(/\*([^*\n]+)\*/gu, '$1')
+    .replace(/\s+/gu, ' ').trim()
   if (normalized.length <= length) return normalized
   return `${normalized.slice(0, Math.max(1, length - 1))}…`
 }

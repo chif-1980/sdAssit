@@ -12,6 +12,11 @@
 - [企业知识助手使用手册](https://chif-1980.github.io/sdkb/guide/knowledge-assistant.html)
 - [善达知枢使用手册](https://chif-1980.github.io/sdkb/guide/zhishu-manual.html)
 
+## 0.6.5（2026-09-20）
+
+- 优化对话导航预览：按圆点位置定位并限制在可见区域内，避免顶部和底部裁切。
+- 问题、回答摘要分层展示，清理 Markdown 标记、限制预览行数，并支持键盘聚焦和 Esc 收起。
+
 ## 0.6.4（2026-09-20）
 
 - 修复打开历史会议会话时的白屏：兼容未记录跟进负责人的会议数据，缺失姓名显示“未提供”。

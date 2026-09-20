@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { ProductMessage } from '../../../shared/api/product.js'
 import { groupMessagePairs, messagePairAnchorId, truncatePreview } from './messagePairs.js'
@@ -23,7 +24,9 @@ export function ConversationOutline({
   const activeMarkerRef = useRef<HTMLButtonElement | null>(null)
   const markerRefs = useRef(new Map<string, HTMLButtonElement>())
   const outlineScrollRef = useRef<HTMLDivElement>(null)
-  const [hoveredPreviewTop, setHoveredPreviewTop] = useState<number>()
+  const previewRef = useRef<HTMLDivElement>(null)
+  const previewId = useId()
+  const [previewPosition, setPreviewPosition] = useState<{ top: number; left: number }>()
 
   const effectiveActivePairId = pairs.some((pair) => pair.id === activePairId)
     ? activePairId
@@ -34,29 +37,37 @@ export function ConversationOutline({
     if (typeof marker?.scrollIntoView === 'function') marker.scrollIntoView({ block: 'nearest' })
   }, [effectiveActivePairId])
 
+  useLayoutEffect(() => {
+    if (!hoveredPairId) return
+    function positionPreview() {
+      const marker = markerRefs.current.get(hoveredPairId!)
+      const preview = previewRef.current
+      const rail = outlineScrollRef.current
+      if (!marker || !preview || !rail) return
+      const anchor = marker.getBoundingClientRect()
+      const bounds = rail.getBoundingClientRect()
+      const minTop = Math.max(12, Math.min(bounds.top, window.innerHeight - preview.offsetHeight - 12))
+      const maxTop = Math.max(minTop, Math.min(window.innerHeight - 12, bounds.bottom) - preview.offsetHeight)
+      setPreviewPosition({
+        top: Math.min(maxTop, Math.max(minTop, anchor.top + anchor.height / 2 - preview.offsetHeight / 2)),
+        left: Math.max(12, Math.min(anchor.right + 10, window.innerWidth - preview.offsetWidth - 12)),
+      })
+    }
+    positionPreview()
+    window.addEventListener('resize', positionPreview)
+    window.addEventListener('scroll', positionPreview, true)
+    return () => {
+      window.removeEventListener('resize', positionPreview)
+      window.removeEventListener('scroll', positionPreview, true)
+    }
+  }, [hoveredPairId, pairs])
+
   if (pairs.length < MINIMUM_PAIRS) return null
 
   function handleHover(pairId?: string) {
     setHoveredPairId(pairId)
     onHighlight(pairId)
-    if (!pairId) {
-      setHoveredPreviewTop(undefined)
-      return
-    }
-    const marker = markerRefs.current.get(pairId)
-    const scrollContainer = outlineScrollRef.current
-    if (marker && scrollContainer) {
-      setHoveredPreviewTop(marker.offsetTop - scrollContainer.scrollTop + marker.offsetHeight / 2)
-    }
-  }
-
-  function handleOutlineScroll() {
-    if (!hoveredPairId) return
-    const marker = markerRefs.current.get(hoveredPairId)
-    const scrollContainer = outlineScrollRef.current
-    if (marker && scrollContainer) {
-      setHoveredPreviewTop(marker.offsetTop - scrollContainer.scrollTop + marker.offsetHeight / 2)
-    }
+    if (!pairId) setPreviewPosition(undefined)
   }
 
   const activePairIndex = effectiveActivePairId
@@ -70,13 +81,12 @@ export function ConversationOutline({
       <div className="conversation-outline-count" aria-live="polite">
         {activePairIndex >= 0 ? `第 ${activePairIndex + 1} / ${pairs.length} 组问答` : `共 ${pairs.length} 组问答`}
       </div>
-      <div ref={outlineScrollRef} className="conversation-outline-scroll" onScroll={handleOutlineScroll}>
+      <div ref={outlineScrollRef} className="conversation-outline-scroll" onScroll={() => handleHover(undefined)}>
         <div className="conversation-outline-track">
           {pairs.map((pair, index) => {
             const isActive = pair.id === effectiveActivePairId
             const isHovered = pair.id === hoveredPairId
             const question = truncatePreview(pair.user?.content, 72)
-            const answer = truncatePreview(pair.assistant?.content, 92)
             return (
               <div
                 className={`conversation-outline-marker-wrap${isActive ? ' is-active' : ''}${isHovered ? ' is-hovered' : ''}`}
@@ -95,6 +105,10 @@ export function ConversationOutline({
                   aria-label={`定位到第 ${index + 1} 组问答${question ? `：${question}` : ''}`}
                   aria-controls={messagePairAnchorId(pair.id)}
                   aria-current={isActive ? 'location' : undefined}
+                  aria-describedby={isHovered ? previewId : undefined}
+                  onFocus={() => handleHover(pair.id)}
+                  onBlur={() => handleHover(undefined)}
+                  onKeyDown={event => { if (event.key === 'Escape') handleHover(undefined) }}
                   onClick={() => onActivate(pair.id)}
                 >
                   <span aria-hidden="true" />
@@ -104,16 +118,18 @@ export function ConversationOutline({
           })}
         </div>
       </div>
-      {hoveredPair ? (
+      {hoveredPair ? createPortal(
         <div
-          className={`conversation-outline-preview${hoveredPairIndex === 0 ? ' is-first' : ''}${hoveredPairIndex === pairs.length - 1 ? ' is-last' : ''}`}
+          ref={previewRef}
+          id={previewId}
+          className="conversation-outline-preview"
           role="tooltip"
-          style={hoveredPreviewTop === undefined ? undefined : { top: hoveredPreviewTop }}
+          style={{ ...previewPosition, visibility: previewPosition ? 'visible' : 'hidden' }}
         >
-          <span className="conversation-outline-index">第 {hoveredPairIndex + 1} 组问答</span>
-          {hoveredPair.user?.content ? <p><b>问</b>{truncatePreview(hoveredPair.user.content, 72)}</p> : null}
-          {hoveredPair.assistant?.content ? <p><b>答</b>{truncatePreview(hoveredPair.assistant.content, 92)}</p> : <p className="conversation-outline-empty">回答生成中</p>}
-        </div>
+          <div className="conversation-outline-preview-heading"><span className="conversation-outline-index">第 {hoveredPairIndex + 1} 组问答</span><span>点击圆点定位</span></div>
+          {hoveredPair.user?.content ? <p className="conversation-outline-question"><b>问</b><span>{truncatePreview(hoveredPair.user.content, 100)}</span></p> : null}
+          {hoveredPair.assistant?.content ? <p className="conversation-outline-answer"><b>答</b><span>{truncatePreview(hoveredPair.assistant.content, 160)}</span></p> : <p className="conversation-outline-empty">回答生成中</p>}
+        </div>, document.body,
       ) : null}
     </aside>
   )
