@@ -2245,3 +2245,33 @@ it('clears rejected previews before retry and shows validation failure instead o
   expect(screen.queryByText('重新生成预览')).not.toBeInTheDocument()
   expect(screen.queryByText('暂无足够可靠资料')).not.toBeInTheDocument()
 })
+
+
+it('exits the selected meeting revision without losing user requirements or changing the saved minutes', async () => {
+  const user = userEvent.setup()
+  const meetingMessage: ProductMessage = { ...priorMessage, meeting: {
+    id: 'MT-edit', conversationId: 'CVS-A', state: 'completed', version: 1,
+    progress: { message: '完成' }, updatedAt: '2026-09-20T01:00:00Z', sources: [],
+    result: { title: '项目复盘会议', meetingType: '内部管理', body: '已保存的纪要正文' },
+  } }
+  const fetcher = mockFetch(path => {
+    if (path === '/api/chat/conversations') return jsonResponse({ conversations: [conversationA] })
+    if (path === '/api/chat/conversations/CVS-A') return jsonResponse(detail(conversationA, [meetingMessage]))
+    if (path.endsWith('/active-run')) return jsonResponse({ run: null })
+    if (path === '/api/chat/meeting-activity') return jsonResponse({ tasks: [] })
+    if (path.startsWith('/api/chat/meetings')) return jsonResponse({ meetings: [], items: [], total: 0 })
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  render(<ChatPage />)
+  await user.click(await screen.findByRole('button', { name: 'AI 帮我修改' }))
+  expect(screen.getByRole('region', { name: 'AI 修改纪要' })).toHaveTextContent('项目复盘会议')
+  await user.click(screen.getByRole('button', { name: '退出修改' }))
+  expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('')
+  await user.click(screen.getByRole('button', { name: 'AI 帮我修改' }))
+  await user.type(screen.getByRole('textbox', { name: '问题' }), '保留关键决定')
+  await user.click(screen.getByRole('button', { name: '退出修改' }))
+  expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('保留关键决定')
+  expect(screen.queryByRole('region', { name: 'AI 修改纪要' })).not.toBeInTheDocument()
+  expect(screen.getByText('已保存的纪要正文')).toBeInTheDocument()
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET')).toHaveLength(0)
+})

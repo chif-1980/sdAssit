@@ -2,8 +2,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MeetingDatePicker } from './MeetingDatePicker'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 it('selects leap-day, navigates months and clears a deadline without inventing one', () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-20T12:00:00'))
   const change = vi.fn()
   render(<MeetingDatePicker value="2028-02-01" onChange={change} />)
   fireEvent.click(screen.getByRole('button', { name: '期限：2028-02-01' }))
@@ -18,4 +20,21 @@ it('selects leap-day, navigates months and clears a deadline without inventing o
   fireEvent.click(screen.getByRole('button', { name: '期限：2028-02-01' }))
   fireEvent.click(screen.getByRole('button', { name: '清空日期' }))
   expect(change).toHaveBeenLastCalledWith(null)
+})
+
+it('disables past dates, keeps today selectable and preserves historical values', () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-20T00:01:00'))
+  const change = vi.fn()
+  render(<MeetingDatePicker value="2026-09-19" onChange={change} />)
+  fireEvent.click(screen.getByRole('button', { name: '期限：2026-09-19' }))
+  expect(screen.getByRole('button', { name: '2026-09-19' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: '2026-09-19' }))
+  expect(change).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: '2026-09-20' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '2026-09-21' })).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', { name: '上个月' }))
+  expect(screen.getByRole('button', { name: '2026-08-31' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: '今天' }))
+  expect(change).toHaveBeenLastCalledWith('2026-09-20')
 })

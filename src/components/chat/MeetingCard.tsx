@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { Check, CheckCircle2, CircleDot, Copy, Download, PencilLine, Sparkles } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { MeetingDepartment, MeetingDirectoryUser, MeetingFollowup, MeetingRecord } from '../../../shared/api/product'
@@ -6,6 +7,8 @@ import { api } from '../../api/client'
 import './MeetingCard.css'
 import { MeetingMemberPicker } from './MeetingMemberPicker'
 import { MeetingDatePicker } from './MeetingDatePicker'
+import { editableMeetingBody, splitMeetingBody } from './meetingContent'
+import { meetingTaskDate } from './meetingTaskDate'
 
 export type MeetingAction = (action: 'revise' | 'retry', id: string) => void
 
@@ -72,11 +75,17 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
 }) {
   const [draftToRestore, setDraftToRestore] = useState(() => savedDraft(meeting.id))
   const [record, setRecord] = useState(meeting)
-  const [body, setBody] = useState(draftToRestore?.body ?? meeting.result?.body ?? '')
+  const [body, setBody] = useState(draftToRestore?.body ?? editableMeetingBody(meeting.result))
   const [title, setTitle] = useState(draftToRestore?.title ?? meeting.result?.title ?? '')
   const [meetingType, setMeetingType] = useState(draftToRestore?.meetingType ?? meeting.result?.meetingType ?? '其他')
   const [editing, setEditing] = useState(Boolean(draftToRestore))
   const [saveStatus, setSaveStatus] = useState('已保存')
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => {
+    setCopied(false)
+    return () => clearTimeout(copyTimer.current)
+  }, [meeting.id, meeting.version])
   const [error, setError] = useState('')
   const [evidence, setEvidence] = useState<string>()
   const [exporting, setExporting] = useState(false)
@@ -90,6 +99,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const [directoryAttempt, setDirectoryAttempt] = useState(0)
   const [followupSaving, setFollowupSaving] = useState(false)
   const [followupError, setFollowupError] = useState('')
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(() => new Set())
   const [editingFollowupTasks, setEditingFollowupTasks] = useState<Set<string>>(() => new Set())
   const [followupTaskSnapshots, setFollowupTaskSnapshots] = useState<Record<string, MeetingFollowup['tasks'][number]>>({})
   const recordRef = useRef(record)
@@ -101,7 +111,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   useEffect(() => {
     const previous = recordRef.current
     const hasLocalEdits = previous.result && (
-      editRef.current.body !== previous.result.body || editRef.current.title !== previous.result.title
+      editRef.current.body !== editableMeetingBody(previous.result) || editRef.current.title !== previous.result.title
       || editRef.current.meetingType !== previous.result.meetingType
     )
     if (previous.id === meeting.id && hasLocalEdits && previous.version !== meeting.version) {
@@ -114,7 +124,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       if (draftToRestore.baseVersion !== meeting.version) setError('服务器版本已变化，已保留本地编辑。请复制修改内容，核对最新版本后再编辑。')
       return
     }
-    setBody(meeting.result?.body ?? '')
+    setBody(editableMeetingBody(meeting.result))
     setTitle(meeting.result?.title ?? '')
     setMeetingType(meeting.result?.meetingType ?? '其他')
     setFollowup(meeting.result?.followup)
@@ -132,7 +142,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     return () => { active = false }
   }, [record.id, record.state, directoryAttempt])
 
-  const dirty = Boolean(record.result && (body !== record.result.body || title !== record.result.title || meetingType !== record.result.meetingType))
+  const dirty = Boolean(record.result && (body !== editableMeetingBody(record.result) || title !== record.result.title || meetingType !== record.result.meetingType))
   useEffect(() => {
     try {
       if (dirty) sessionStorage.setItem(`meeting-edit:${meeting.id}`, JSON.stringify({ body, title, meetingType, baseVersion: draftToRestore?.baseVersion ?? record.version }))
@@ -190,13 +200,23 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
       const latest = response.meeting
       setDraftToRestore(undefined)
       setRecord(latest)
-      setBody(latest.result?.body ?? '')
+      setBody(editableMeetingBody(latest.result))
       setTitle(latest.result?.title ?? '')
       setMeetingType(latest.result?.meetingType ?? '其他')
       setError('')
       setSaveStatus('已保存')
       sessionStorage.removeItem(`meeting-edit:${meeting.id}`)
     } catch (failure) { setError(failure instanceof Error ? failure.message : '读取最新版本失败') }
+  }
+
+  async function copyMinutes() {
+    try {
+      const saved = await api<{ body: string }>(`/api/chat/meetings/${record.id}/markdown?version=${record.version}`)
+      await navigator.clipboard.writeText(saved.body)
+      clearTimeout(copyTimer.current)
+      setCopied(true)
+      copyTimer.current = setTimeout(() => setCopied(false), 3000)
+    } catch (failure) { setError(failure instanceof Error ? failure.message : '复制失败，请重试。') }
   }
 
   async function exportWord() {
@@ -256,6 +276,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
 
   function addFollowupTask() {
     const id = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setExpandedTasks(current => new Set(current).add(id))
     setFollowup(current => current ? {
       ...current,
       tasks: [...current.tasks, {
@@ -267,7 +288,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     setFollowupError('')
   }
 
-  async function saveFollowup(action: 'SAVE' | 'CONFIRM' | 'RESEND' | 'IGNORE' = 'SAVE', taskId?: string) {
+  async function saveFollowup(action: 'SAVE' | 'CONFIRM' | 'RESEND' | 'IGNORE' | 'APPLY_AI' | 'DISMISS_AI' = 'SAVE', taskId?: string) {
     if (!followup || dirty || followupSaving) return
     const target = taskId ? followup.tasks.find(task => task.id === taskId) : undefined
     if ((action === 'CONFIRM' || action === 'RESEND' || action === 'IGNORE') && !target) return
@@ -290,7 +311,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             content: task.content ?? '',
             assigneeUserId: task.assignee?.userId ?? null,
             assigneeFeishuUserId: task.assignee?.feishuUserId ?? null,
-            dueDate: task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
+            dueDate: meetingTaskDate(task) || null,
             status: task.status,
           })),
         }),
@@ -316,6 +337,7 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
   const markdown = body.replace(/\[(S\d+-P\d+|H\d+)\]/gu, '[$1](#meeting-evidence-$1)')
   const formalEvidenceById = new Map((record.result?.formalEvidence ?? []).map(item => [item.evidence_id, item]))
   const blocked = disabled || dirty || saveStatus === '保存中…'
+  const [beforeTasks, afterTasks] = followup ? splitMeetingBody(markdown) : [markdown, '']
   return <section className="meeting-card" aria-label="会议纪要" data-meeting-id={meeting.id}>
     <header><strong>{record.result?.title || '会议纪要'}</strong><span>{record.result ? `版本 ${record.version}` : record.progress.message}</span></header>
     <p className="meeting-status">{record.progress.message} · 最近更新 {new Date(record.updatedAt).toLocaleString('zh-CN')}</p>
@@ -326,14 +348,30 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
     </div> : null}
     {record.state === 'cancelled' ? <p>任务已取消，之前的成功结果保留在会话中。</p> : null}
     {record.result ? <>
-      <div className="meeting-actions">
-        <button disabled={disabled || (editing && dirty)} onClick={() => setEditing(!editing)}>{editing ? '结束编辑' : '编辑正文'}</button>
-        <button disabled={blocked} onClick={() => onAction?.('revise', record.id)}>继续修改</button>
-        <button onClick={() => void navigator.clipboard.writeText(body).then(() => setSaveStatus('已复制')).catch(() => setError('复制失败，请手动选择正文复制。'))}>复制</button>
-        <button disabled={blocked || exporting} onClick={() => void exportWord()}>{exporting ? '导出中…' : '导出 Word'}</button>
-        <span role="status">{dirty ? saveStatus : saveStatus === '已复制' ? '已复制' : '已保存'}</span>
+      <div className="meeting-actions" role="group" aria-label="纪要操作">
+        <div className="meeting-action-group">
+          <button type="button" className={`meeting-action-edit${editing ? ' is-active' : ''}`} aria-pressed={editing} disabled={disabled || (editing && dirty)} title="直接修改标题、会议类型和正文，修改后自动保存" onClick={() => setEditing(!editing)}>
+            {editing ? <Check size={15} aria-hidden="true" /> : <PencilLine size={15} aria-hidden="true" />}{editing ? '完成编辑' : '手动编辑'}
+          </button>
+          <button type="button" className="meeting-action-ai" disabled={blocked} title="在下方输入修改要求，发送后由 AI 修改纪要" onClick={() => onAction?.('revise', record.id)}>
+            <Sparkles size={15} aria-hidden="true" />AI 帮我修改
+          </button>
+        </div>
+        <div className="meeting-action-group meeting-action-utilities">
+          <button type="button" className={`meeting-action-copy${copied ? ' is-copied' : ''}`} aria-live="polite" disabled={blocked || followupDirty || followupSaving} onClick={() => void copyMinutes()}>
+            {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}{copied ? '已复制' : '复制'}
+          </button>
+          <button type="button" disabled={blocked || followupDirty || followupSaving || exporting} onClick={() => void exportWord()}><Download size={15} aria-hidden="true" />{exporting ? '导出中…' : '导出 Word'}</button>
+        </div>
+        <span className={`meeting-save-status${dirty ? ' is-pending' : ''}`} role="status">
+          {dirty ? <CircleDot size={14} aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}
+          {dirty ? saveStatus : '已保存'}
+        </span>
       </div>
+      <p className="meeting-edit-help">手动编辑会自动保存；AI 修改需在下方输入要求后发送。</p>
       {editing ? <div className="meeting-editor">
+        {followup ? <p className="meeting-edit-help">待办事项请在下方列表中修改，正文编辑不会修改待办。</p> : null}
+        {dirty ? <button type="button" onClick={() => void navigator.clipboard.writeText(body).then(() => setSaveStatus('草稿已复制')).catch(() => setError('复制草稿失败，请手动选择正文复制。'))}>复制未保存正文</button> : null}
         <label>会议标题<input value={title} maxLength={512} onChange={e => setTitle(e.target.value)} /></label>
         <label>会议类型<select value={meetingType} onChange={e => setMeetingType(e.target.value)}>
           {[...new Set(['客户交流', '内部管理', '混合', '其他', meetingType])].map(type => <option key={type}>{type}</option>)}
@@ -343,37 +381,38 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
         a: ({ href, children }) => href?.startsWith('#meeting-evidence-')
           ? <button className="meeting-reference" onClick={() => setEvidence(href.slice(18))}>{children}</button>
           : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-      }}>{markdown}</ReactMarkdown>}
-      {selected ? <aside className="meeting-evidence" aria-label="原文依据">
-        <button onClick={() => setEvidence(undefined)}>关闭原文</button>
-        <strong>{selected.id} · {selected.sourceTitle}</strong>
-        <p>发言人：{selected.speaker} · {timeLabel(selected.startMs) || `段落 ${selected.id.split('-')[1]}`}</p>
-        <p>{selected.text}</p>
-      </aside> : null}
-      {selectedHistory ? <aside className="meeting-evidence" aria-label="历史会议依据">
-        <button onClick={() => setEvidence(undefined)}>关闭原文</button>
-        <strong>{selectedHistory.label} · {selectedHistory.title}（历史会议）</strong>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedHistory.body}</ReactMarkdown>
-      </aside> : null}
-      {record.result.selectedHistory?.length ? <details><summary>本次明确选用的历史会议</summary>{record.result.selectedHistory.map(item => <article key={item.id}>
-        <strong>{item.label ? `${item.label} · ` : ''}{item.title}</strong><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.body}</ReactMarkdown>
-      </article>)}</details> : null}
-      {record.result.formalEvidence?.length ? <details><summary>企业正式资料依据</summary>{record.result.formalEvidence.map(e => <article key={e.evidence_id}>
-        <strong>[{e.evidence_id}] {e.title}</strong><p>{e.excerpt}</p>
-        {e.source_url ? <a href={e.source_url} target="_blank" rel="noreferrer">打开正式资料</a> : null}
-      </article>)}</details> : null}
-      {followup ? <details className="meeting-followup" open>
-        <summary>会议跟进 · 负责人：{followup.coordinator.displayName}</summary>
-        <p className="meeting-followup-note">你是本次会议跟进负责人。任务负责人可从飞书企业通讯录中选择；知识更新建议需由知识维护人员核对。</p>
+      }}>{beforeTasks}</ReactMarkdown>}
+      {followup ? <section className="meeting-followup" aria-label="待办事项">
+        <p className="meeting-followup-note">跟进负责人：{followup.coordinator.displayName}。在此核对、修改和确认待办，确认后才会发送飞书。</p>
         <div className="meeting-followup-toolbar">
-          <strong>待办事项</strong>
+          <h2>待办事项</h2>
           <button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button>
         </div>
         {followup.tasks.length ? <div className="meeting-followup-tasks">
           {followup.tasks.map(task => {
+            const dateValue = meetingTaskDate(task)
             const taskEditing = editingFollowupTasks.has(task.id)
             const taskLocked = (task.reviewStatus === 'CONFIRMED' || task.reviewStatus === 'IGNORED') && !taskEditing
             return <article className={`meeting-followup-task meeting-followup-task-${task.reviewStatus || 'PENDING'}`} key={task.id}>
+            <details className="meeting-task-detail" open={expandedTasks.has(task.id)}>
+              <summary onClick={event => {
+                event.preventDefault()
+                setExpandedTasks(current => {
+                  const next = new Set(current)
+                  if (next.has(task.id)) next.delete(task.id)
+                  else next.add(task.id)
+                  return next
+                })
+              }}>
+                <span className="meeting-task-summary-title">{task.title || '未填写待办'}{task.aiProposal ? <small>AI 修改待核对</small> : null}</span>
+                <span>{task.assignee?.displayName || '待分配'}</span>
+                <span>{dateValue || '期限待确认'}</span>
+                <span className={`meeting-task-summary-status status-${task.reviewStatus === 'CONFIRMED' ? task.status : task.reviewStatus || 'PENDING'}`}>
+                  {task.reviewStatus === 'IGNORED' ? '已忽略' : task.reviewStatus !== 'CONFIRMED' ? '待确认' : task.status === 'DONE' ? '已完成' : task.status === 'IN_PROGRESS' ? '进行中' : '待开始'}
+                </span>
+                <span className="meeting-task-expand">{expandedTasks.has(task.id) ? '收起 ∧' : '查看 / 修改 ∨'}</span>
+              </summary>
+              <div className="meeting-task-fields">
             <div className="meeting-followup-task-heading">
               <label>待办标题<input aria-label={`待办标题：${task.title || '未填写'}`} value={task.title} maxLength={1000} placeholder="填写待办事项" onChange={event => updateFollowupTask(task.id, { title: event.target.value })} disabled={disabled || followupSaving || taskLocked} /></label>
               <label className="meeting-followup-content-field">待办内容（可选）<textarea aria-label={`待办内容：${task.title || '未填写'}`} value={task.content ?? ''} maxLength={5000} placeholder="补充执行要求、交付物或上下文" onChange={event => updateFollowupTask(task.id, { content: event.target.value })} disabled={disabled || followupSaving || taskLocked} /></label>
@@ -384,9 +423,9 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             </div>
             {task.assigneeSuggestion ? <small>模型识别的负责人：{task.assigneeSuggestion}（请核对）</small> : null}
             <div className="meeting-field"><span>负责人</span><MeetingMemberPicker value={task.assignee} users={directory} departments={departments} loading={directoryLoading} error={directoryError} notice={directoryNotice} disabled={disabled || followupSaving || taskLocked} onRetry={() => setDirectoryAttempt(n => n + 1)} onChange={assignee => updateFollowupTask(task.id, { assignee })} /></div>
-            <div className="meeting-field"><span>期限</span><MeetingDatePicker value={task.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : ''} onChange={dueDate => updateFollowupTask(task.id, { dueDate })} disabled={disabled || followupSaving || taskLocked} />
-              {!task.dueDate ? <span>待确认，可稍后补充</span> : null}
-              {task.dueDateSuggestion || (task.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate)) ? <span>原文期限：{task.dueDateSuggestion || task.dueDate}（请选择具体日期）</span> : null}
+            <div className="meeting-field"><span>期限</span><MeetingDatePicker value={dateValue} onChange={dueDate => updateFollowupTask(task.id, { dueDate, dueDateEdited: true })} disabled={disabled || followupSaving || taskLocked} />
+              {!dateValue ? <span>待确认，可稍后补充</span> : null}
+              {task.dueDateSuggestion || (task.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate)) ? <span>原文期限：{task.dueDateSuggestion || task.dueDate}{dateValue ? '（请核对）' : '（请选择具体日期）'}</span> : null}
             </div>
             <label>状态<select value={task.status} onChange={event => updateFollowupTask(task.id, { status: event.target.value })} disabled={disabled || followupSaving || taskLocked}>
               <option value="OPEN">待开始</option><option value="IN_PROGRESS">进行中</option><option value="DONE">已完成</option>
@@ -396,6 +435,15 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             {task.delivery?.pendingUpdate ? <small role="status">本地修改已保存，待同步到飞书。</small> : null}
             {task.delivery?.syncError ? <small role="status">最近读取飞书状态失败：{task.delivery.syncError}</small> : null}
             {task.delivery?.error ? <p className="meeting-followup-delivery-error" role="alert">{task.delivery.error}</p> : null}
+            {task.aiProposal ? <aside className="meeting-task-proposal" aria-label="AI 待办修改建议">
+              <strong>AI 修改建议 · 待核对</strong>
+              <p>{task.aiProposal.title}{task.aiProposal.content ? `：${task.aiProposal.content}` : ''}</p>
+              <p>建议负责人：{task.aiProposal.assigneeSuggestion || '待确认'} · 期限：{task.aiProposal.dueDate || task.aiProposal.dueDateSuggestion || '待确认'}</p>
+              {task.aiProposal.sourceRefs?.length ? <TaskEvidence sourceRefs={task.aiProposal.sourceRefs} sources={record.sources} sourceMeetingId={task.aiProposal.sourceMeetingId !== record.id ? task.aiProposal.sourceMeetingId : undefined} /> : null}
+              <small>采用后请核对负责人；已发送的任务仍需点击“同步修改到飞书”。</small>
+              <div><button type="button" disabled={blocked || followupSaving || followupDirty} onClick={() => void saveFollowup('APPLY_AI', task.id)}>采用修改</button>
+              <button type="button" disabled={blocked || followupSaving || followupDirty} onClick={() => void saveFollowup('DISMISS_AI', task.id)}>保留原待办</button></div>
+            </aside> : null}
             <div className="meeting-followup-task-actions">
               {taskEditing ? <>
                 <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving} onClick={() => cancelFollowupTaskEdit(task.id)}>取消修改</button>
@@ -421,6 +469,8 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
               {!taskEditing && !taskLocked ? <button type="button" className="meeting-secondary-action" disabled={blocked || followupSaving || !task.title.trim() || task.reviewStatus === 'IGNORED' || task.reviewStatus === 'CONFIRMED'} onClick={() => void saveFollowup('IGNORE', task.id)}>忽略</button> : null}
             </div>
             {taskEditing ? <small className="meeting-followup-edit-hint">修改保存后，请同步到飞书；已发送待办会更新原任务。</small> : null}
+              </div>
+            </details>
           </article>
           })}
           <div className="meeting-followup-savebar">
@@ -428,9 +478,32 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             {followupDirty ? <small role="status">跟进修改尚未保存</small> : null}
           </div>
           {followupError ? <div role="alert">{followupError}</div> : null}
-        </div> : <p>会议中没有识别到明确行动项。后续事项可通过继续修改补充。</p>}
-        {!followup.tasks.length ? <div className="meeting-followup-empty-actions"><button type="button" disabled={blocked || followupSaving} onClick={addFollowupTask}>＋新增待办</button></div> : null}
-        {followup.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
+        </div> : <p>会议中没有识别到明确行动项，可点击“＋新增待办”补充。</p>}
+      </section> : null}
+      {!editing && afterTasks ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+        a: ({ href, children }) => href?.startsWith('#meeting-evidence-')
+          ? <button className="meeting-reference" onClick={() => setEvidence(href.slice(18))}>{children}</button>
+          : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+      }}>{afterTasks}</ReactMarkdown> : null}
+      {selected ? <aside className="meeting-evidence" aria-label="原文依据">
+        <button onClick={() => setEvidence(undefined)}>关闭原文</button>
+        <strong>{selected.id} · {selected.sourceTitle}</strong>
+        <p>发言人：{selected.speaker} · {timeLabel(selected.startMs) || `段落 ${selected.id.split('-')[1]}`}</p>
+        <p>{selected.text}</p>
+      </aside> : null}
+      {selectedHistory ? <aside className="meeting-evidence" aria-label="历史会议依据">
+        <button onClick={() => setEvidence(undefined)}>关闭原文</button>
+        <strong>{selectedHistory.label} · {selectedHistory.title}（历史会议）</strong>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedHistory.body}</ReactMarkdown>
+      </aside> : null}
+      {record.result.selectedHistory?.length ? <details><summary>本次明确选用的历史会议</summary>{record.result.selectedHistory.map(item => <article key={item.id}>
+        <strong>{item.label ? `${item.label} · ` : ''}{item.title}</strong><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.body}</ReactMarkdown>
+      </article>)}</details> : null}
+      {record.result.formalEvidence?.length ? <details><summary>企业正式资料依据</summary>{record.result.formalEvidence.map(e => <article key={e.evidence_id}>
+        <strong>[{e.evidence_id}] {e.title}</strong><p>{e.excerpt}</p>
+        {e.source_url ? <a href={e.source_url} target="_blank" rel="noreferrer">打开正式资料</a> : null}
+      </article>)}</details> : null}
+        {followup?.knowledgeSuggestions.length ? <section className="meeting-knowledge-suggestions" aria-label="知识更新建议">
           <h3>知识更新建议</h3>
           <p>以下判断仅供知识维护人员核对，平台不会自动修改正式知识。会议依据、正式知识依据和助手建议分开呈现。</p>
           {followup.knowledgeSuggestions.map(item => {
@@ -458,7 +531,6 @@ export function MeetingCard({ meeting, disabled, onAction, onDirtyChange }: {
             </article>
           })}
         </section> : null}
-      </details> : null}
     </> : null}
     {record.sources.map((source, index) => <details key={index}>
       <summary>{source.platform} · {source.title} · {source.paragraphs.length} 段</summary>

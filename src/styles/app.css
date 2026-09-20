@@ -1196,6 +1196,16 @@ tbody tr:last-child td { border-bottom: 0; }
   padding: 12px 24px 18px;
   background: #ffffff;
 }
+.meeting-revision-context { display: flex; align-items: center; gap: 10px; width: min(820px, 100%); margin: 0 auto 8px; padding: 10px 12px; border: 1px solid #dce7f6; border-radius: 8px; background: #f5f8fe; color: #3b74d7; }
+.meeting-revision-context > svg { flex: 0 0 auto; }
+.meeting-revision-copy { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px 8px; flex: 1; min-width: 0; line-height: 1.5; }
+.meeting-revision-copy strong { color: #245cae; font-size: 13px; font-weight: 600; }
+.meeting-revision-copy > span { overflow: hidden; color: #475569; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-revision-copy small { grid-column: 1 / -1; color: #64748b; font-size: 12px; }
+.meeting-revision-context > button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; min-height: 32px; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: #52647c; font: inherit; font-size: 12px; cursor: pointer; }
+.meeting-revision-context > button:hover { background: #e6eefb; color: #245cae; }
+.meeting-revision-context > button:focus-visible { outline: 2px solid #3b74d7; outline-offset: 2px; }
+@media (max-width: 480px) { .meeting-revision-copy { grid-template-columns: minmax(0, 1fr); } }
 .meeting-unsaved-hint { display: flex; align-items: flex-start; gap: 8px; width: min(820px, 100%); margin: 0 auto 8px; padding: 9px 12px; border: 1px solid #f0dfb8; border-radius: 8px; background: #fffbf2; color: #856021; font-size: 13px; line-height: 1.6; }
 .meeting-unsaved-hint > svg { flex: 0 0 auto; margin-top: 2px; }
 .meeting-unsaved-hint > span { min-width: 0; overflow-wrap: anywhere; }

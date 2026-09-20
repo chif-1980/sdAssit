@@ -24,11 +24,17 @@ const followupMeeting: MeetingRecord = {
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); sessionStorage.clear() })
 
+function renderExpanded(ui: Parameters<typeof render>[0]) {
+  const view = render(ui)
+  for (const summary of document.querySelectorAll('.meeting-task-detail > summary')) fireEvent.click(summary)
+  return view
+}
+
 describe('meeting results', () => {
   it('opens task evidence from the correct source with timestamp and original link, without saving or sending', () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ users: [] })))
     vi.stubGlobal('fetch', fetcher)
-    render(<MeetingCard meeting={{ ...followupMeeting,
+    renderExpanded(<MeetingCard meeting={{ ...followupMeeting,
       sources: [...meeting.sources, { ...meeting.sources[0], title: '第二份转写', url: 'https://bncloud.ieasetek.com/share/example',
         paragraphs: [{ id: 'P1', text: '把一体机带来演示。', speaker: '肖总', startMs: 934000 }],
       }],
@@ -55,7 +61,7 @@ describe('meeting results', () => {
 
   it('explains a missing task paragraph instead of showing unrelated evidence', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ users: [] }))))
-    render(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!,
+    renderExpanded(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!,
       followup: { ...followupMeeting.result!.followup!, tasks: [{ ...followupMeeting.result!.followup!.tasks[0], sourceRefs: ['S1-P999'] }] },
     } }} />)
     fireEvent.click(screen.getByRole('button', { name: '查看待办依据 S1-P999' }))
@@ -64,14 +70,14 @@ describe('meeting results', () => {
   })
 
   it('shows exact evidence and paragraph locator without inventing a timestamp', () => {
-    render(<MeetingCard meeting={meeting} />)
+    renderExpanded(<MeetingCard meeting={meeting} />)
     fireEvent.click(screen.getByRole('button', { name: 'S1-P1' }))
     expect(screen.getByText('建议下周继续讨论。')).toBeInTheDocument()
     expect(screen.getByText(/段落 P1/)).toBeInTheDocument()
   })
 
   it('opens explicitly selected history separately from current paragraph evidence', () => {
-    render(<MeetingCard meeting={{ ...meeting, result: { ...meeting.result!, body: '历史讨论 [H1]',
+    renderExpanded(<MeetingCard meeting={{ ...meeting, result: { ...meeting.result!, body: '历史讨论 [H1]',
       selectedHistory: [{ id: 'old', label: 'H1', title: '上次会议', body: '历史决定 [S1-P1]' }],
     } }} />)
     fireEvent.click(screen.getByRole('button', { name: 'H1' }))
@@ -83,8 +89,8 @@ describe('meeting results', () => {
     vi.useFakeTimers()
     const fetcher = vi.fn()
     vi.stubGlobal('fetch', fetcher)
-    const view = render(<MeetingCard meeting={meeting} />)
-    fireEvent.click(screen.getByRole('button', { name: '编辑正文' }))
+    const view = renderExpanded(<MeetingCard meeting={meeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '手动编辑' }))
     fireEvent.change(screen.getByRole('textbox', { name: '纪要正文（自动保存）' }), { target: { value: '本地修改' } })
     view.rerender(<MeetingCard meeting={{ ...meeting, version: 2, result: { ...meeting.result!, body: '另一处修改' } }} />)
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
@@ -103,8 +109,8 @@ describe('meeting results', () => {
       })
     vi.stubGlobal('fetch', fetcher)
     const dirty = vi.fn()
-    render(<MeetingCard meeting={meeting} onDirtyChange={dirty} />)
-    fireEvent.click(screen.getByRole('button', { name: '编辑正文' }))
+    renderExpanded(<MeetingCard meeting={meeting} onDirtyChange={dirty} />)
+    fireEvent.click(screen.getByRole('button', { name: '手动编辑' }))
     fireEvent.change(screen.getByRole('textbox', { name: '纪要正文（自动保存）' }), { target: { value: '第一次修改' } })
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
     fireEvent.change(screen.getByRole('textbox', { name: '纪要正文（自动保存）' }), { target: { value: '第二次修改' } })
@@ -122,8 +128,8 @@ describe('meeting results', () => {
   it('keeps unsaved text and offers retry after a conflict', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: '版本已变化' }), { status: 409 })))
-    render(<MeetingCard meeting={meeting} />)
-    fireEvent.click(screen.getByRole('button', { name: '编辑正文' }))
+    renderExpanded(<MeetingCard meeting={meeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '手动编辑' }))
     fireEvent.change(screen.getByRole('textbox', { name: '纪要正文（自动保存）' }), { target: { value: '保留我的编辑' } })
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
     expect(screen.getByRole('textbox', { name: '纪要正文（自动保存）' })).toHaveValue('保留我的编辑')
@@ -131,13 +137,55 @@ describe('meeting results', () => {
     expect(screen.getByRole('button', { name: '重试保存' })).toBeEnabled()
   })
 
+  it('prefills the source date and sends that date on confirmation without silently saving on view', async () => {
+    const suggested = { ...followupMeeting, result: { ...followupMeeting.result!, followup: {
+      ...followupMeeting.result!.followup!, tasks: [{ ...followupMeeting.result!.followup!.tasks[0], dueDateSuggestion: '2026年9月21日前' }],
+    } } }
+    const fetcher = vi.fn(async (_path, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'PATCH' ? { meeting: { ...suggested, version: 2 } } : { users: [] },
+    )))
+    vi.stubGlobal('fetch', fetcher)
+    renderExpanded(<MeetingCard meeting={suggested} />)
+    expect(screen.getByRole('button', { name: '期限：2026-09-21' })).toBeInTheDocument()
+    expect(screen.getByText('原文期限：2026年9月21日前（请核对）')).toBeInTheDocument()
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '确认并发送' }))
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const call = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(call[1]!.body as string)).toMatchObject({ action: 'CONFIRM', tasks: [{ dueDate: '2026-09-21' }] })
+  })
+
+  it('keeps a suggested date cleared after saving and reloading', async () => {
+    const suggested = { ...followupMeeting, result: { ...followupMeeting.result!, followup: {
+      ...followupMeeting.result!.followup!, tasks: [{ ...followupMeeting.result!.followup!.tasks[0], dueDateSuggestion: '2026年9月21日前' }],
+    } } }
+    const cleared = { ...suggested, version: 2, result: { ...suggested.result, followup: {
+      ...suggested.result.followup, tasks: [{ ...suggested.result.followup.tasks[0], dueDate: null, dueDateEdited: true }],
+    } } }
+    const fetcher = vi.fn(async (_path, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'PATCH' ? { meeting: cleared } : { users: [] },
+    )))
+    vi.stubGlobal('fetch', fetcher)
+    const view = renderExpanded(<MeetingCard meeting={suggested} />)
+    fireEvent.click(screen.getByRole('button', { name: '期限：2026-09-21' }))
+    fireEvent.click(screen.getByRole('button', { name: '清空日期' }))
+    expect(screen.getByRole('button', { name: '期限：待确认' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '保存跟进' }))
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const call = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(call[1]!.body as string).tasks[0].dueDate).toBeNull()
+    view.unmount()
+    renderExpanded(<MeetingCard meeting={cleared} />)
+    expect(screen.getByRole('button', { name: '期限：待确认' })).toBeInTheDocument()
+  })
+
   it('shows follow-up ownership and saves a tenant directory assignee', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_path, init?: RequestInit) => {
       if (init?.method === 'PATCH') return new Response(JSON.stringify({ meeting: { ...followupMeeting, version: 2 } }))
       return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', displayName: '张工' }] }))
     }))
-    render(<MeetingCard meeting={followupMeeting} />)
-    expect(screen.getByText('会议跟进 · 负责人：会议上传者')).toBeInTheDocument()
+    renderExpanded(<MeetingCard meeting={followupMeeting} />)
+    expect(screen.getByText(/跟进负责人：会议上传者/)).toBeInTheDocument()
     expect(screen.getByText('知识更新建议')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '负责人：待分配' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '张工' })).toBeInTheDocument())
@@ -155,7 +203,7 @@ describe('meeting results', () => {
   })
 
   it('shows formal knowledge comparison status and evidence for each suggestion', () => {
-    render(<MeetingCard meeting={{
+    renderExpanded(<MeetingCard meeting={{
       ...followupMeeting,
       result: {
         ...followupMeeting.result!,
@@ -190,7 +238,7 @@ describe('meeting results', () => {
       return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' }] }))
     })
     vi.stubGlobal('fetch', fetcher)
-    render(<MeetingCard meeting={followupMeeting} />)
+    renderExpanded(<MeetingCard meeting={followupMeeting} />)
     fireEvent.click(screen.getByRole('button', { name: '＋新增待办' }))
     const manualTitle = screen.getByRole('textbox', { name: '待办标题：未填写' })
     fireEvent.change(manualTitle, { target: { value: '补发会议资料' } })
@@ -230,7 +278,7 @@ describe('meeting results', () => {
       return new Response(JSON.stringify({ users: [{ userId: '2', feishuUserId: 'ou_2', feishuOpenId: 'ou_open_2', displayName: '张工' }] }))
     })
     vi.stubGlobal('fetch', fetcher)
-    render(<MeetingCard meeting={confirmedMeeting} />)
+    renderExpanded(<MeetingCard meeting={confirmedMeeting} />)
     expect(screen.getByText(/飞书已接收发给张工通知/u)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '重新发送通知' }))
     await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
@@ -261,7 +309,7 @@ describe('meeting results', () => {
       ] }))
     })
     vi.stubGlobal('fetch', fetcher)
-    render(<MeetingCard meeting={confirmedMeeting} />)
+    renderExpanded(<MeetingCard meeting={confirmedMeeting} />)
     fireEvent.click(screen.getByRole('button', { name: '修改' }))
     fireEvent.click(screen.getByRole('button', { name: '负责人：张工' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '王工' })).toBeInTheDocument())
@@ -281,7 +329,7 @@ describe('meeting results', () => {
     const newest = { ...meeting, version: 2 }
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ meeting: newest })))
     vi.stubGlobal('fetch', fetcher)
-    render(<MeetingCard meeting={newest} />)
+    renderExpanded(<MeetingCard meeting={newest} />)
     await act(async () => { await vi.advanceTimersByTimeAsync(800) })
     expect(fetcher).not.toHaveBeenCalled()
     expect(JSON.parse(sessionStorage.getItem('meeting-edit:MT-test')!).baseVersion).toBe(1)
@@ -293,7 +341,7 @@ describe('meeting results', () => {
 })
 
 it.each(['MODEL_OUTPUT_INVALID', 'MODEL_OUTPUT_TRUNCATED', 'ANALYSIS_FAILED'])('does not suggest replacing the source for %s', code => {
-  render(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
+  renderExpanded(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
     error: { code, message: '分析失败，可重试继续' },
   }} />)
   expect(screen.getByRole('alert')).toHaveTextContent('分析失败，可重试继续')
@@ -302,8 +350,60 @@ it.each(['MODEL_OUTPUT_INVALID', 'MODEL_OUTPUT_TRUNCATED', 'ANALYSIS_FAILED'])('
 })
 
 it('offers replacement input when the source is incomplete', () => {
-  render(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
+  renderExpanded(<MeetingCard meeting={{ ...meeting, state: 'failed', result: undefined,
     error: { code: 'PARTIAL', message: '原文读取不完整' },
   }} />)
   expect(screen.getByRole('alert')).toHaveTextContent('替换链接')
+})
+
+describe('unified meeting tasks', () => {
+  it('shows one list, preserves surrounding text and keeps task tables out of the narrative editor', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ users: [] }))))
+    render(<MeetingCard meeting={{ ...followupMeeting, result: { ...followupMeeting.result!, body: '## 明确决定\n决定保留\n## 行动清单\n过期的任务表\n## 待确认问题\n问题保留' } }} />)
+    expect(screen.getAllByRole('heading', { name: '待办事项' })).toHaveLength(1)
+    expect(screen.queryByText('过期的任务表')).not.toBeInTheDocument()
+    expect(screen.getByText('决定保留')).toBeInTheDocument()
+    expect(screen.getByText('问题保留')).toBeInTheDocument()
+    expect(document.querySelector('.meeting-task-detail')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByRole('button', { name: '手动编辑' }))
+    const editor = screen.getByRole('textbox', { name: '纪要正文（自动保存）' })
+    expect(editor).toHaveValue('## 明确决定\n决定保留\n\n## 待确认问题\n问题保留')
+    expect(screen.getByRole('button', { name: '复制' })).toBeEnabled()
+  })
+
+  it('keeps a new task expanded while typing and prevents exporting unsaved task changes', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ users: [] }))))
+    render(<MeetingCard meeting={followupMeeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '＋新增待办' }))
+    const input = screen.getByRole('textbox', { name: '待办标题：未填写' })
+    fireEvent.change(input, { target: { value: '补漏待办' } })
+    expect(input.closest('details')).toHaveAttribute('open')
+    expect(screen.getByRole('button', { name: '复制' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '导出 Word' })).toBeDisabled()
+  })
+
+  it('copies the versioned saved markdown including current tasks', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/markdown') ? { body: '已保存正文\n## 待办事项\n最新任务' } : { users: [] })))
+    vi.stubGlobal('fetch', fetcher)
+    render(<MeetingCard meeting={followupMeeting} />)
+    fireEvent.click(screen.getByRole('button', { name: '复制' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('已保存正文\n## 待办事项\n最新任务'))
+    expect(fetcher.mock.calls.some(([url]) => url.endsWith('/markdown?version=1'))).toBe(true)
+  })
+
+  it('requires explicit acceptance of an AI task proposal and never dispatches it on view', async () => {
+    const proposed = { ...followupMeeting, result: { ...followupMeeting.result!, followup: { ...followupMeeting.result!.followup!, tasks: [{ ...followupMeeting.result!.followup!.tasks[0], aiProposal: { title: '建议的标题', assigneeSuggestion: '张工', sourceRefs: [] } }] } } }
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(init?.method === 'PATCH' ? { meeting: followupMeeting } : { users: [] })))
+    vi.stubGlobal('fetch', fetcher)
+    renderExpanded(<MeetingCard meeting={proposed} />)
+    expect(screen.getByRole('textbox', { name: '待办标题：补充测试方案' })).toHaveValue('补充测试方案')
+    expect(fetcher.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '采用修改' }))
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true))
+    const request = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')![1]!
+    expect(JSON.parse(request.body as string)).toMatchObject({ action: 'APPLY_AI', taskId: 'task-1' })
+    expect(fetcher.mock.calls.some(([, init]) => typeof init?.body === 'string' && /"(CONFIRM|RESEND)"/.test(init.body))).toBe(false)
+  })
 })

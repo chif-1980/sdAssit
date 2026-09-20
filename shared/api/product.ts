@@ -197,10 +197,12 @@ export interface MeetingFollowupTask {
   assigneeSuggestion?: string | null
   dueDate: string | null
   dueDateSuggestion?: string | null
+  dueDateEdited?: boolean
   status: 'OPEN' | 'IN_PROGRESS' | 'DONE' | string
   sourceRefs: string[]
   sourceMeetingId?: string
   origin?: 'EXTRACTED' | 'MANUAL' | string
+  aiProposal?: { title: string; content?: string; assigneeSuggestion?: string | null; dueDate?: string | null; dueDateSuggestion?: string | null; sourceRefs?: string[]; sourceMeetingId?: string }
   reviewStatus?: 'PENDING' | 'CONFIRMED' | 'IGNORED' | 'DELIVERY_FAILED' | string
   delivery?: { notification: 'NOT_SENT' | 'SENT' | 'FAILED' | string; feishuTaskId?: string | null; messageId?: string | null; chatId?: string | null; error?: string | null; pendingUpdate?: boolean; syncStatus?: string; syncError?: string | null; lastSyncedAt?: string }
 }
