@@ -1,12 +1,17 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { ChatPage } from '../pages/ChatPage'
 import { LoginPage } from '../pages/LoginPage'
 import { PrototypePage } from '../pages/PrototypePage'
 import { SessionProvider, useSession } from '../session/SessionProvider'
+import { safeReturnPath } from '../session/returnPath'
 
 function ProductRoutes() {
-  const { status, reload } = useSession()
+  const { status, reload, automaticLoginAllowed } = useSession()
+  const location = useLocation()
+  const returnPath = safeReturnPath(location.pathname === '/login'
+    ? new URLSearchParams(location.search).get('return_path')
+    : location.pathname + location.search)
 
   if (window.location.pathname === '/prototype') {
     return (
@@ -33,8 +38,8 @@ function ProductRoutes() {
   if (status === 'anonymous') {
     return (
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="/login" element={<LoginPage automaticLoginAllowed={automaticLoginAllowed} />} />
+        <Route path="*" element={<Navigate to={`/login?return_path=${encodeURIComponent(returnPath)}`} replace />} />
       </Routes>
     )
   }
@@ -42,7 +47,7 @@ function ProductRoutes() {
   return (
     <Routes>
       <Route path="/chat" element={<ChatPage />} />
-      <Route path="*" element={<Navigate to="/chat" replace />} />
+      <Route path="*" element={<Navigate to={returnPath} replace />} />
     </Routes>
   )
 }

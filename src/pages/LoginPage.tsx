@@ -9,11 +9,11 @@ import {
 } from 'lucide-react'
 
 import type { FeishuQrLoginConfig } from '../../shared/api/product'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
+import { isFeishuClient, requestFeishuCode } from '../session/feishuClient'
+import { safeReturnPath } from '../session/returnPath'
 
 const QR_SDK_URL = 'https://lf-package-cn.feishucdn.com/obj/feishu-static/lark/passport/qrcode/LarkSSOSDKWebQRCode-1.0.3.js'
-const DIRECT_LOGIN_URL = '/api/auth/feishu/login?return_path=%2Fchat'
-const QR_CONFIG_URL = '/api/auth/feishu/qr-config?return_path=%2Fchat'
 
 type QrLoginStatus = 'loading' | 'ready' | 'scanned' | 'error'
 
@@ -40,6 +40,7 @@ declare global {
 
 interface LoginPageProps {
   onQrAuthorized?: (url: string) => void
+  automaticLoginAllowed?: boolean
 }
 
 const loginErrorMessages: Record<string, string> = {
@@ -91,7 +92,12 @@ function loadQrSdk(): Promise<QrLoginFactory> {
   })
 }
 
-export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPageProps) {
+export function LoginPage({ onQrAuthorized = defaultQrAuthorized, automaticLoginAllowed = true }: LoginPageProps) {
+  const [inFeishu] = useState(isFeishuClient)
+  const [clientStatus, setClientStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [clientError, setClientError] = useState('')
+  const returnPath = safeReturnPath(new URLSearchParams(window.location.search).get('return_path'))
+  const loginQuery = `return_path=${encodeURIComponent(returnPath)}`
   const [qrStatus, setQrStatus] = useState<QrLoginStatus>('loading')
   const [retryKey, setRetryKey] = useState(0)
   const callbackError = useMemo(() => {
@@ -100,6 +106,36 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
   }, [])
 
   useEffect(() => {
+    if (!inFeishu || (!automaticLoginAllowed && retryKey === 0)) return
+    let disposed = false
+    const controller = new AbortController()
+    const login = async () => {
+      setClientStatus('loading')
+      try {
+        const config = await api<{ appId: string; state: string }>(`/api/auth/feishu/client-config?${loginQuery}`, {
+          signal: controller.signal, cache: 'no-store',
+        })
+        if (disposed) return
+        const code = await requestFeishuCode(config.appId, config.state)
+        if (disposed) return
+        const result = await api<{ returnPath: string }>('/api/auth/feishu/client-login', {
+          method: 'POST', body: JSON.stringify({ code, state: config.state }), signal: controller.signal,
+        })
+        if (!disposed) onQrAuthorized(safeReturnPath(result.returnPath))
+      } catch (error) {
+        if (disposed) return
+        setClientError(error instanceof ApiError
+          ? loginErrorMessages[error.code] ?? '飞书登录失败，请重试或联系管理员'
+          : '暂时无法完成飞书登录，请重试；如版本过旧，请先更新飞书')
+        setClientStatus('error')
+      }
+    }
+    void login()
+    return () => { disposed = true; controller.abort() }
+  }, [automaticLoginAllowed, inFeishu, loginQuery, onQrAuthorized, retryKey])
+
+  useEffect(() => {
+    if (inFeishu) return
     const abortController = new AbortController()
     let disposed = false
     let expiryTimer: number | undefined
@@ -111,7 +147,7 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
     const initializeQrLogin = async () => {
       try {
         const [config, qrLoginFactory] = await Promise.all([
-          api<FeishuQrLoginConfig>(QR_CONFIG_URL, {
+          api<FeishuQrLoginConfig>(`/api/auth/feishu/qr-config?${loginQuery}`, {
             signal: abortController.signal,
             cache: 'no-store',
           }),
@@ -161,7 +197,7 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
       if (expiryTimer !== undefined) window.clearTimeout(expiryTimer)
       if (messageHandler) window.removeEventListener('message', messageHandler)
     }
-  }, [onQrAuthorized, retryKey])
+  }, [inFeishu, loginQuery, onQrAuthorized, retryKey])
 
   return (
     <main className="login-page">
@@ -186,8 +222,10 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
         <div className="login-panel">
           <div className="login-panel-heading">
             <h2>登录</h2>
-            <p className="login-desktop-copy">请使用飞书扫描二维码</p>
-            <p className="login-mobile-copy">在飞书中确认后即可进入</p>
+            {inFeishu ? <p>使用当前飞书账号进入企业知识助手</p> : <>
+              <p className="login-desktop-copy">请使用飞书扫描二维码</p>
+              <p className="login-mobile-copy">在飞书中确认后即可进入</p>
+            </>}
           </div>
 
           {callbackError ? (
@@ -197,6 +235,14 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
             </div>
           ) : null}
 
+          {inFeishu ? <div className="login-client-login">
+            {clientStatus === 'loading' ? <p role="status"><span className="spinner" /> 正在使用飞书账号登录…</p> : <>
+              {clientStatus === 'error' ? <p className="login-callback-error" role="alert">{clientError}</p> : <p>你已退出登录</p>}
+              <button type="button" className="login-direct-button" onClick={() => setRetryKey(value => value + 1)}>
+                <Smartphone size={18} aria-hidden="true" /> 使用当前飞书账号登录
+              </button>
+            </>}
+          </div> : <>
           <div className="login-desktop-login">
             <div className="login-qr-label">
               <ScanLine size={18} aria-hidden="true" />
@@ -236,13 +282,14 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized }: LoginPagePro
 
           <div className="login-divider" aria-hidden="true"><span>或</span></div>
 
-          <a className="login-direct-button" href={DIRECT_LOGIN_URL}>
+          <a className="login-direct-button" href={`/api/auth/feishu/login?${loginQuery}`}>
             <Smartphone size={18} aria-hidden="true" />
             <span>使用飞书登录</span>
             <ArrowRight size={17} aria-hidden="true" />
           </a>
 
           <p className="login-mobile-tip">电脑端打开本页时，也可使用飞书扫码登录</p>
+          </>}
         </div>
       </section>
 

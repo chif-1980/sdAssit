@@ -34,12 +34,50 @@ function installQrSdk(options?: { originMatches?: boolean; dataMatches?: boolean
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   delete window.QRLogin
+  delete window.tt
+  delete window.h5sdk
   document.querySelectorAll('script[data-feishu-qr-sdk]').forEach((script) => script.remove())
   window.history.pushState({}, '', '/')
 })
 
 describe('LoginPage', () => {
+  it('logs in inside Feishu without QR and preserves the meeting destination', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 Lark/7.50.0')
+    window.history.pushState({}, '', '/login?return_path=%2Fchat%3FconversationId%3DC1%26meetingId%3DMT-1')
+    window.h5sdk = { ready: callback => callback() }
+    window.tt = { requestAccess: vi.fn(options => {
+      expect(options.scopeList).toEqual([])
+      expect(options.appID).toBe('app-id')
+      options.success({ code: 'one-time-code', state: options.state })
+    }) }
+    const fetchMock = vi.fn(async (path: string, init: RequestInit) => {
+      if (path.startsWith('/api/auth/feishu/client-config')) return jsonResponse({ appId: 'app-id', state: 'browser-state' })
+      expect(path).toBe('/api/auth/feishu/client-login')
+      expect(JSON.parse(String(init.body))).toEqual({ code: 'one-time-code', state: 'browser-state' })
+      return jsonResponse({ returnPath: '/chat?conversationId=C1&meetingId=MT-1' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const navigate = vi.fn()
+    render(<LoginPage onQrAuthorized={navigate} />)
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/chat?conversationId=C1&meetingId=MT-1'))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTitle('飞书扫码登录')).not.toBeInTheDocument()
+  })
+
+  it('keeps explicit logout idle and allows a user initiated Feishu retry', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Lark/7.50.0')
+    const fetchMock = vi.fn(async () => jsonResponse({ detail: { code: 'IDENTITY_MAPPING_REQUIRED' } }, 403))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<LoginPage automaticLoginAllowed={false} />)
+    expect(screen.getByText('你已退出登录')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '使用当前飞书账号登录' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('尚未开通访问权限')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('loads the Feishu QR SDK and initializes the desktop QR login', async () => {
     const { qrLogin } = installQrSdk()
     const fetchMock = vi.fn(async () => jsonResponse(qrConfig))

@@ -36,6 +36,7 @@ import { SourceDrawer } from '../components/chat/SourceDrawer'
 import { attachmentError as getAttachmentError } from '../components/chat/fileAttachments'
 import { ProductShell } from '../components/layout/ProductShell'
 import { useSession } from '../session/SessionProvider'
+import { safeReturnPath } from '../session/returnPath'
 
 interface ConversationDetail {
   conversation: ProductConversation
@@ -923,7 +924,7 @@ export function ChatPage() {
   const [sending, setSending] = useState(false)
   const [currentRunId, setCurrentRunId] = useState<string>()
   const [meetingActivityTasks, setMeetingActivityTasks] = useState<MeetingActivityTask[]>([])
-  const [meetingNavigationTarget, setMeetingNavigationTarget] = useState<MeetingActivityTask>()
+  const [meetingNavigationTarget, setMeetingNavigationTarget] = useState<Pick<MeetingActivityTask, 'id' | 'conversationId'>>()
   const [archiving, setArchiving] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(() => new Set())
@@ -994,7 +995,17 @@ export function ChatPage() {
       if (contextVersionRef.current !== version) return
       const items = sortConversations(result.conversations)
       setConversations(items)
-      const initialConversation = items.find((item) => item.status === 'ACTIVE') ?? items[0]
+      const destination = safeReturnPath(window.location.pathname + window.location.search)
+      const destinationQuery = destination.includes('?') ? destination.slice(destination.indexOf('?') + 1) : ''
+      const destinationParams = new URLSearchParams(destinationQuery)
+      const requestedConversationId = destinationParams.get('conversationId')
+      const requestedMeetingId = destinationParams.get('meetingId')
+      const initialConversation = requestedConversationId
+        ? items.find(item => item.id === requestedConversationId)
+        : items.find((item) => item.status === 'ACTIVE') ?? items[0]
+      if (requestedConversationId && !initialConversation) {
+        setErrorText('该会话不存在或当前账号无权查看，请从左侧选择其他会话')
+      }
       setSidebarPanel(initialConversation?.status === 'ARCHIVED' ? 'archived' : null)
       if (initialConversation) {
         const detail = await api<ConversationDetail>(`/api/chat/conversations/${initialConversation.id}`)
@@ -1008,6 +1019,13 @@ export function ChatPage() {
         setAgentInterruptQuestion(historicalInterrupt)
         currentRunIdRef.current = historicalInterrupt?.runId
         setCurrentRunId(historicalInterrupt?.runId)
+        if (requestedMeetingId) {
+          if (historicalMessages.some(message => message.meeting?.id === requestedMeetingId)) {
+            setMeetingNavigationTarget({ id: requestedMeetingId, conversationId: initialConversation.id })
+          } else {
+            setErrorText('当前会话中未找到该会议，会议可能已删除')
+          }
+        }
       } else {
         setConversation(undefined)
         setMessages([])

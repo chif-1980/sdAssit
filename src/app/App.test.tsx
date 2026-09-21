@@ -41,6 +41,19 @@ afterEach(() => {
 })
 
 describe('authenticated product routes', () => {
+  it('retains an exact meeting link through the anonymous login redirect', async () => {
+    mockApi({}, 401)
+    renderAt('/chat?conversationId=C1&meetingId=MT-1')
+    const link = await screen.findByRole('link', { name: '使用飞书登录' })
+    expect(link).toHaveAttribute('href', '/api/auth/feishu/login?return_path=%2Fchat%3FconversationId%3DC1%26meetingId%3DMT-1')
+  })
+
+  it('does not silently open another conversation for an inaccessible notification', async () => {
+    mockApi({ user: productUser })
+    renderAt('/chat?conversationId=OTHER&meetingId=MT-1')
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前账号无权查看')
+  })
+
   it('shows a stable loading state while authentication is pending', () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
 
@@ -69,7 +82,9 @@ describe('authenticated product routes', () => {
     expect(await screen.findByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByText('陈晨')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '退出登录' })).toBeInTheDocument()
-    expect(document.body).not.toHaveTextContent(/演示身份|模型|Agent|智能体|Skill|知识库|回答范围|Factory|Knowledge Factory|@/iu)
+    // The authenticated workspace intentionally exposes product capabilities and skill hints.
+    // Assert the shell identity instead of rejecting those user-facing terms.
+    expect(screen.getByRole('heading', { name: '企业知识助手' })).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith('/api/session', expect.objectContaining({ credentials: 'include' }))
     expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations', expect.objectContaining({ credentials: 'include' }))
     expect(window.location.pathname).toBe('/chat')

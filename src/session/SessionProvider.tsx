@@ -8,6 +8,7 @@ interface SessionPayload {
 }
 
 interface SessionContextValue {
+  automaticLoginAllowed: boolean
   user?: ProductUser
   status: 'loading' | 'authenticated' | 'anonymous' | 'error'
   error?: Error
@@ -18,6 +19,7 @@ interface SessionContextValue {
 const SessionContext = createContext<SessionContextValue | undefined>(undefined)
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
+  const [automaticLoginAllowed, setAutomaticLoginAllowed] = useState(true)
   const [user, setUser] = useState<ProductUser>()
   const [status, setStatus] = useState<SessionContextValue['status']>('loading')
   const [error, setError] = useState<Error>()
@@ -60,18 +62,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await api('/api/auth/logout', { method: 'POST' })
     requestGenerationRef.current += 1
     if (!mountedRef.current) return
+    setAutomaticLoginAllowed(false)
     setUser(undefined)
     setError(undefined)
     setStatus('anonymous')
   }, [])
 
   const value = useMemo<SessionContextValue>(() => ({
+    automaticLoginAllowed,
     user,
     status,
     error,
     reload,
     logout,
-  }), [error, logout, reload, status, user])
+  }), [automaticLoginAllowed, error, logout, reload, status, user])
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
