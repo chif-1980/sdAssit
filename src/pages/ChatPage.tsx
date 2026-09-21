@@ -704,21 +704,6 @@ function isAbortError(error: unknown) {
     || Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
 }
 
-/**
- * Keep solution-draft deltas observable when several SSE events arrive in one
- * network read. React 18 may batch synchronous updates from that read, so a
- * paint boundary is required between visible chunks.
- */
-function yieldSolutionStreamPaint() {
-  return new Promise<void>((resolve) => {
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => resolve())
-      return
-    }
-    globalThis.setTimeout(resolve, 16)
-  })
-}
-
 function triggerBlobDownload(blob: Blob, fileName: string) {
   if (typeof URL.createObjectURL !== 'function') return false
   const href = URL.createObjectURL(blob)
@@ -959,6 +944,8 @@ export function ChatPage() {
   const citationVersionRef = useRef(0)
   const answerProgressTrailRef = useRef<ProductAnswerProgress[]>([])
   const streamedAnswerRef = useRef('')
+  const streamedDeltaBufferRef = useRef('')
+  const streamedDeltaTimerRef = useRef<number>()
   const citationTriggerRef = useRef<HTMLButtonElement>()
   const messageScrollRef = useRef<HTMLDivElement>(null)
   const followLatestRef = useRef(true)
@@ -973,6 +960,37 @@ export function ChatPage() {
   const currentRunIdRef = useRef<string>()
   const restoredConversationIdsRef = useRef(new Set<string>())
   const lastEventIdRef = useRef<string>()
+
+  function flushStreamedAnswer() {
+    if (streamedDeltaTimerRef.current !== undefined) {
+      window.clearTimeout(streamedDeltaTimerRef.current)
+      streamedDeltaTimerRef.current = undefined
+    }
+    const buffered = streamedDeltaBufferRef.current
+    if (!buffered) return
+    streamedDeltaBufferRef.current = ''
+    streamedAnswerRef.current += buffered
+    setStreamedAnswer(streamedAnswerRef.current)
+  }
+
+  function appendStreamedDelta(delta: string) {
+    if (!delta) return
+    streamedDeltaBufferRef.current += delta
+    if (streamedDeltaTimerRef.current !== undefined) return
+    streamedDeltaTimerRef.current = window.setTimeout(() => {
+      flushStreamedAnswer()
+    }, 32)
+  }
+
+  function resetStreamedAnswer() {
+    if (streamedDeltaTimerRef.current !== undefined) {
+      window.clearTimeout(streamedDeltaTimerRef.current)
+      streamedDeltaTimerRef.current = undefined
+    }
+    streamedDeltaBufferRef.current = ''
+    streamedAnswerRef.current = ''
+    setStreamedAnswer('')
+  }
 
   function streamRequestInit(signal: AbortSignal): RequestInit {
     const headers = new Headers()
@@ -1145,8 +1163,7 @@ export function ChatPage() {
 
   const recordProgress = useCallback((progress: ProductAnswerProgress) => {
     if (progress.resetAnswer) {
-      streamedAnswerRef.current = ''
-      setStreamedAnswer('')
+      resetStreamedAnswer()
     }
     const normalized = {
       ...progress,
@@ -1297,8 +1314,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     lastEventIdRef.current = undefined
     setDraft('')
     setAttachments([])
@@ -1332,8 +1348,7 @@ export function ChatPage() {
       setAnswerProgress(undefined)
       setAnswerProgressTrail([])
       answerProgressTrailRef.current = []
-      setStreamedAnswer('')
-      streamedAnswerRef.current = ''
+      resetStreamedAnswer()
       return
     }
     const terminal = String(run.status ?? '').toLowerCase()
@@ -1348,8 +1363,7 @@ export function ChatPage() {
     setBusinessTaskExplicit(false)
     setPendingQuestion(run.inputContent?.trim() || '正在恢复后台任务…')
     setAgentInterruptQuestion(normalizeInterrupt(run.interrupt, run.runId))
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     currentRunIdRef.current = run.runId
     setCurrentRunId(run.runId)
     setSending(true)
@@ -1375,9 +1389,7 @@ export function ChatPage() {
           },
           onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
-            streamedAnswerRef.current += delta
-            setStreamedAnswer(streamedAnswerRef.current)
-            await yieldSolutionStreamPaint()
+            appendStreamedDelta(delta)
           },
           onDraft: () => {
             if (contextVersionRef.current === version) recordProgress({ stage: 'COMPOSING', message: '方案草稿已生成，正在整理结果', runId: run.runId })
@@ -1390,6 +1402,7 @@ export function ChatPage() {
           },
         },
       )
+      flushStreamedAnswer()
       if (contextVersionRef.current === version && result) applyAnswer(result)
     } catch (error) {
       if (contextVersionRef.current === version && !isAbortError(error)) {
@@ -1502,8 +1515,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
@@ -1544,8 +1556,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
@@ -1607,8 +1618,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     lastEventIdRef.current = undefined
     currentRunIdRef.current = undefined
     setCurrentRunId(undefined)
@@ -1679,9 +1689,7 @@ export function ChatPage() {
           },
           onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
-            streamedAnswerRef.current += delta
-            setStreamedAnswer(streamedAnswerRef.current)
-            if (requestedSkillId === 'SOLUTION_DRAFT') await yieldSolutionStreamPaint()
+            appendStreamedDelta(delta)
           },
           onRunStarted: (run) => {
             if (contextVersionRef.current !== version || !run || typeof run !== 'object') return
@@ -1720,6 +1728,7 @@ export function ChatPage() {
           },
         },
       )
+      flushStreamedAnswer()
       if (contextVersionRef.current !== version) return
       if (!result) return
       applyAnswer(result)
@@ -1734,8 +1743,7 @@ export function ChatPage() {
         markProgressFailed(error instanceof ApiError ? error.message : '发送失败，请重试')
       } else {
         setPendingQuestion(undefined)
-        setStreamedAnswer('')
-        streamedAnswerRef.current = ''
+        resetStreamedAnswer()
         currentRunIdRef.current = undefined
         setCurrentRunId(undefined)
       }
@@ -1790,8 +1798,7 @@ export function ChatPage() {
     setDraft('')
     setPendingQuestion(displayAnswer)
     followLatestRef.current = true
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     // A resumed run has a new run id; do not send the parent cursor to it.
     lastEventIdRef.current = undefined
     setAgentInterruptQuestion(undefined)
@@ -1841,9 +1848,7 @@ export function ChatPage() {
           onEventId: (eventId) => { if (contextVersionRef.current === version) lastEventIdRef.current = eventId },
           onDelta: async (delta) => {
             if (contextVersionRef.current !== version) return
-            streamedAnswerRef.current += delta
-            setStreamedAnswer(streamedAnswerRef.current)
-            await yieldSolutionStreamPaint()
+            appendStreamedDelta(delta)
           },
           onDraft: () => recordProgress({ stage: 'COMPOSING', message: '方案草稿已生成，正在整理结果' }),
           onInterrupt: (value) => {
@@ -1863,6 +1868,7 @@ export function ChatPage() {
           },
         },
       )
+      flushStreamedAnswer()
       if (contextVersionRef.current !== version || !result) return
       // Some Agent adapters persist the raw answer id in userMessage.content
       // (for example, "confirmed").  Replace it at the product boundary so
@@ -1904,8 +1910,7 @@ export function ChatPage() {
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
     answerProgressTrailRef.current = []
-    setStreamedAnswer('')
-    streamedAnswerRef.current = ''
+    resetStreamedAnswer()
     setAttachments((current) => current.map((attachment) => (
       attachment.status === 'UPLOADING' ? { ...attachment, status: 'PENDING' } : attachment
     )))
