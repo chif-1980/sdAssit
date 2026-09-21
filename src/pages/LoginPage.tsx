@@ -10,7 +10,7 @@ import {
 
 import type { FeishuQrLoginConfig } from '../../shared/api/product'
 import { api, ApiError } from '../api/client'
-import { isFeishuClient, requestFeishuCode } from '../session/feishuClient'
+import { feishuClientErrorMessage, isFeishuClient, requestFeishuCode } from '../session/feishuClient'
 import { safeReturnPath } from '../session/returnPath'
 
 const QR_SDK_URL = 'https://lf-package-cn.feishucdn.com/obj/feishu-static/lark/passport/qrcode/LarkSSOSDKWebQRCode-1.0.3.js'
@@ -126,7 +126,7 @@ export function LoginPage({ onQrAuthorized = defaultQrAuthorized, automaticLogin
         if (disposed) return
         setClientError(error instanceof ApiError
           ? loginErrorMessages[error.code] ?? '飞书登录失败，请重试或联系管理员'
-          : '暂时无法完成飞书登录，请重试；如版本过旧，请先更新飞书')
+          : feishuClientErrorMessage(error))
         setClientStatus('error')
       }
     }

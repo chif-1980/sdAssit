@@ -12,6 +12,12 @@
 - [企业知识助手使用手册](https://chif-1980.github.io/sdkb/guide/knowledge-assistant.html)
 - [善达知枢使用手册](https://chif-1980.github.io/sdkb/guide/zhishu-manual.html)
 
+## 0.6.8（2026-09-21）
+
+- 飞书端内登录区分组件加载失败、响应超时和授权失败；只显示安全的数字错误码，避免把所有失败误报为客户端版本过旧。
+- 捕获客户端登录桥接异常，允许重新尝试。桌面端与移动端的真实登录仍需实机验收。
+- 部署必配：在飞书应用「安全设置 → 重定向 URL」中加入 `https://assit.quickdone.cn/login`。端内 `requestAccess` 校验的是发起调用的登录页，只有 `/api/auth/feishu/callback` 不够；查询参数无需加入白名单。参见[官方配置说明](https://open.feishu.cn/document/uYjL24iN/uYjN3QjL2YzN04iN2cDN)。
+
 ## 0.6.7（2026-09-21）
 
 - 修正发布版本文件，补充飞书客户端登录超时清理与 SDK 加载失败重试保护。

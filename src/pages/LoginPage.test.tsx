@@ -43,6 +43,21 @@ afterEach(() => {
 })
 
 describe('LoginPage', () => {
+  it('shows a safe native error code without blaming the client version or submitting a login', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Lark/7.53.16')
+    window.h5sdk = { ready: callback => callback() }
+    window.tt = { requestAccess: options => options.fail({ errno: 2700002, errString: 'sensitive details' }) }
+    const fetchMock = vi.fn(async () => jsonResponse({ appId: 'app-id', state: 'browser-state' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const navigate = vi.fn()
+    render(<LoginPage onQrAuthorized={navigate} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('2700002')
+    expect(alert).not.toHaveTextContent(/更新飞书|sensitive details/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('logs in inside Feishu without QR and preserves the meeting destination', async () => {
     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 Lark/7.50.0')
     window.history.pushState({}, '', '/login?return_path=%2Fchat%3FconversationId%3DC1%26meetingId%3DMT-1')
