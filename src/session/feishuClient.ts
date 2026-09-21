@@ -35,7 +35,7 @@ function loadSdk(): Promise<void> {
     script.src = SDK_URL
     script.async = true
     script.dataset.feishuClientSdk = 'true'
-    script.onload = () => finish()
+    script.onload = () => finish(window.h5sdk && window.tt?.requestAccess ? undefined : new Error('SDK_UNAVAILABLE'))
     script.onerror = () => finish(new Error('SDK_UNAVAILABLE'))
     document.head.append(script)
   }).catch(error => { sdkPromise = undefined; throw error })
@@ -45,15 +45,28 @@ function loadSdk(): Promise<void> {
 export async function requestFeishuCode(appId: string, state: string): Promise<string> {
   await loadSdk()
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('CLIENT_LOGIN_TIMEOUT')), 60000)
-    const fail = () => { window.clearTimeout(timer); reject(new Error('CLIENT_LOGIN_FAILED')) }
+    let settled = false
+    const timer = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new Error('CLIENT_LOGIN_TIMEOUT'))
+    }, 60000)
+    const fail = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      reject(new Error('CLIENT_LOGIN_FAILED'))
+    }
     if (!window.h5sdk || !window.tt?.requestAccess) { fail(); return }
     window.h5sdk.ready(() => {
+      if (settled) return
       window.tt!.requestAccess!({
         appID: appId, scopeList: [], state,
         success(result) {
+          if (settled) return
           window.clearTimeout(timer)
           if (!result.code || (result.state && result.state !== state)) { fail(); return }
+          settled = true
           resolve(result.code)
         },
         fail,
