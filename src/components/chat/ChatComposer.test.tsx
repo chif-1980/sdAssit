@@ -60,8 +60,7 @@ describe('ChatComposer', () => {
     render(<ComposerHarness />)
 
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '简洁模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
     expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
     expect(screen.queryByText(/上传资料|回答范围/)).not.toBeInTheDocument()
   })
@@ -70,12 +69,12 @@ describe('ChatComposer', () => {
     const user = userEvent.setup()
     const { rerender } = render(<ComposerHarness />)
 
-    await user.click(screen.getByRole('button', { name: '详细模式' }))
-    expect(screen.getByRole('button', { name: '详细模式' })).toHaveAttribute('aria-pressed', 'true')
+    const select = screen.getByRole('combobox', { name: '回答方式' })
+    await user.selectOptions(select, 'DETAILED')
+    expect(select).toHaveValue('DETAILED')
 
     rerender(<ComposerHarness disabled />)
-    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toBeDisabled()
   })
 
   it('submits with Enter when the draft is not blank', async () => {
@@ -169,8 +168,7 @@ describe('ChatComposer', () => {
     const sendButton = screen.getByRole('button', { name: '发送问题' })
     expect(textbox).toBeDisabled()
     expect(sendButton).toBeDisabled()
-    expect(screen.getByRole('button', { name: '简洁模式' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '详细模式' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toBeDisabled()
 
     await user.type(textbox, '不会写入')
     await user.click(sendButton)

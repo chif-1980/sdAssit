@@ -1313,7 +1313,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         for await (const _event of yuxi.streamEvents(run.runId, '0-0', requestCredentials(request))) { /* observe only */ }
       }).catch(() => undefined)
     }
-    return reply.status(201).send(await service.addMessage(request.params.conversationId, parsed.data.content, parsed.data.skillId, parsed.data.attachmentIds, parsed.data.requestId))
+    return reply.status(201).send(await service.addMessage(request.params.conversationId, parsed.data.content, parsed.data.skillId, parsed.data.attachmentIds, parsed.data.requestId, undefined, parsed.data.mode ?? 'CONCISE'))
   })
 
   app.post<{ Params: { conversationId: string } }>('/api/chat/conversations/:conversationId/messages/stream', async (request, reply) => {
@@ -1508,7 +1508,7 @@ export function registerProductChatRoutes(app: FastifyInstance, repository: Plat
         // Yuxi run naturally yields events over time; this small yield gives
         // the browser the same progressive experience when the fallback is in use.
       }
-      const result = await service.addMessage(request.params.conversationId, parsed.data.content, parsed.data.skillId, parsed.data.attachmentIds, parsed.data.requestId)
+      const result = await service.addMessage(request.params.conversationId, parsed.data.content, parsed.data.skillId, parsed.data.attachmentIds, parsed.data.requestId, undefined, parsed.data.mode ?? 'CONCISE')
       run.status = 'SUCCEEDED'
       run.result = result
       const seq = String(run.events.length + 1)

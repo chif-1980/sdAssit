@@ -7,6 +7,7 @@ import type {
   ProductConversation,
   ProductMaterial,
   ProductMessage,
+  AnswerMode,
   SolutionDraftEditRequest,
 } from '../../shared/api/product.js'
 import type { ProductSkillCatalogResponse, ProductSkillDefinition, ProductSkillId } from '../../shared/api/skills.js'
@@ -354,6 +355,7 @@ function toProductMessage(message: ConversationMessage, snapshot: PlatformSnapsh
       ? renderLocalSolutionDraft(solutionDraft)
       : context.text,
     ...(message.skillId ? { skillId: message.skillId } : {}),
+    ...(message.answerMode ? { answerMode: message.answerMode } : {}),
     answerStatus: message.answerStatus ?? null,
     citations: message.citations.map((citation) => toProductCitation(citation, snapshot)),
     ...(message.materialIds?.length
@@ -603,6 +605,7 @@ export class ProductChatService {
     attachmentIds: string[] = [],
     sourceRunId?: string,
     executionTrace?: SolutionDraft['executionTrace'],
+    answerMode: AnswerMode = 'CONCISE',
   ) {
     const skillId = requestedSkillId ?? inferSkillId(content)
     const skill = skillId ? skillForId(skillId) : undefined
@@ -625,6 +628,7 @@ export class ProductChatService {
           confidence: 'INSUFFICIENT',
           citations: [],
         },
+        answerMode: 'DETAILED',
       })
       const snapshot = await this.repository.read()
       const resolvedSourceRunId = sourceRunId ?? `local-${ulid()}`
@@ -670,6 +674,7 @@ export class ProductChatService {
       materialIds: materials.map((material) => material.id),
       ...(skillId ? { skillId } : {}),
       ...(answerOverride ? { answerOverride } : {}),
+      answerMode,
     } satisfies AddMessageInput)
     const snapshot = await this.repository.read()
     return {

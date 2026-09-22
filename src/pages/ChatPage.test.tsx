@@ -210,7 +210,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByText('可以这样问')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '投标一体机定价体系' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '语音智控的技术架构' })).toBeInTheDocument()
-    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
     expect(screen.getByText('资料原文只存放在飞书知识库，助手不会复制到其他位置')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
@@ -310,7 +310,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('button', { name: '未命名会话' })).toBeInTheDocument()
   })
 
-  it('fills the composer with an example question and keeps detailed mode implicit', async () => {
+  it('fills the composer with an example question and keeps fast mode selected', async () => {
     const user = userEvent.setup()
     emptyWorkspaceFetch()
     render(<ChatPage />)
@@ -319,7 +319,7 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '投标一体机定价体系' }))
 
     expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('投标一体机定价体系')
-    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
   })
 
   it('keeps the selected skill marker so the user can type the requirement after it', async () => {
@@ -576,7 +576,7 @@ describe('ChatPage product workspace', () => {
 
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
-    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
   })
 
   it('manages focus and keyboard dismissal for the conversation drawer', async () => {
@@ -637,7 +637,7 @@ describe('ChatPage product workspace', () => {
     ))
     expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
       content: '上线条件是什么？',
-      mode: 'DETAILED',
+      mode: 'CONCISE',
     })
   })
 
@@ -658,6 +658,8 @@ describe('ChatPage product workspace', () => {
     render(<ChatPage />)
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
+    const modeSelect = screen.getByRole('combobox', { name: '回答方式' })
+    await user.selectOptions(modeSelect, 'DETAILED')
     await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 
@@ -712,7 +714,7 @@ describe('ChatPage product workspace', () => {
     ))
     expect(JSON.parse(String(streamCall?.[1]?.body))).toMatchObject({
       content: '请结合方案回答',
-      mode: 'DETAILED',
+      mode: 'CONCISE',
       attachmentIds: ['ATT-1'],
     })
   })
@@ -1675,7 +1677,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByRole('button', { name: '归档当前对话' })).toBeDisabled()
     const stop = screen.getByRole('button', { name: '停止生成' })
     expect(stop).toBeEnabled()
-    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toBeDisabled()
     expect(textbox).toHaveValue('')
     expect(document.querySelector('.message-pending-question')).toHaveTextContent('发送期间保留')
     expect(screen.getByRole('status', { name: '执行过程' })).toBeInTheDocument()

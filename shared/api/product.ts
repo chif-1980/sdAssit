@@ -152,6 +152,7 @@ export interface ProductMaterial {
 }
 
 export interface ProductMessage {
+  answerMode?: AnswerMode | null
   id: string
   role: 'USER' | 'ASSISTANT'
   content: string

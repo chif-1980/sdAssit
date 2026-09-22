@@ -1274,6 +1274,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .composer-attachment-remove:hover:not(:disabled), .composer-attachment-remove:focus-visible { color: #a2352e; background: #fbe2df; }
 .composer-attachment-remove:disabled { cursor: default; opacity: .45; }
 .composer-attachment-error { grid-column: 1 / -1; margin: 0; color: #a2352e; font-size: 12px; line-height: 1.4; }
+.answer-mode-control { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.answer-mode-label { color: #61718a; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.answer-mode-select select { min-height: 29px; padding: 0 26px 0 9px; border: 1px solid #cbd9eb; border-radius: 6px; color: #245cae; background: #f7faff; font-size: 12px; font-weight: 700; }
+.answer-mode-select select:focus-visible { outline: 2px solid rgb(59 116 215 / 28%); outline-offset: 1px; }
+.answer-mode-description { color: #7b8aa0; font-size: 11px; }
+.answer-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.answer-mode-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 999px; color: #245cae; background: #eaf2ff; font-size: 11px; font-weight: 700; }
+.deep-research-action { margin-top: 10px; padding: 5px 9px; border: 1px solid #bfd2ec; border-radius: 5px; color: #245cae; background: #f7faff; font-size: 12px; font-weight: 700; }
+.deep-research-action:hover:not(:disabled), .deep-research-action:focus-visible { border-color: #7ea9df; background: #edf5ff; }
+.deep-research-action:disabled { cursor: default; opacity: .55; }
+.answer-processing-note { margin: 0 0 0 12px; color: #61718a; font-size: 12px; }
 .answer-mode-switch { min-width: 0; display: inline-flex; justify-self: start; padding: 2px; border: 1px solid #dce5f1; border-radius: 6px; background: #f3f7fc; }
 .answer-mode-switch button { min-width: 52px; min-height: 27px; padding: 0 10px; border: 0; border-radius: 4px; color: #6b7a90; background: transparent; font-size: 12px; font-weight: 600; }
 .answer-mode-switch button:hover:not(:disabled) { color: #2f65b5; background: #e9f1fc; }

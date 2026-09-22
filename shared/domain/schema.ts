@@ -387,6 +387,7 @@ const messageSchema = z.object({
   role: z.enum(['USER', 'ASSISTANT']),
   text: z.string(),
   skillId: z.enum(['MATERIAL_SEARCH', 'SOLUTION_DRAFT', 'MEETING_ANALYSIS']).optional(),
+  answerMode: z.enum(['CONCISE', 'DETAILED']).optional(),
   answerStatus: z.enum(['SUPPORTED', 'INSUFFICIENT', 'CONFLICTING']).optional(),
   materialIds: z.array(z.string()).optional(),
   solutionDraftId: z.string().optional(),

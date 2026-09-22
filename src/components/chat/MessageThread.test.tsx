@@ -93,6 +93,32 @@ describe('MessageThread', () => {
     expect(screen.queryByRole('region', { name: '资料检索结果' })).not.toBeInTheDocument()
   })
 
+  it('labels the answer mode and offers a deep research retry for fast answers', async () => {
+    const user = userEvent.setup()
+    const onDeepResearch = vi.fn()
+    const assistant: ProductMessage = {
+      ...firstMessage,
+      id: 'MSG-FAST',
+      role: 'ASSISTANT',
+      content: '当前已找到一条相关依据。',
+      answerStatus: 'SUPPORTED',
+      answerMode: 'CONCISE',
+    }
+
+    render(<MessageThread messages={[assistant]} onCitation={vi.fn()} onDeepResearch={onDeepResearch} />)
+
+    expect(screen.getByText('快速回答')).toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: '重新深度查证' })
+    await user.click(retry)
+    expect(onDeepResearch).toHaveBeenCalledWith(assistant.content)
+  })
+
+  it('explains the longer wait while a deep research answer is running', () => {
+    render(<MessageThread messages={[]} pendingQuestion="核对部署要求" pendingAnswerMode="DETAILED" onCitation={vi.fn()} />)
+
+    expect(screen.getByText('正在进行深度查证，会比快速回答耗时更长。')).toBeInTheDocument()
+  })
+
   it('scrolls the latest message into view after messages change', () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })

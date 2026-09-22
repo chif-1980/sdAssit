@@ -29,6 +29,7 @@ export interface AddMessageInput {
   skillId?: ConversationSkillId
   solutionDraftId?: string
   answerOverride?: AnswerPayload
+  answerMode?: 'CONCISE' | 'DETAILED'
 }
 
 export interface AnswerPayload {
@@ -352,6 +353,7 @@ export class ConversationService {
       const assistantMessage: ConversationMessage = {
         id: messageId(), conversationId: id, role: 'ASSISTANT', text: answer.text,
         ...(input.skillId ? { skillId: input.skillId } : {}),
+        ...(input.answerMode ? { answerMode: input.answerMode } : {}),
         answerStatus: answer.confidence,
         ...(input.materialIds?.length ? { materialIds: [...new Set(input.materialIds)] } : {}),
         ...(input.solutionDraftId ? { solutionDraftId: input.solutionDraftId } : {}),

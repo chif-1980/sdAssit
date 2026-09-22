@@ -26,6 +26,9 @@ import { ClarificationCard, type ClarificationAnswer } from './ClarificationCard
 interface MessageThreadProps {
   messages: ProductMessage[]
   pendingQuestion?: string
+  pendingAnswerMode?: 'CONCISE' | 'DETAILED'
+  onDeepResearch?: (question: string) => void
+  deepResearchDisabled?: boolean
   activeMeetingRunId?: string
   agentInterruptQuestion?: ProductAgentInterrupt | string
   answerProgress?: ProductAnswerProgress
@@ -203,6 +206,8 @@ interface MessageBubbleProps {
   activeClarificationRunId?: string
   interruptDisabled?: boolean
   hideClarificationQuestions?: boolean
+  onDeepResearch?: MessageThreadProps['onDeepResearch']
+  deepResearchDisabled?: boolean
 }
 
 function MessageBubble({
@@ -223,6 +228,8 @@ function MessageBubble({
   activeClarificationRunId,
   interruptDisabled = false,
   hideClarificationQuestions = false,
+  onDeepResearch,
+  deepResearchDisabled = false,
 }: MessageBubbleProps) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [reasonType, setReasonType] = useState<FeedbackReasonType>(
@@ -262,9 +269,12 @@ function MessageBubble({
         </div>
       ) : null}
       {message.answerStatus && !message.meeting ? (
-        <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
-          {statusLabels[message.answerStatus]}
-        </span>
+        <div className="answer-meta">
+          <span className={`answer-status answer-${message.answerStatus.toLowerCase()}`}>
+            {statusLabels[message.answerStatus]}
+          </span>
+          {message.answerMode ? <span className="answer-mode-badge">{message.answerMode === 'DETAILED' ? '深度查证' : '快速回答'}</span> : null}
+        </div>
       ) : null}
       {message.role === 'ASSISTANT' ? (
         // A solution run already has a structured, editable representation
@@ -288,6 +298,11 @@ function MessageBubble({
           />
         )
       ) : <p>{message.content}</p>}
+      {message.role === 'ASSISTANT' && message.answerMode === 'CONCISE' && onDeepResearch && message.content.trim() ? (
+        <button type="button" className="deep-research-action" disabled={deepResearchDisabled} onClick={() => onDeepResearch(message.content)}>
+          重新深度查证
+        </button>
+      ) : null}
       {message.role === 'ASSISTANT' && message.citations.some((citation) => !citationImageSrc(citation)) ? (
         <div className="message-citations message-citations-inline" aria-label="回答引用">
           {message.citations.map((citation, index) => citationImageSrc(citation) ? null : (
@@ -403,6 +418,8 @@ function MessagePairBlock({
   onDraftSave,
   onDraftConfirm,
   onInterruptAnswer,
+  onDeepResearch,
+  deepResearchDisabled,
   activeClarificationRunId,
   interruptDisabled,
   hideClarificationQuestions,
@@ -422,6 +439,8 @@ function MessagePairBlock({
   onDraftSave?: MessageThreadProps['onDraftSave']
   onDraftConfirm?: MessageThreadProps['onDraftConfirm']
   onInterruptAnswer?: MessageThreadProps['onInterruptAnswer']
+  onDeepResearch?: MessageThreadProps['onDeepResearch']
+  deepResearchDisabled?: boolean
   activeClarificationRunId?: string
   interruptDisabled: boolean
   hideClarificationQuestions: boolean
@@ -433,7 +452,7 @@ function MessagePairBlock({
       className={`message-pair${highlighted ? ' is-highlighted' : ''}`}
     >
       {pair.user ? <MessageBubble message={pair.user} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
-      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
+      {pair.assistant ? <MessageBubble message={pair.assistant} expandedCitationId={expandedCitationId} onCitation={onCitation} feedbackPendingIds={feedbackPendingIds} feedbackDisabled={feedbackDisabled} onFeedback={onFeedback} onMaterialPreview={onMaterialPreview} onMaterialDownload={onMaterialDownload} onMaterialDistribute={onMaterialDistribute} onMeetingDirtyChange={onMeetingDirtyChange} onMeetingAction={onMeetingAction} onDraftSave={onDraftSave} onDraftConfirm={onDraftConfirm} onInterruptAnswer={onInterruptAnswer} onDeepResearch={onDeepResearch} deepResearchDisabled={deepResearchDisabled} activeClarificationRunId={activeClarificationRunId} interruptDisabled={interruptDisabled} hideClarificationQuestions={hideClarificationQuestions} /> : null}
     </div>
   )
 }
@@ -441,6 +460,9 @@ function MessagePairBlock({
 export function MessageThread({
   messages,
   pendingQuestion,
+  pendingAnswerMode,
+  onDeepResearch,
+  deepResearchDisabled = false,
   activeMeetingRunId,
   agentInterruptQuestion,
   answerProgress,
@@ -503,6 +525,8 @@ export function MessageThread({
           activeClarificationRunId={activeClarificationRunId}
           interruptDisabled={interruptDisabled}
           hideClarificationQuestions={hideDraftClarifications}
+          onDeepResearch={onDeepResearch}
+          deepResearchDisabled={deepResearchDisabled}
         />
       ))}
       {pendingQuestion ? (
@@ -536,6 +560,7 @@ export function MessageThread({
               ) : null}
             </article>
           )}
+          {!agentInterruptQuestion && pendingAnswerMode === 'DETAILED' ? <p className="answer-processing-note">正在进行深度查证，会比快速回答耗时更长。</p> : null}
         </>
       ) : null}
       {!pendingQuestion && answerProgress ? (

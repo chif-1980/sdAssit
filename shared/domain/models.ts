@@ -247,6 +247,7 @@ export interface ConversationMessage {
   role: MessageRole
   text: string
   skillId?: ConversationSkillId
+  answerMode?: 'CONCISE' | 'DETAILED'
   answerStatus?: 'SUPPORTED' | 'INSUFFICIENT' | 'CONFLICTING'
   materialIds?: string[]
   solutionDraftId?: string

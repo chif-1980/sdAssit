@@ -898,7 +898,8 @@ export function ChatPage() {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string>()
-  const [answerMode, setAnswerMode] = useState<AnswerMode>('DETAILED')
+  const [answerMode, setAnswerMode] = useState<AnswerMode>('CONCISE')
+  const [pendingAnswerMode, setPendingAnswerMode] = useState<AnswerMode>()
   const [pendingQuestion, setPendingQuestion] = useState<string>()
   const [agentInterruptQuestion, setAgentInterruptQuestion] = useState<ProductAgentInterrupt>()
   const [answerProgress, setAnswerProgress] = useState<ProductAnswerProgress>()
@@ -1233,13 +1234,14 @@ export function ChatPage() {
     const assistantMessage = originalDraft && answeredIds.size
       ? {
         ...result.assistantMessage,
+        ...(pendingAnswerMode ? { answerMode: pendingAnswerMode } : {}),
         solutionDraft: {
           ...originalDraft,
           clarificationQuestions: continuationCompleted ? [] : remainingClarifications,
           clarificationQuestionsResolved: continuationCompleted || remainingClarifications.length === 0,
         },
       }
-      : result.assistantMessage
+      : { ...result.assistantMessage, ...(pendingAnswerMode ? { answerMode: pendingAnswerMode } : {}) }
     const solutionDraft = assistantMessage.solutionDraft
     const firstClarification = solutionDraft?.clarificationQuestions?.[0]
     const continuationRunId = currentRunIdRef.current ?? solutionDraft?.sourceRunId
@@ -1297,6 +1299,7 @@ export function ChatPage() {
       return [...resolvedMessages, userMessage, assistantMessage]
     })
     setPendingQuestion(undefined)
+    setPendingAnswerMode(undefined)
     if (firstClarification && continuationRunId) {
       setAgentInterruptQuestion({
         ...firstClarification,
@@ -1319,7 +1322,7 @@ export function ChatPage() {
     setDraft('')
     setAttachments([])
     setAttachmentError(undefined)
-  }, [])
+  }, [pendingAnswerMode])
 
   const restoreActiveRun = useCallback(async (conversationId: string, version: number) => {
     if (restoredConversationIdsRef.current.has(conversationId) || sending) return
@@ -1509,7 +1512,8 @@ export function ChatPage() {
     citationVersionRef.current += 1
     setConversation(undefined)
     setMessages([])
-    setAnswerMode('DETAILED')
+    setAnswerMode('CONCISE')
+    setPendingAnswerMode(undefined)
     setPendingQuestion(undefined)
     setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
@@ -1550,6 +1554,8 @@ export function ChatPage() {
     setSending(false)
     citationVersionRef.current += 1
     setDraft('')
+    setAnswerMode('CONCISE')
+    setPendingAnswerMode(undefined)
     setErrorText(undefined)
     setPendingQuestion(undefined)
     setAgentInterruptQuestion(undefined)
@@ -1614,6 +1620,7 @@ export function ChatPage() {
     setSending(true)
     setDraft('')
     setPendingQuestion(content)
+    setPendingAnswerMode(resolvedBusinessTask === 'QA' ? mode : undefined)
     setAgentInterruptQuestion(undefined)
     setAnswerProgress(undefined)
     setAnswerProgressTrail([])
@@ -1732,6 +1739,7 @@ export function ChatPage() {
       if (contextVersionRef.current !== version) return
       if (!result) return
       applyAnswer(result)
+      setAnswerMode('CONCISE')
       setMeetingTargetId(undefined)
       setHistoryMeetingIds([])
     } catch (error) {
@@ -2214,10 +2222,20 @@ export function ChatPage() {
     target.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  function prepareDeepResearch(question: string) {
+    if (mutationLocked || archived || draft.trim() || attachments.length || meetingTargetId || agentInterruptQuestion) return
+    setDraft(question)
+    setAnswerMode('DETAILED')
+    setBusinessTask('QA')
+    setBusinessTaskExplicit(true)
+    showToast('已带入原问题，点击发送开始深度查证')
+    document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus()
+  }
+
   function selectExampleQuestion(question: string) {
     setBusinessTask('QA')
     setBusinessTaskExplicit(false)
-    setAnswerMode('DETAILED')
+    setAnswerMode('CONCISE')
     setDraft(question)
   }
 
@@ -2462,6 +2480,9 @@ export function ChatPage() {
                   <MessageThread
                     messages={messages}
                     pendingQuestion={pendingQuestion}
+                    pendingAnswerMode={pendingAnswerMode}
+                    onDeepResearch={prepareDeepResearch}
+                    deepResearchDisabled={mutationLocked || archived || Boolean(draft.trim() || attachments.length || meetingTargetId || agentInterruptQuestion)}
                     activeMeetingRunId={backgroundMeeting ? currentRunId : undefined}
                     agentInterruptQuestion={agentInterruptQuestion}
                     answerProgress={answerProgress}
@@ -2599,7 +2620,7 @@ export function ChatPage() {
                 onRemoveAttachment={removeAttachment}
                 mentions={composerMentions}
                 onMentionSelect={selectMention}
-                showModeSwitch={false}
+                showModeSwitch={!agentInterruptQuestion && !meetingTargetId && (businessTaskExplicit ? businessTask === 'QA' : !['MEETING_ANALYSIS', 'SOLUTION_DRAFT'].includes(inferBusinessTask(draft)))}
                 sending={sending}
                 onStop={stopSending}
                 onSubmit={() => void (agentInterruptQuestion ? resumeAgentRun() : send())}

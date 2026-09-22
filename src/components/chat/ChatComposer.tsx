@@ -38,8 +38,8 @@ export interface ComposerMention {
 }
 
 const modes: { value: AnswerMode; label: string; title: string }[] = [
-  { value: 'CONCISE', label: '简洁', title: '快速直接回答' },
-  { value: 'DETAILED', label: '详细', title: '多步查证后回答' },
+  { value: 'CONCISE', label: '快速回答', title: '适合日常查询，响应更快' },
+  { value: 'DETAILED', label: '深度查证', title: '多轮检索和来源核验，耗时更长' },
 ]
 
 function mentionValues(mentions: ComposerMention[]) {
@@ -280,21 +280,21 @@ export function ChatComposer({
           </div>
         ) : null}
         {showModeSwitch ? (
-          <div className="answer-mode-switch" role="group" aria-label="回答方式">
-            {modes.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                className={mode === item.value ? 'is-active' : ''}
-                aria-label={`${item.label}模式`}
-                aria-pressed={mode === item.value}
-                title={item.title}
-                disabled={disabled}
-                onClick={() => onModeChange(item.value)}
+          <div className="answer-mode-control">
+            <label className="answer-mode-select">
+              <span className="sr-only">回答方式</span>
+              <select
+                value={mode}
+                disabled={disabled || sending}
+                onChange={(event) => onModeChange(event.target.value as AnswerMode)}
+                aria-describedby="answer-mode-description"
               >
-                {item.label}
-              </button>
-            ))}
+                {modes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>
+            <span id="answer-mode-description" className="answer-mode-description" aria-live="polite">
+              {modes.find((item) => item.value === mode)?.title} · 仅本次提问
+            </span>
           </div>
         ) : null}
       </div>
