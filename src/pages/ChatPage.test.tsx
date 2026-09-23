@@ -210,7 +210,7 @@ describe('ChatPage product workspace', () => {
     expect(screen.getByText('可以这样问')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '投标一体机定价体系' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '语音智控的技术架构' })).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveTextContent('快速回答')
     expect(screen.getByText('资料原文只存放在飞书知识库，助手不会复制到其他位置')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新对话' })).toBeInTheDocument()
@@ -319,7 +319,7 @@ describe('ChatPage product workspace', () => {
     await user.click(screen.getByRole('button', { name: '投标一体机定价体系' }))
 
     expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('投标一体机定价体系')
-    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveTextContent('快速回答')
   })
 
   it('keeps the selected skill marker so the user can type the requirement after it', async () => {
@@ -576,7 +576,7 @@ describe('ChatPage product workspace', () => {
 
     await user.click(screen.getByRole('button', { name: '新对话' }))
 
-    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveTextContent('快速回答')
   })
 
   it('manages focus and keyboard dismissal for the conversation drawer', async () => {
@@ -659,7 +659,8 @@ describe('ChatPage product workspace', () => {
     expect(await screen.findByText('原有回答')).toBeInTheDocument()
 
     const modeSelect = screen.getByRole('combobox', { name: '回答方式' })
-    await user.selectOptions(modeSelect, 'DETAILED')
+    await user.click(modeSelect)
+    await user.click(screen.getByRole('option', { name: '深度查证' }))
     await user.type(screen.getByRole('textbox', { name: '问题' }), '给出完整实施说明')
     await user.click(screen.getByRole('button', { name: '发送问题' }))
 

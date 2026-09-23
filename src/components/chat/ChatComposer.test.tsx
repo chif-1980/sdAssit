@@ -60,7 +60,7 @@ describe('ChatComposer', () => {
     render(<ComposerHarness />)
 
     expect(screen.getByRole('textbox', { name: '问题' })).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveValue('CONCISE')
+    expect(screen.getByRole('combobox', { name: '回答方式' })).toHaveTextContent('快速回答')
     expect(screen.getByRole('button', { name: '发送问题' })).toBeDisabled()
     expect(screen.queryByText(/上传资料|回答范围/)).not.toBeInTheDocument()
   })
@@ -70,8 +70,9 @@ describe('ChatComposer', () => {
     const { rerender } = render(<ComposerHarness />)
 
     const select = screen.getByRole('combobox', { name: '回答方式' })
-    await user.selectOptions(select, 'DETAILED')
-    expect(select).toHaveValue('DETAILED')
+    await user.click(select)
+    await user.click(screen.getByRole('option', { name: '深度查证' }))
+    expect(select).toHaveTextContent('深度查证')
 
     rerender(<ComposerHarness disabled />)
     expect(screen.getByRole('combobox', { name: '回答方式' })).toBeDisabled()

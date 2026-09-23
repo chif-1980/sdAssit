@@ -200,12 +200,13 @@ describe('MessageThread', () => {
     />)
     expect(screen.getByRole('button', { name: '点赞这条回答' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '点踩这条回答' })).toHaveAttribute('aria-pressed', 'false')
-    await user.click(screen.getByRole('button', { name: '点赞这条回答' }))
     await user.click(screen.getByRole('button', { name: '点踩这条回答' }))
     expect(screen.getByRole('dialog', { name: '选择不满意原因' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '点赞这条回答' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: '点踩这条回答' })).toHaveAttribute('aria-pressed', 'true')
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
-    expect(onFeedback).toHaveBeenNthCalledWith(2, 'MSG-ASSISTANT', null)
-    expect(onFeedback).toHaveBeenNthCalledWith(3, 'MSG-ASSISTANT', 'DISLIKE', 'CONTENT_ERROR', undefined)
+    expect(onFeedback).toHaveBeenNthCalledWith(1, 'MSG-ASSISTANT', 'LIKE')
+    expect(onFeedback).toHaveBeenNthCalledWith(2, 'MSG-ASSISTANT', 'DISLIKE', 'CONTENT_ERROR', undefined)
 
     rerender(<MessageThread
       messages={[assistantMessage]}

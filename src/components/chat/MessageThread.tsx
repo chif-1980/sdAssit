@@ -237,6 +237,15 @@ function MessageBubble({
   )
   const [reasonText, setReasonText] = useState(message.feedbackReasonText ?? '')
 
+  const likeSelected = message.feedbackRating === 'LIKE' && !feedbackOpen
+  const dislikeSelected = message.feedbackRating === 'DISLIKE' || feedbackOpen
+
+  function handleLike() {
+    const nextRating = message.feedbackRating === 'LIKE' && !feedbackOpen ? null : 'LIKE'
+    setFeedbackOpen(false)
+    onFeedback?.(message.id, nextRating)
+  }
+
   function handleDislike() {
     if (message.feedbackRating === 'DISLIKE') {
       setFeedbackOpen(false)
@@ -345,20 +354,20 @@ function MessageBubble({
           <div className="message-feedback" aria-label="回答反馈">
             <button
               type="button"
-              className={`feedback-button${message.feedbackRating === 'LIKE' ? ' is-selected is-like' : ''}`}
+              className={`feedback-button${likeSelected ? ' is-selected is-like' : ''}`}
               aria-label="点赞这条回答"
-              aria-pressed={message.feedbackRating === 'LIKE'}
+              aria-pressed={likeSelected}
               title="点赞这条回答"
               disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
-              onClick={() => onFeedback?.(message.id, message.feedbackRating === 'LIKE' ? null : 'LIKE')}
+              onClick={handleLike}
             >
               <ThumbsUp aria-hidden="true" size={15} strokeWidth={1.8} />
             </button>
             <button
               type="button"
-              className={`feedback-button${message.feedbackRating === 'DISLIKE' ? ' is-selected is-dislike' : ''}`}
+              className={`feedback-button${dislikeSelected ? ' is-selected is-dislike' : ''}`}
               aria-label="点踩这条回答"
-              aria-pressed={message.feedbackRating === 'DISLIKE'}
+              aria-pressed={dislikeSelected}
               title="点踩这条回答"
               disabled={feedbackDisabled || feedbackPendingIds?.has(message.id)}
               onClick={handleDislike}
@@ -368,6 +377,10 @@ function MessageBubble({
           </div>
           {feedbackOpen ? (
             <div className="feedback-reason-panel" role="dialog" aria-label="选择不满意原因">
+              <div className="feedback-reason-heading">
+                <strong>这条回答哪里需要改进？</strong>
+                <span>选择一个原因，也可以补充说明</span>
+              </div>
               <div className="feedback-reason-options" role="radiogroup" aria-label="不满意原因">
                 {feedbackReasons.map((reason) => (
                   <label key={reason.value} className={reasonType === reason.value ? 'is-selected' : ''}>

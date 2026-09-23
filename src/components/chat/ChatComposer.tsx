@@ -1,4 +1,4 @@
-import { FileImage, FileSpreadsheet, FileText, Paperclip, Send, Square, X } from 'lucide-react'
+import { ChevronDown, FileImage, FileSpreadsheet, FileText, Paperclip, Send, Square, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
@@ -110,9 +110,32 @@ export function ChatComposer({
   placeholder = '输入你的问题',
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const modeSelectRef = useRef<HTMLDivElement>(null)
   const [dragActive, setDragActive] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
+  const [modeOpen, setModeOpen] = useState(false)
   const canSubmit = !disabled && !sending && Boolean(value.trim())
+  const selectedMode = modes.find((item) => item.value === mode) ?? modes[0]
+
+  useEffect(() => {
+    if (!modeOpen) return
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (!modeSelectRef.current?.contains(event.target as Node)) setModeOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setModeOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [modeOpen])
+
+  useEffect(() => {
+    if (disabled || sending) setModeOpen(false)
+  }, [disabled, sending])
 
   const mentionQuery = useMemo(() => {
     const match = /(?:^|\s)@([^\s@]*)$/u.exec(value)
@@ -143,6 +166,11 @@ export function ChatComposer({
   function selectMention(mention: ComposerMention) {
     onMentionSelect(mention)
     setMentionOpen(false)
+  }
+
+  function selectMode(nextMode: AnswerMode) {
+    onModeChange(nextMode)
+    setModeOpen(false)
   }
 
   function pastedFiles(data: DataTransfer) {
@@ -280,21 +308,40 @@ export function ChatComposer({
           </div>
         ) : null}
         {showModeSwitch ? (
-          <div className="answer-mode-control">
-            <label className="answer-mode-select">
-              <span className="sr-only">回答方式</span>
-              <select
-                value={mode}
-                disabled={disabled || sending}
-                onChange={(event) => onModeChange(event.target.value as AnswerMode)}
-                aria-describedby="answer-mode-description"
-              >
-                {modes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
-            <span id="answer-mode-description" className="answer-mode-description" aria-live="polite">
-              {modes.find((item) => item.value === mode)?.title} · 仅本次提问
-            </span>
+          <div className="answer-mode-control" ref={modeSelectRef}>
+            <span className="sr-only" id="answer-mode-label">回答方式</span>
+            <button
+              type="button"
+              className={`answer-mode-trigger${modeOpen ? ' is-open' : ''}`}
+              role="combobox"
+              aria-label="回答方式"
+              aria-labelledby="answer-mode-label"
+              aria-expanded={modeOpen}
+              aria-controls="answer-mode-menu"
+              aria-haspopup="listbox"
+              disabled={disabled || sending}
+              title={selectedMode.title}
+              onClick={() => setModeOpen((open) => !open)}
+            >
+              <span>{selectedMode.label}</span>
+              <ChevronDown aria-hidden="true" size={14} />
+            </button>
+            {modeOpen ? (
+              <div id="answer-mode-menu" className="answer-mode-menu" role="listbox" aria-label="回答方式">
+                {modes.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className="answer-mode-option"
+                    role="option"
+                    aria-selected={item.value === mode}
+                    onClick={() => selectMode(item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
